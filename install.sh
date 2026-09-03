@@ -73,35 +73,35 @@ if [ "$DO_DEPS" = 1 ]; then
             libxcursor-dev libxft-dev libfontconfig1-dev libfreetype-dev zlib1g-dev \
             libjpeg-dev x11-xserver-utils x11-utils xdg-utils zip unzip tar p7zip-full \
             pulseaudio-utils xterm python3 git curl fonts-dejavu-core dbus-x11 \
-            cabextract qt5ct qt6ct ;;
+            cabextract qt5ct qt6ct liblightdm-gobject-dev libglib2.0-dev ;;
     *fedora*|*rhel*|*centos*|*rocky*|*alma*)
         as_root dnf install -y gcc make libX11-devel libXext-devel libXrandr-devel \
             libXcursor-devel libXft-devel fontconfig-devel freetype-devel zlib-devel \
             libjpeg-turbo-devel xrandr xset xsetroot xrdb xmessage xdg-utils zip unzip \
             tar p7zip p7zip-plugins pulseaudio-utils xterm python3 git curl \
-            dejavu-sans-fonts dbus-x11 cabextract qt5ct qt6ct ;;
+            dejavu-sans-fonts dbus-x11 cabextract qt5ct qt6ct lightdm-gobject-devel glib2-devel ;;
     *arch*|*manjaro*|*endeavouros*)
         as_root pacman -Sy --needed --noconfirm base-devel libx11 libxext libxrandr \
             libxcursor libxft fontconfig freetype2 zlib libjpeg-turbo xorg-xrandr \
             xorg-xset xorg-xsetroot xorg-xrdb xorg-xmessage xdg-utils zip unzip tar \
-            p7zip libpulse xterm python git curl ttf-dejavu dbus cabextract qt5ct qt6ct ;;
+            p7zip libpulse xterm python git curl ttf-dejavu dbus cabextract qt5ct qt6ct lightdm glib2 ;;
     *suse*)
         as_root zypper --non-interactive install gcc make libX11-devel libXext-devel \
             libXrandr-devel libXcursor-devel libXft-devel fontconfig-devel \
             freetype2-devel zlib-devel libjpeg8-devel xrandr xset xsetroot xrdb xmessage \
             xdg-utils zip unzip tar p7zip-full pulseaudio-utils xterm python3 git curl \
-            dejavu-fonts dbus-1-x11 cabextract qt5ct qt6ct ;;
+            dejavu-fonts dbus-1-x11 cabextract qt5ct qt6ct lightdm-gobject-devel glib2-devel ;;
     *alpine*)
         as_root apk add build-base libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
             libxft-dev fontconfig-dev freetype-dev zlib-dev libjpeg-turbo-dev xrandr \
             xset xsetroot xrdb xmessage xdg-utils zip unzip tar p7zip pulseaudio-utils \
-            xterm python3 git curl font-dejavu dbus-x11 cabextract ;;
+            xterm python3 git curl font-dejavu dbus-x11 cabextract lightdm-dev glib-dev ;;
     *void*)
         as_root xbps-install -Sy base-devel libX11-devel libXext-devel libXrandr-devel \
             libXcursor-devel libXft-devel fontconfig-devel freetype-devel zlib-devel \
             libjpeg-turbo-devel xrandr xset xsetroot xrdb xmessage xdg-utils zip unzip \
             tar p7zip pulseaudio-utils xterm python3 git curl dejavu-fonts-ttf dbus \
-            cabextract qt5ct qt6ct ;;
+            cabextract qt5ct qt6ct lightdm-devel glib-devel ;;
     *)
         echo "install.sh: I do not know this distribution's package manager." >&2
         echo "  Install: a C compiler and make; the development packages for X11," >&2
@@ -167,7 +167,7 @@ if [ "$DO_BUILD" = 1 ]; then
     if [ "$FULL" = 1 ]; then
         # LightDM logs straight into Windows 2000; the greeter looks the part.
         as_root install -d /etc/lightdm/lightdm.conf.d
-        as_root sh -c "printf '[Seat:*]\nuser-session=w2k-session\ngreeter-session=lightdm-gtk-greeter\n' > /etc/lightdm/lightdm.conf.d/50-w2k.conf"
+        as_root sh -c "printf '[Seat:*]\nuser-session=w2k-session\ngreeter-session=w2klogon\n' > /etc/lightdm/lightdm.conf.d/50-w2k.conf"
         as_root sh -c "printf '[greeter]\nbackground=#3a6ea5\ntheme-name=Chicago95\nicon-theme-name=Chicago95\nfont-name=Tahoma 8\ncursor-theme-name=Windows2000\n' > /etc/lightdm/lightdm-gtk-greeter.conf"
         if command -v systemctl >/dev/null 2>&1; then
             as_root systemctl enable lightdm 2>/dev/null || true

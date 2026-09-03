@@ -20,6 +20,14 @@ WM_OBJ  := $(WM_SRC:.c=.o)
 
 # w2kswatch is a development scratch tool: buildable, never installed.
 APPS    := $(filter-out bin/w2kswatch,$(patsubst apps/%.c,bin/%,$(wildcard apps/*.c)))
+# The logon screen talks to LightDM when its library is about; without it
+# the greeter still builds, as the picture alone.
+LIGHTDM_CFLAGS := $(shell pkg-config --cflags liblightdm-gobject-1 2>/dev/null)
+LIGHTDM_LIBS   := $(shell pkg-config --libs liblightdm-gobject-1 2>/dev/null)
+ifneq ($(LIGHTDM_LIBS),)
+apps/w2klogon.o: CFLAGS += -DHAVE_LIGHTDM $(LIGHTDM_CFLAGS)
+bin/w2klogon: LDLIBS += $(LIGHTDM_LIBS)
+endif
 BINS    := bin/w2kwm $(APPS)
 
 all: $(BINS)
@@ -59,6 +67,8 @@ install: all
 	install -m644 skins/*.png $(DESTDIR)$(PREFIX)/share/w2k/skins
 	install -d $(DESTDIR)$(PREFIX)/share/w2k/cursors
 	install -m644 cursors/* $(DESTDIR)$(PREFIX)/share/w2k/cursors
+	install -d $(DESTDIR)/usr/share/xgreeters
+	install -m644 config/w2klogon.desktop $(DESTDIR)/usr/share/xgreeters/w2klogon.desktop
 
 .PHONY: all clean install swatch
 .PRECIOUS: apps/%.o

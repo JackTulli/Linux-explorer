@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Log On to Windows
+Comment=The Windows 2000 logon screen
+Exec=w2klogon
+Type=Application
+X-LightDM-Session-Type=x
