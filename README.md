@@ -1,64 +1,112 @@
 # Windows 2000 for X11
 
 A window manager and desktop environment that recreates the Windows 2000
-shell on X11 — the classic 3D look, the gradient title bars, the taskbar,
-the Start menu, and the applications that came with it — written from
-scratch in C against Xlib and nothing else.
+shell on X11: the classic 3D look, the gradient title bars, the taskbar
+and Start menu, the logon screen, and the applications that came with it,
+written from scratch in C against Xlib. Optional Windows XP and Windows 7
+Basic looks are cropped pixel for pixel from the real thing.
 
-    bin/w2kwm        window manager + desktop + taskbar + Start menu
-    bin/w2kexplorer  Windows Explorer (Folders pane, four views, file ops)
-    bin/w2knotepad   Notepad (word wrap, find, go to, single-level undo)
-    bin/w2ktaskmgr   Task Manager (Applications / Processes / Performance)
-    w2k-session      starts the whole desktop as an X session
+![The desktop](docs/desktop.png)
 
-## Build
+## Get it running
 
-From a bare system with no desktop at all (a fresh Debian, say), as root:
+**A fresh machine or VM with no desktop** (Debian, Ubuntu, Fedora, Arch,
+openSUSE, Alpine or Void), as root:
 
     curl -sL jacktulli.github.io/w2k | sh
 
-(the long form is `sh -c "$(curl -fsSL https://raw.githubusercontent.com/JackTulli/Linux-explorer/main/bootstrap.sh)"`)
+That is the whole install. It fetches this repository into
+`/usr/local/src`, installs the X server, sound, VM guest tools and Firefox,
+builds and installs the shell, and sets up the first ordinary user (or
+`W2K_USER=name`). Reboot and the machine comes up in **Log On to Windows**,
+served by `w2kdm`, the shell's own display manager: no LightDM, no GDM. Log
+on and you are on the desktop above.
 
-That installs the X server, sound, guest tools, Firefox and everything below, plus `w2kdm`: the shell's own display manager, which boots the machine straight into "Log On to Windows" (drawn with the shell's toolkit, checked through PAM) and into the desktop from there. No LightDM, no GDM.
+If `curl` is missing on a bare Debian: `apt install curl` first. If the
+first run is interrupted, run the same command again; it carries on.
 
-On a system that already has a desktop:
+**A machine that already has a desktop:**
 
+    git clone https://github.com/JackTulli/Linux-explorer
+    cd Linux-explorer
     ./install.sh              # packages, build, install, cursors, Chicago95, Qt
     ./install.sh --xinitrc    # ...and make it your startx session
 
-(`./install.sh --help` lists the options.) By hand, Debian/Ubuntu: `apt install build-essential libx11-dev xfonts-75dpi xfonts-base`
-(the bitmap Helvetica in `xfonts-75dpi` is what stands in for MS Sans Serif;
-`xfonts-base` provides the Fixedsys-alike used by Notepad).
+Then `startx /usr/local/bin/w2k-session`, or pick "Windows 2000" in your
+display manager. `./install.sh --help` lists the options (`--full` adds the
+X server and w2kdm, `--tahoma` fetches the shell's typeface, `--user-only`
+touches only your own configuration, `--dry-run` shows what would happen).
+
+**By hand:** the build needs a C compiler, make, and the development
+packages for X11, Xext, Xrandr, Xcursor, Xft, fontconfig, freetype, zlib
+and libjpeg (Debian: `build-essential libx11-dev libxext-dev libxrandr-dev
+libxcursor-dev libxft-dev libfontconfig1-dev libfreetype-dev zlib1g-dev
+libjpeg-dev`; add `libpam0g-dev` for the display manager). Then
 
     make
-    make install PREFIX=/usr/local      # optional
+    make install PREFIX=/usr/local
 
-## Run
-
-Try it nested first:
+Try it nested first, without logging out of anything:
 
     Xephyr :2 -screen 1024x768 &
     DISPLAY=:2 ./w2k-session
 
-Or as your session: put `exec /path/to/w2k-session` in `~/.xinitrc`.
-Commands in `~/.w2k/autostart` (one per line) are launched at login.
+## What is in the box
+
+    w2kdm          the display manager: Log On to Windows, PAM, the session
+    w2k-session    starts the desktop as an X session
+    w2kwm          window manager, desktop, taskbar, Start menu, dialogs
+    w2kexplorer    Windows Explorer: Folders pane, four views, cut/copy/paste,
+                   undo, drag and drop (XDND, with any other program), Recycle
+                   Bin, Add to Archive / Extract with progress, Send To,
+                   Open With, Properties, Search, drives in My Computer
+    w2kcontrol     Control Panel: Display, Date/Time, Default Programs, Mouse,
+                   Keyboard, Sounds, Fonts, Folder Options, Performance
+                   Options, Taskbar and Start Menu
+    w2kdisplay     Display Properties: wallpaper (centre, tile, stretch, fit,
+                   fill, span), appearance schemes, themes, monitors
+    w2knotepad, w2kcalc, w2kcharmap, w2kimage (Imaging), w2ktaskmgr,
+    w2ksnip        Snipping Tool
+
+Three looks, from Display Properties > Appearance: the Windows 2000
+classic scheme (and its colour variants), Windows XP (Luna, with the
+two-column Start menu), and Windows 7 Basic (with its Start menu, orb and
+taskbar). The XP and 7 chrome is cropped from screenshots and checked by
+diffing against them.
+
+Other programs match: GTK 2/3/4 get the Chicago95 theme and icons, Qt gets
+the Windows style with a Windows 2000 palette (qt5ct/qt6ct), every program
+gets the Windows cursors through an Xcursor theme, and Explorer is the
+folder handler for `xdg-open` and "show in folder".
 
 Keys: **Ctrl+Esc** / **Win** Start menu · **Alt+Tab** switch windows ·
 **Alt+F4** close · **Alt+Space** system menu · **Ctrl+Alt+Del** Task Manager ·
-**Win+E** Explorer · **Win+R** Run · **Win+D** show desktop.
+**Win+E** Explorer · **Win+R** Run · **Win+D** show desktop · typing at the
+Start menu searches.
 
-## Icons
+## Configuration
+
+Everything the applets set lives in `~/.w2k/scheme` (colours, theme,
+wallpaper, effects, taskbar, folder options, input settings, the monitor
+arrangement) and is applied live to every running program. Commands in
+`~/.w2k/autostart` (one per line) are launched at logon. Pinned programs,
+favorites and the Recycle Bin are under `~/.w2k` too.
 
 The icons are the genuine Windows 2000 artwork (see `icons/README.md`),
-baked into the binaries by `tools/genicons.py`. Any icon can be replaced
-at run time by dropping `<slug>.ico` into `~/.w2k/icons`; `w2kwm --icons`
-lists the slugs.
+baked into the binaries by `tools/genicons.py`; any of them can be replaced
+by dropping `<slug>.ico` into `~/.w2k/icons` (`w2kwm --icons` lists the
+slugs). The cursor set in `cursors/` is installed to `~/.w2k/cursors` and
+turned into the `Windows2000` Xcursor theme by `tools/gencursortheme.py`.
 
 ## Layout
 
     include/w2k.h    drawing primitives, system colours, fonts, icons, menus
     include/w2kui.h  windows, controls (edit, list, tree, scrollbar, ...), dialogs
-    lib/             the toolkit ("libw2k")
-    wm/              the window manager
-    apps/            the applications
-    tools/           icon baking (genicons.py) and development helpers
+    lib/             the toolkit ("libw2k"): drawing, controls, XDND, file ops,
+                     images (BMP/PNG/JPEG), skins, themes
+    wm/              the window manager, taskbar, desktop, Start menus, dialogs
+    apps/            the applications and the display manager
+    skins/           the XP and Windows 7 chrome, cropped from screenshots
+    config/          GTK/Qt settings, the w2kdm service and PAM stacks
+    tools/           icon and cursor-theme baking, development helpers
+    install.sh       the installer; bootstrap.sh the one-command form
