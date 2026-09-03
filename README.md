@@ -15,7 +15,7 @@ scratch in C against Xlib and nothing else.
 
 From a bare system with no desktop at all (a fresh Debian, say), as root:
 
-    W2K_REPO=https://github.com/JackTulli/Linux-explorer sh -c "$(curl -fsSL https://raw.githubusercontent.com/JackTulli/Linux-explorer/main/bootstrap.sh)"
+    sh -c "$(curl -fsSL https://raw.githubusercontent.com/JackTulli/Linux-explorer/main/bootstrap.sh)"
 
 That installs the X server, LightDM with the Windows 2000 logon screen (`w2klogon`, a LightDM greeter drawn by the shell's own toolkit), sound, guest tools, Firefox and everything below, and reboots into "Log On to Windows".
 

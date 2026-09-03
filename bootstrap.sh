@@ -2,7 +2,7 @@
 # bootstrap.sh -- from a bare Debian (or any of the distributions install.sh
 # knows) to the Windows 2000 desktop in one command, run as root:
 #
-#   curl -fsSL https://raw.githubusercontent.com/JackTulli/Linux-explorer/main/bootstrap.sh | sh
+#   sh -c "$(curl -fsSL https://raw.githubusercontent.com/JackTulli/Linux-explorer/main/bootstrap.sh)"
 #
 # It installs git, fetches the repository into /usr/local/src, and runs
 # install.sh --full: the X server, LightDM logging straight into the
@@ -20,11 +20,6 @@ if [ "$(id -u)" != 0 ]; then
     echo "bootstrap.sh: run this as root (su -, or sudo sh)" >&2
     exit 1
 fi
-case "$REPO" in *JackTulli*)
-    echo "bootstrap.sh: set W2K_REPO to the repository's URL first, e.g." >&2
-    echo "  W2K_REPO=https://github.com/you/Linux-explorer sh bootstrap.sh" >&2
-    exit 1 ;;
-esac
 
 # Who gets the desktop: the caller's user under sudo, else the first
 # ordinary account.
