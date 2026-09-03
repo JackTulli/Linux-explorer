@@ -64,7 +64,9 @@ backup() { [ -e "$1" ] && [ ! -e "$1.pre-w2k" ] && run cp -a "$1" "$1.pre-w2k" |
 apt_install() {
     have='' miss=''
     for p in "$@"; do
-        if apt-cache show "$p" >/dev/null 2>&1; then have="$have $p"; else miss="$miss $p"; fi
+        # A record can exist without a candidate (an obsoleted name), so ask
+        # for the candidate, which is what apt would install.
+        if apt-cache policy "$p" 2>/dev/null | grep -q '^ *Candidate: [0-9]'; then have="$have $p"; else miss="$miss $p"; fi
     done
     [ -z "$miss" ] || echo "  (not in this release, skipped:$miss)"
     # shellcheck disable=SC2086
