@@ -68,8 +68,11 @@ install: all
 	install -m644 skins/*.png $(DESTDIR)$(PREFIX)/share/w2k/skins
 	install -d $(DESTDIR)$(PREFIX)/share/w2k/cursors
 	install -m644 cursors/* $(DESTDIR)$(PREFIX)/share/w2k/cursors
-	install -d $(DESTDIR)/usr/share/xgreeters
-	install -m644 config/w2klogon.desktop $(DESTDIR)/usr/share/xgreeters/w2klogon.desktop
+	# Display managers look these commands up on their own PATH, which need
+	# not include $(BINDIR): write the full path in.
+	install -d $(DESTDIR)/usr/share/xgreeters $(DESTDIR)/usr/share/xsessions
+	sed 's|^Exec=.*|Exec=$(BINDIR)/w2klogon|; /^TryExec/d' config/w2klogon.desktop > $(DESTDIR)/usr/share/xgreeters/w2klogon.desktop
+	sed 's|^Exec=.*|Exec=$(BINDIR)/w2k-session|; /^TryExec/d' config/w2k-session.desktop > $(DESTDIR)/usr/share/xsessions/w2k-session.desktop
 
 .PHONY: all clean install swatch
 .PRECIOUS: apps/%.o

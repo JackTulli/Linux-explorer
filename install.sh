@@ -174,10 +174,7 @@ if [ "$DO_BUILD" = 1 ]; then
     as_root install -d "$PREFIX/share/w2k/cursors"
     as_root sh -c "install -m644 '$HERE'/cursors/* '$PREFIX/share/w2k/cursors/'"
     # A session entry, so display managers list "Windows 2000".
-    if [ -d /usr/share/xsessions ] || [ "$DRY" = 1 ]; then
-        as_root install -d /usr/share/xsessions
-        as_root install -m644 "$HERE/config/w2k-session.desktop" /usr/share/xsessions/w2k-session.desktop
-    fi
+    # (make install wrote the session and greeter entries, with full paths.)
     if [ "$FULL" = 1 ]; then
         # LightDM logs straight into Windows 2000; the greeter looks the part.
         as_root install -d /etc/lightdm/lightdm.conf.d
