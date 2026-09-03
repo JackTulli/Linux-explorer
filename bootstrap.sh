@@ -41,12 +41,19 @@ elif command -v apk >/dev/null 2>&1; then apk add git curl
 elif command -v xbps-install >/dev/null 2>&1; then xbps-install -Sy git curl
 fi
 if [ -d "$SRC/.git" ]; then
-    git -C "$SRC" pull -q --ff-only || true
+    # The checkout belongs to the user (chown below), and git will not let
+    # root pull in a directory owned by someone else -- so pull as them.
+    if ! su -s /bin/sh "$USERNAME" -c "git -C '$SRC' pull -q --ff-only"; then
+        echo "==> Could not update $SRC; fetching it afresh"
+        rm -rf "$SRC"
+        git clone -q "$REPO" "$SRC"
+    fi
 else
     mkdir -p "$(dirname "$SRC")"
     git clone -q "$REPO" "$SRC"
 fi
 chown -R "$USERNAME" "$SRC"
+echo "==> Source at $SRC, $(git -c safe.directory='*' -C "$SRC" log -1 --format='%h %s')"
 
 cd "$SRC"
 sh ./install.sh --full --tahoma --xinitrc --user "$USERNAME"
