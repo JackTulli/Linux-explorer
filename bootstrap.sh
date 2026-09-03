@@ -5,8 +5,8 @@
 #   sh -c "$(curl -fsSL https://raw.githubusercontent.com/JackTulli/Linux-explorer/main/bootstrap.sh)"
 #
 # It installs git, fetches the repository into /usr/local/src, and runs
-# install.sh --full: the X server, LightDM logging straight into the
-# session, sound, VM guest tools, Firefox, the shell itself, the cursor
+# install.sh --full: the X server, w2kdm (our own logon screen, no LightDM),
+# sound, VM guest tools, Firefox, the shell itself, the cursor
 # set, Chicago95 for GTK, the Windows 2000 palette for Qt and Tahoma --
 # all of it for the first ordinary user on the machine (or W2K_USER).
 #

@@ -20,14 +20,11 @@ WM_OBJ  := $(WM_SRC:.c=.o)
 
 # w2kswatch is a development scratch tool: buildable, never installed.
 APPS    := $(filter-out bin/w2kswatch,$(patsubst apps/%.c,bin/%,$(wildcard apps/*.c)))
-# The logon screen talks to LightDM when its library is about; without it
-# the greeter still builds, as the picture alone.
-# liblightdm's .pc names only itself; the GObject calls need GLib's too.
-LIGHTDM_CFLAGS := $(shell pkg-config --cflags liblightdm-gobject-1 gobject-2.0 glib-2.0 2>/dev/null)
-LIGHTDM_LIBS   := $(shell pkg-config --libs liblightdm-gobject-1 gobject-2.0 glib-2.0 2>/dev/null)
-ifneq ($(LIGHTDM_LIBS),)
-apps/w2klogon.o: CFLAGS += -DHAVE_LIGHTDM $(LIGHTDM_CFLAGS)
-bin/w2klogon: LDLIBS += $(LIGHTDM_LIBS)
+# The display manager needs PAM; without its header it still builds, as the
+# picture alone (W2K_RENDER).
+ifneq ($(wildcard /usr/include/security/pam_appl.h),)
+apps/w2kdm.o: CFLAGS += -DHAVE_PAM
+bin/w2kdm: LDLIBS += -lpam
 endif
 BINS    := bin/w2kwm $(APPS)
 
@@ -68,10 +65,8 @@ install: all
 	install -m644 skins/*.png $(DESTDIR)$(PREFIX)/share/w2k/skins
 	install -d $(DESTDIR)$(PREFIX)/share/w2k/cursors
 	install -m644 cursors/* $(DESTDIR)$(PREFIX)/share/w2k/cursors
-	# Display managers look these commands up on their own PATH, which need
-	# not include $(BINDIR): write the full path in.
-	install -d $(DESTDIR)/usr/share/xgreeters $(DESTDIR)/usr/share/xsessions
-	sed 's|^Exec=.*|Exec=$(BINDIR)/w2klogon|; /^TryExec/d' config/w2klogon.desktop > $(DESTDIR)/usr/share/xgreeters/w2klogon.desktop
+	# A session entry for any other display manager that may be around.
+	install -d $(DESTDIR)/usr/share/xsessions
 	sed 's|^Exec=.*|Exec=$(BINDIR)/w2k-session|; /^TryExec/d' config/w2k-session.desktop > $(DESTDIR)/usr/share/xsessions/w2k-session.desktop
 
 .PHONY: all clean install swatch

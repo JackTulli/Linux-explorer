@@ -1,0 +1,10 @@
+#%PAM-1.0
+# w2kdm -- the Windows 2000 logon screen (Debian/Ubuntu stacks)
+auth      requisite  pam_nologin.so
+auth      required   pam_env.so readenv=1 user_readenv=0
+@include common-auth
+@include common-account
+session   required   pam_loginuid.so
+session   required   pam_limits.so
+@include common-session
+@include common-password

@@ -9,7 +9,7 @@
 #   ./install.sh --tahoma        fetch Tahoma from the corefonts project
 #   ./install.sh --xinitrc       make w2k-session your startx session
 #   ./install.sh --user-only     only this user's configuration
-#   ./install.sh --full          a bare system too: X server, login manager,
+#   ./install.sh --full          a bare system too: X server, the logon screen,
 #                                sound, guest tools, a browser
 #   ./install.sh --user NAME     the user to configure (when run as root)
 #   ./install.sh --dry-run       say what would be done
@@ -17,8 +17,8 @@
 # What it does, in order:
 #   1. installs the build and runtime packages for your distribution
 #      (Debian/Ubuntu, Fedora/RHEL, Arch, openSUSE, Alpine, Void);
-#   2. builds and installs the shell (make install), the cursor set and a
-#      session entry for display managers;
+#   2. builds and installs the shell (make install), the cursor set, and
+#      with --full the w2kdm service that boots into Log On to Windows;
 #   3. for the user running it: the Windows cursor set, the Xcursor theme
 #      other programs use, Chicago95 for GTK, the Windows style and 2000
 #      palette for Qt, and the file manager as the folder handler.
@@ -87,35 +87,35 @@ if [ "$DO_DEPS" = 1 ]; then
             libxcursor-dev libxft-dev libfontconfig1-dev libfreetype-dev zlib1g-dev \
             libjpeg-dev x11-xserver-utils x11-utils xdg-utils zip unzip tar p7zip-full \
             pulseaudio-utils xterm python3 git curl fonts-dejavu-core dbus-x11 \
-            cabextract qt5ct qt6ct liblightdm-gobject-dev libglib2.0-dev ;;
+            cabextract qt5ct qt6ct libpam0g-dev xauth ;;
     *fedora*|*rhel*|*centos*|*rocky*|*alma*)
         as_root dnf install -y gcc make libX11-devel libXext-devel libXrandr-devel \
             libXcursor-devel libXft-devel fontconfig-devel freetype-devel zlib-devel \
             libjpeg-turbo-devel xrandr xset xsetroot xrdb xmessage xdg-utils zip unzip \
             tar p7zip p7zip-plugins pulseaudio-utils xterm python3 git curl \
-            dejavu-sans-fonts dbus-x11 cabextract qt5ct qt6ct lightdm-gobject-devel glib2-devel ;;
+            dejavu-sans-fonts dbus-x11 cabextract qt5ct qt6ct pam-devel xorg-x11-xauth ;;
     *arch*|*manjaro*|*endeavouros*)
         as_root pacman -Sy --needed --noconfirm base-devel libx11 libxext libxrandr \
             libxcursor libxft fontconfig freetype2 zlib libjpeg-turbo xorg-xrandr \
             xorg-xset xorg-xsetroot xorg-xrdb xorg-xmessage xdg-utils zip unzip tar \
-            p7zip libpulse xterm python git curl ttf-dejavu dbus cabextract qt5ct qt6ct lightdm glib2 ;;
+            p7zip libpulse xterm python git curl ttf-dejavu dbus cabextract qt5ct qt6ct pam xorg-xauth ;;
     *suse*)
         as_root zypper --non-interactive install gcc make libX11-devel libXext-devel \
             libXrandr-devel libXcursor-devel libXft-devel fontconfig-devel \
             freetype2-devel zlib-devel libjpeg8-devel xrandr xset xsetroot xrdb xmessage \
             xdg-utils zip unzip tar p7zip-full pulseaudio-utils xterm python3 git curl \
-            dejavu-fonts dbus-1-x11 cabextract qt5ct qt6ct lightdm-gobject-devel glib2-devel ;;
+            dejavu-fonts dbus-1-x11 cabextract qt5ct qt6ct pam-devel xauth ;;
     *alpine*)
         as_root apk add build-base libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
             libxft-dev fontconfig-dev freetype-dev zlib-dev libjpeg-turbo-dev xrandr \
             xset xsetroot xrdb xmessage xdg-utils zip unzip tar p7zip pulseaudio-utils \
-            xterm python3 git curl font-dejavu dbus-x11 cabextract lightdm-dev glib-dev ;;
+            xterm python3 git curl font-dejavu dbus-x11 cabextract linux-pam-dev xauth ;;
     *void*)
         as_root xbps-install -Sy base-devel libX11-devel libXext-devel libXrandr-devel \
             libXcursor-devel libXft-devel fontconfig-devel freetype-devel zlib-devel \
             libjpeg-turbo-devel xrandr xset xsetroot xrdb xmessage xdg-utils zip unzip \
             tar p7zip pulseaudio-utils xterm python3 git curl dejavu-fonts-ttf dbus \
-            cabextract qt5ct qt6ct lightdm-devel glib-devel ;;
+            cabextract qt5ct qt6ct pam-devel xauth ;;
     *)
         echo "install.sh: I do not know this distribution's package manager." >&2
         echo "  Install: a C compiler and make; the development packages for X11," >&2
@@ -130,35 +130,35 @@ fi
 # a login manager that offers the session, sound, the guest agents a VM
 # wants, user folders, and a browser to pin.
 if [ "$DO_DEPS" = 1 ] && [ "$FULL" = 1 ]; then
-    say "Installing the X server, login manager and desktop essentials"
+    say "Installing the X server and desktop essentials"
     case "$fam" in
     *debian*|*ubuntu*)
         apt_install xserver-xorg xinit xserver-xorg-video-all \
-            xserver-xorg-input-all lightdm lightdm-gtk-greeter xfonts-base \
+            xserver-xorg-input-all xfonts-base \
             fonts-liberation pulseaudio pavucontrol alsa-utils spice-vdagent \
             xdg-user-dirs desktop-file-utils shared-mime-info firefox-esr firefox \
             polkitd pkexec policykit-1 dbus-user-session ;;
     *fedora*|*rhel*|*centos*|*rocky*|*alma*)
         as_root dnf install -y xorg-x11-server-Xorg xorg-x11-xinit xorg-x11-drivers \
-            lightdm lightdm-gtk liberation-fonts pulseaudio-utils pavucontrol \
+            liberation-fonts pulseaudio-utils pavucontrol \
             spice-vdagent xdg-user-dirs desktop-file-utils shared-mime-info firefox \
             polkit ;;
     *arch*|*manjaro*|*endeavouros*)
         as_root pacman -S --needed --noconfirm xorg-server xorg-xinit xf86-video-vesa \
-            xf86-video-vmware xf86-video-qxl lightdm lightdm-gtk-greeter \
+            xf86-video-vmware xf86-video-qxl \
             ttf-liberation pipewire pipewire-pulse pavucontrol spice-vdagent \
             xdg-user-dirs desktop-file-utils shared-mime-info firefox polkit ;;
     *suse*)
-        as_root zypper --non-interactive install xorg-x11-server xinit lightdm \
-            lightdm-gtk-greeter liberation-fonts pulseaudio pavucontrol spice-vdagent \
+        as_root zypper --non-interactive install xorg-x11-server xinit \
+            liberation-fonts pulseaudio pavucontrol spice-vdagent \
             xdg-user-dirs desktop-file-utils shared-mime-info MozillaFirefox polkit ;;
     *alpine*)
-        as_root apk add xorg-server xinit xf86-video-vesa xf86-input-libinput lightdm \
-            lightdm-gtk-greeter font-liberation pulseaudio pavucontrol spice-vdagent \
+        as_root apk add xorg-server xinit xf86-video-vesa xf86-input-libinput \
+            font-liberation pulseaudio pavucontrol spice-vdagent \
             xdg-user-dirs desktop-file-utils shared-mime-info firefox polkit ;;
     *void*)
-        as_root xbps-install -Sy xorg-server xinit xf86-video-vesa lightdm \
-            lightdm-gtk-greeter liberation-fonts-ttf pulseaudio pavucontrol \
+        as_root xbps-install -Sy xorg-server xinit xf86-video-vesa \
+            liberation-fonts-ttf pulseaudio pavucontrol \
             spice-vdagent xdg-user-dirs desktop-file-utils shared-mime-info firefox polkit ;;
     esac
 fi
@@ -176,16 +176,23 @@ if [ "$DO_BUILD" = 1 ]; then
     # A session entry, so display managers list "Windows 2000".
     # (make install wrote the session and greeter entries, with full paths.)
     if [ "$FULL" = 1 ]; then
-        # LightDM logs straight into Windows 2000; the greeter looks the part.
-        as_root install -d /etc/lightdm/lightdm.conf.d
-        # Our logon screen only when it was built against LightDM; else the
-        # GTK greeter, themed. Either way the session is Windows 2000.
-        if "$PREFIX/bin/w2klogon" --check 2>/dev/null; then greeter=w2klogon; else greeter=lightdm-gtk-greeter; fi
-        as_root sh -c "printf '[Seat:*]\nuser-session=w2k-session\ngreeter-session=$greeter\n' > /etc/lightdm/lightdm.conf.d/50-w2k.conf"
-        as_root sh -c "printf '[greeter]\nbackground=#3a6ea5\ntheme-name=Chicago95\nicon-theme-name=Chicago95\nfont-name=Tahoma 8\ncursor-theme-name=Windows2000\n' > /etc/lightdm/lightdm-gtk-greeter.conf"
+        # Our own display manager: the machine boots into "Log On to
+        # Windows". LightDM and friends, if any, stand down.
+        if [ "$DRY" != 1 ] && ! "$PREFIX/bin/w2kdm" --check 2>/dev/null; then
+            echo "  w2kdm was built without PAM (no PAM development headers); nobody could log on." >&2
+            echo "  Install them (libpam0g-dev / pam-devel) and rerun." >&2
+            exit 1
+        fi
+        as_root sh -c "sed 's|^ExecStart=.*|ExecStart=$PREFIX/bin/w2kdm|' '$HERE/config/w2kdm.service' > /etc/systemd/system/w2kdm.service"
+        if [ -f /etc/pam.d/common-auth ]; then pamsrc=w2kdm.pam.debian; else pamsrc=w2kdm.pam.generic; fi
+        as_root install -m644 "$HERE/config/$pamsrc" /etc/pam.d/w2kdm
         if command -v systemctl >/dev/null 2>&1; then
-            as_root systemctl enable lightdm 2>/dev/null || true
-            as_root systemctl set-default graphical.target 2>/dev/null || true
+            for dm in lightdm gdm gdm3 sddm xdm lxdm; do
+                as_root systemctl disable --now "$dm" >/dev/null 2>&1 || true
+            done
+            as_root systemctl daemon-reload
+            as_root systemctl enable w2kdm >/dev/null 2>&1 || true
+            as_root systemctl set-default graphical.target >/dev/null 2>&1 || true
         fi
     fi
 fi
@@ -201,7 +208,7 @@ if [ "$(id -u)" = 0 ] && [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != root ]; th
     [ "$DRY" = 1 ] && opts="$opts --dry-run"
     run su -s /bin/sh "$TARGET_USER" -c "cd '$HERE' && ./install.sh $opts --prefix '$PREFIX'"
     run su -s /bin/sh "$TARGET_USER" -c "xdg-user-dirs-update >/dev/null 2>&1 || true"
-    say "Done. Reboot, or: systemctl start lightdm"
+    say "Done. Reboot, or: systemctl start w2kdm"
     exit 0
 fi
 

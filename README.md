@@ -19,7 +19,7 @@ From a bare system with no desktop at all (a fresh Debian, say), as root:
 
 (the long form is `sh -c "$(curl -fsSL https://raw.githubusercontent.com/JackTulli/Linux-explorer/main/bootstrap.sh)"`)
 
-That installs the X server, LightDM with the Windows 2000 logon screen (`w2klogon`, a LightDM greeter drawn by the shell's own toolkit), sound, guest tools, Firefox and everything below, and reboots into "Log On to Windows".
+That installs the X server, sound, guest tools, Firefox and everything below, plus `w2kdm`: the shell's own display manager, which boots the machine straight into "Log On to Windows" (drawn with the shell's toolkit, checked through PAM) and into the desktop from there. No LightDM, no GDM.
 
 On a system that already has a desktop:
 

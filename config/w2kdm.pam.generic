@@ -1,0 +1,8 @@
+#%PAM-1.0
+# w2kdm -- the Windows 2000 logon screen (Fedora, Arch, openSUSE, Alpine, Void)
+auth      requisite  pam_nologin.so
+auth      include    system-login
+account   include    system-login
+password  include    system-login
+session   required   pam_loginuid.so
+session   include    system-login

@@ -1,0 +1,17 @@
+[Unit]
+Description=Windows 2000 desktop: logon screen and session (w2kdm)
+Documentation=https://github.com/JackTulli/Linux-explorer
+After=systemd-user-sessions.service plymouth-quit-wait.service getty-pre.target
+Conflicts=getty@tty7.service
+Wants=systemd-user-sessions.service
+
+[Service]
+ExecStart=/usr/local/bin/w2kdm
+Restart=always
+RestartSec=2
+KillMode=mixed
+StandardError=journal
+
+[Install]
+WantedBy=graphical.target
+Alias=display-manager.service
