@@ -312,9 +312,37 @@ static int event(W2kWin *w, XEvent *e)
 
 static void blink(void *u) { w2k_edit_blink(u); }
 
-int main(void)
+/* Focus comes to the window once it is on screen; asking before that is a
+ * BadMatch, and Xlib's default answer to any error is to exit -- which,
+ * for a login screen, is a black display. So: focus later, and never die
+ * over an X error. */
+static void take_focus(void *u)
 {
+    (void)u;
+    XSetInputFocus(w2k.dpy, lg.win->win, RevertToPointerRoot, CurrentTime);
+    w2k_del_timer(take_focus, NULL);
+}
+
+static int quiet_xerror(Display *d, XErrorEvent *e)
+{
+    char msg[128];
+    XGetErrorText(d, e->error_code, msg, sizeof msg);
+    fprintf(stderr, "w2klogon: X error ignored: %s (request %d)\n", msg, e->request_code);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    /* "w2klogon --check": 0 if this build can talk to LightDM. */
+    if (argc > 1 && !strcmp(argv[1], "--check")) {
+#ifdef HAVE_LIGHTDM
+        return 0;
+#else
+        return 1;
+#endif
+    }
     if (w2k_init("w2klogon") < 0) return 1;
+    XSetErrorHandler(quiet_xerror);
 
     /* The screen is the window: as wide as the display, no frame. */
     lg.win = w2k_win_new("Log On to Windows", "w2klogon", w2k.sw, w2k.sh, 0);
@@ -370,7 +398,7 @@ int main(void)
     w2k_add_timer(w2k_caret_blink, blink, lg.user);
     w2k_add_timer(w2k_caret_blink, blink, lg.pass);
     w2k_win_show(lg.win);
-    XSetInputFocus(w2k.dpy, lg.win->win, RevertToParent, CurrentTime);
+    w2k_add_timer(200, take_focus, NULL);
     int rc = w2k_run();
     w2k_fini();
     return rc;
