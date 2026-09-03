@@ -1,0 +1,106 @@
+#!/bin/sh
+# w2k-session -- start the Windows 2000 desktop as an X session.
+#
+# Use from ~/.xinitrc ("exec w2k-session"), from a display manager session
+# entry, or inside a nested server:  Xephyr :2 -screen 1024x768 & DISPLAY=:2 w2k-session
+#
+# The window manager owns the desktop, taskbar and Start menu; everything
+# else is an ordinary X client. Anything listed in ~/.w2k/autostart (one
+# command per line) is launched once the desktop is up.
+#
+# When the WM dies, X dies with it and the console scrollback is gone, so
+# everything is logged to ~/.w2k/session.log and anything fatal is also put
+# on screen with xmessage -- which holds the X session open until dismissed.
+
+here=$(dirname "$(readlink -f "$0")")
+# Run-in-place: binaries live in ./bin. Installed: they sit beside this script.
+for d in "$here/bin" "$here"; do
+    [ -d "$d" ] || continue
+    case ":$PATH:" in *":$d:"*) ;; *) PATH="$d:$PATH" ;; esac
+done
+export PATH
+
+LOG="${HOME:-/tmp}/.w2k/session.log"
+mkdir -p "${HOME:-/tmp}/.w2k" 2>/dev/null
+exec >>"$LOG" 2>&1
+echo "=== $(date) : w2k-session starting ==="
+echo "    script : $0 -> $here"
+echo "    DISPLAY: ${DISPLAY:-(unset)}   HOME: ${HOME:-(unset)}"
+echo "    PATH   : $PATH"
+echo "    w2kwm  : $(command -v w2kwm || echo '(not found)')"
+
+# Show a fatal error on screen. xmessage blocks, so X stays up to be read.
+die() {
+    echo "w2k-session: $1"
+    xmessage -center "w2k-session: $1
+
+Details: $LOG" 2>/dev/null
+    exit 1
+}
+
+command -v w2kwm >/dev/null 2>&1 \
+    || die "w2kwm not found. Run 'make' in $here first."
+
+# ------------------------------------------------------------------
+# Make everything else on the desktop match
+# ------------------------------------------------------------------
+# Cursors: applications ask libXcursor for a *theme*, not for the .cur
+# files the toolkit loads, so without this the pointer changes shape and
+# size the moment it crosses into GTK, Qt or Firefox. The size is pinned:
+# Xcursor would otherwise derive one from the screen's DPI, which on a 4K
+# panel means a giant pointer. Rebuild the theme with
+# tools/gencursortheme.py after changing the cursor set.
+export XCURSOR_THEME=Windows2000
+export XCURSOR_SIZE=32
+# Rebuild the theme when the cursor set has changed since it was made, so
+# applications show the same pointers the shell does.
+if [ -d "$HOME/.w2k/cursors" ] && [ -f "$here/tools/gencursortheme.py" ]; then
+    _set=$(ls -t "$HOME/.w2k/cursors" 2>/dev/null | head -1)
+    if [ -n "$_set" ] && [ "$HOME/.w2k/cursors/$_set" -nt "$HOME/.icons/Windows2000/cursors/left_ptr" ]; then
+        python3 "$here/tools/gencursortheme.py" "$HOME/.w2k/cursors" "$HOME/.icons/Windows2000" 2>/dev/null
+    fi
+fi
+xrdb -merge 2>/dev/null <<'XRDB'
+Xcursor.theme: Windows2000
+Xcursor.size: 32
+XRDB
+
+# Widget themes: Chicago95 for GTK (~/.themes), and Qt's own built-in
+# classic style, which is the Windows 9x look and needs nothing installed.
+# ~/.config/qt5ct also carries a Windows 2000 palette, used when
+# QT_QPA_PLATFORMTHEME is set to qt5ct or qt6ct.
+export QT_STYLE_OVERRIDE=Windows
+export GTK_THEME=Chicago95
+# qt5ct/qt6ct carry the Windows 2000 palette install.sh wrote; without them
+# Qt still gets the Windows style from QT_STYLE_OVERRIDE.
+if command -v qt6ct >/dev/null 2>&1; then export QT_QPA_PLATFORMTHEME=qt6ct
+elif command -v qt5ct >/dev/null 2>&1; then export QT_QPA_PLATFORMTHEME=qt5ct
+fi
+
+# Hand the lot to D-Bus, or anything it launches starts with none of it.
+dbus-update-activation-environment --systemd \
+    DISPLAY XAUTHORITY XCURSOR_THEME XCURSOR_SIZE QT_STYLE_OVERRIDE \
+    QT_QPA_PLATFORMTHEME GTK_THEME 2>/dev/null
+
+xsetroot -solid "#3a6ea5" 2>/dev/null
+xset b off 2>/dev/null
+
+autostart=""
+if [ -r "$HOME/.w2k/autostart" ]; then
+    while IFS= read -r line; do
+        case "$line" in ''|'#'*) continue ;; esac
+        autostart="$autostart \"$line\""
+    done < "$HOME/.w2k/autostart"
+fi
+
+# The WM exits when the user logs off (0), shuts down (10) or restarts (11).
+eval w2kwm -- $autostart
+rc=$?
+echo "=== $(date) : w2kwm exited with $rc ==="
+case $rc in
+    0)  ;;
+    10) systemctl poweroff 2>/dev/null || loginctl poweroff 2>/dev/null ;;
+    11) systemctl reboot   2>/dev/null || loginctl reboot   2>/dev/null ;;
+    *)  die "w2kwm exited with status $rc (see the log for its last words)." ;;
+esac
+exit 0

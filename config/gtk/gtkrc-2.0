@@ -1,0 +1,11 @@
+gtk-theme-name="Chicago95"
+gtk-icon-theme-name="Chicago95"
+gtk-font-name="Tahoma 8"
+gtk-cursor-theme-name="Windows2000"
+gtk-cursor-theme-size=32
+gtk-toolbar-style=GTK_TOOLBAR_BOTH
+gtk-toolbar-icon-size=GTK_ICON_SIZE_LARGE_TOOLBAR
+gtk-button-images=1
+gtk-menu-images=1
+gtk-enable-event-sounds=1
+gtk-enable-input-feedback-sounds=1

@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Bake the real Windows 2000 shell icons into lib/icon_data.inc.
+
+Reads icons/win2k/*.ico, picks the 16x16 and 32x32 images (highest colour
+depth available at each size), and emits them as RGBA byte arrays keyed by
+the desktop's ICO_* ids. Slots not listed here keep their hand-drawn art.
+"""
+import os, sys, zlib
+from PIL import Image
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+SRC = os.path.join(ROOT, "icons", "win2k")
+SRC98 = os.path.join(ROOT, "icons", "win98")
+SRC95 = os.path.join(ROOT, "icons", "win95")
+OUT = os.path.join(ROOT, "lib", "icon_data.inc")
+
+# ICO_* id -> source file (without .ico)
+MAP = {
+    "ICO_APP":          "w2k_default_application",
+    "ICO_FOLDER":       "w2k_folder_closed",
+    "ICO_FOLDER_OPEN":  "w2k_folder_open",
+    "ICO_FILE":         "w2k_default_icon",
+    "ICO_FILE_TEXT":    "w2k_text_document",
+    "ICO_MYCOMPUTER":   "w2k_my_computer",
+    "ICO_DRIVE_HDD":    "w2k_hard_drive",
+    "ICO_DRIVE_FLOPPY": "w2k_floppy_drive_3½",
+    "ICO_DRIVE_CD":     "w2k_cd-rom_drive",
+    "ICO_NOTEPAD":      "w2k_notepad_1",
+    "ICO_EXPLORER":     "w2k_search",
+    "ICO_TASKMGR":      ("computer_taskmgr_1.png", "computer_taskmgr_0.png"),
+    "ICO_MYDOCS":       "w2k_my_documents",
+    "ICO_RECYCLE":      "w2k_recycle_bin_empty",
+    "ICO_NETWORK":      "w2k_network_neighborhood",
+    "ICO_PROGRAMS":     "w2k_programs",
+    "ICO_DOCUMENTS":    "w2k_documents",
+    "ICO_SETTINGS":     "w2k_settings",
+    "ICO_SEARCH":       "w2k_find",
+    "ICO_HELP":         "w2k_help",
+    "ICO_RUN":          "w2k_run",
+    "ICO_SHUTDOWN":     "w2k_shut_down",
+    "ICO_LOGOFF":       "w2k_log_off",
+    "ICO_CONTROLPANEL": "w2k_control_panel",
+    "ICO_TERMINAL":     "w2k_ms-dos_application",
+    "ICO_PAINT":        "w2k_paint",
+    "ICO_CHARMAP":      "w2k_font",
+    "ICO_INFO":         "w2k_info",
+    "ICO_WARNING":      "w2k_warning",
+    "ICO_ACCESSORIES":  "w2k_program_group",
+    "ICO_STARTFLAG":    "w2k_startflag",   # tools/genstartflag.py
+    "ICO_DESKTOP":      "w2k_desktop",
+    "ICO_WINUPDATE":    "w2k_windows_update",
+    # Document types, by extension (see lib/filetype.c)
+    "ICO_FILE_BITMAP":  "w2k_bitmap_image",
+    "ICO_FILE_JPEG":    "w2k_jpeg_image",
+    "ICO_FILE_GIF":     "w2k_gif_image",
+    "ICO_FILE_HTML":    "w2k_internet_document",
+    "ICO_FILE_WAVE":    "w2k_wave_sound",
+    "ICO_FILE_MIDI":    "w2k_midi_sequence",
+    "ICO_FILE_MOVIE":   "w2k_movie_clip",
+    "ICO_FILE_MEDIA":   "w2k_media_clip",
+    "ICO_FILE_ZIP":     "w2k_zip_file",
+    "ICO_FILE_INI":     "w2k_ini_&_inf",
+    "ICO_FILE_BAT":     "w2k_ms-dos_batch_file",
+    "ICO_FILE_SYS":     "w2k_system_file",
+    "ICO_FILE_RTF":     "w2k_rich_text_format",
+    "ICO_FILE_FONT":    "w2k_font_2",
+    "ICO_FILE_UNKNOWN": "w2k_unknown_filetype",
+    "ICO_LINK_OVERLAY": "w2k_shortcut_overlay",
+    "ICO_SPEAKER":      "w2k_3",              # the speaker, for Sounds
+    "ICO_FAVORITES":    "w2k_favorites",
+    "ICO_FONTS_FOLDER": "w2k_fonts",
+    "ICO_CURSORFILE":   "w2k_unknown_18",     # a .cur document, for Mouse
+    "ICO_RECYCLE_FULL": "w2k_recycle_bin_full",
+    # user32 / applet icons Windows 2000 carried over from 98 unchanged
+    "ICO_ERROR":        ("msg_error_2.png", "msg_error_0.png"),
+    "ICO_QUESTION":     ("msg_question_2.png", "msg_question_0.png"),
+    "ICO_CALC":         ("calculator_1.png", "calculator_0.png"),
+    "ICO_SNIP":         ("snip_16.png", "snip_32.png"),   # drawn: scissors over a screen
+    # Explorer toolbar (16px art; 32px is scaled): comctl32 / IE4 shell bitmaps
+    "ICO_BACK":         ["go-previous.png"],
+    "ICO_FORWARD":      ["go-next.png"],
+    "ICO_UP":           ["go-up.png"],
+    "ICO_CUT":          ["edit-cut.png"],
+    "ICO_COPY":         ["edit-copy.png"],
+    "ICO_PASTE":        ["edit-paste.png"],
+    "ICO_DELETE":       ["edit-delete.png"],
+    "ICO_PROPERTIES":   ["document-properties.png"],
+    "ICO_VIEWS":        ["view-list-details.png"],
+}
+
+def best(im, size):
+    """Highest-depth image at `size`, or the nearest size scaled (nearest)."""
+    sizes = im.ico.sizes()
+    if size in sizes:
+        # PIL returns the highest bit depth for a size by default.
+        return im.ico.getimage(size).convert("RGBA")
+    src = min(sizes, key=lambda s: abs(s[0] - size[0]))
+    return im.ico.getimage(src).convert("RGBA").resize(size, Image.NEAREST)
+
+def c_array(name, img):
+    """Deflated RGBA. Raw, the set is 220 KB of .rodata in every binary and
+    a program draws a dozen icons of it; icon.c inflates on first use."""
+    data = zlib.compress(img.tobytes(), 9)
+    lines = [f"static const unsigned char {name}_z[{len(data)}] = {{"]
+    for i in range(0, len(data), 20):
+        lines.append("    " + ",".join(str(b) for b in data[i:i+20]) + ",")
+    lines.append("};")
+    return "\n".join(lines)
+
+def main():
+    out = ["/* icon_data.inc -- GENERATED by tools/genicons.py from icons/win2k/.",
+           " * The original Windows 2000 shell icons, as deflated RGBA."
+           " Do not edit. */", ""]
+    table = []
+    for ident, fname in MAP.items():
+        slug = ident[4:].lower()
+        if isinstance(fname, list):                  # [16px png] from win95/
+            i16 = Image.open(os.path.join(SRC95, fname[0])).convert("RGBA")
+            if i16.size != (16, 16): i16 = i16.resize((16, 16), Image.NEAREST)
+            i32 = i16.resize((32, 32), Image.NEAREST)
+        elif isinstance(fname, tuple):               # (16px png, 32px png)
+            p16, p32 = (os.path.join(SRC98, f) for f in fname)
+            i16 = Image.open(p16).convert("RGBA")
+            i32 = Image.open(p32).convert("RGBA")
+            assert i16.size == (16, 16) and i32.size == (32, 32), fname
+        else:
+            path = os.path.join(SRC, fname + ".ico")
+            if not os.path.exists(path):
+                sys.exit(f"missing {path}")
+            im = Image.open(path)
+            i16 = best(im, (16, 16)); i32 = best(im, (32, 32))
+        out.append(c_array(f"real_{slug}_16", i16))
+        out.append(c_array(f"real_{slug}_32", i32))
+        out.append("")
+        table.append(f"    [{ident}] = {{ real_{slug}_16_z, real_{slug}_32_z,"
+                     f" sizeof real_{slug}_16_z, sizeof real_{slug}_32_z }},")
+    out.append("static const struct { const unsigned char *p16, *p32; int n16, n32; }")
+    out.append("real_icons[N_ICONS] = {")
+    out += table
+    out.append("};")
+    open(OUT, "w").write("\n".join(out) + "\n")
+    print(f"wrote {OUT}: {len(MAP)} icons, {os.path.getsize(OUT)//1024} KB")
+
+main()
