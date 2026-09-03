@@ -58,6 +58,18 @@ as_root() {
     else echo "install.sh: need root for: $*" >&2; exit 1; fi
 }
 backup() { [ -e "$1" ] && [ ! -e "$1.pre-w2k" ] && run cp -a "$1" "$1.pre-w2k" || true; }
+# apt refuses the whole list over one unknown name, and names come and go
+# between releases (policykit-1 became polkitd); install what the archive
+# actually has and say what it lacked.
+apt_install() {
+    have='' miss=''
+    for p in "$@"; do
+        if apt-cache show "$p" >/dev/null 2>&1; then have="$have $p"; else miss="$miss $p"; fi
+    done
+    [ -z "$miss" ] || echo "  (not in this release, skipped:$miss)"
+    # shellcheck disable=SC2086
+    as_root apt-get install -y $have
+}
 
 # ------------------------------------------------------------------
 # 1. Packages
@@ -69,7 +81,7 @@ if [ "$DO_DEPS" = 1 ]; then
     case "$fam" in
     *debian*|*ubuntu*)
         as_root apt-get update
-        as_root apt-get install -y build-essential libx11-dev libxext-dev libxrandr-dev \
+        apt_install build-essential libx11-dev libxext-dev libxrandr-dev \
             libxcursor-dev libxft-dev libfontconfig1-dev libfreetype-dev zlib1g-dev \
             libjpeg-dev x11-xserver-utils x11-utils xdg-utils zip unzip tar p7zip-full \
             pulseaudio-utils xterm python3 git curl fonts-dejavu-core dbus-x11 \
@@ -119,11 +131,11 @@ if [ "$DO_DEPS" = 1 ] && [ "$FULL" = 1 ]; then
     say "Installing the X server, login manager and desktop essentials"
     case "$fam" in
     *debian*|*ubuntu*)
-        as_root apt-get install -y xserver-xorg xinit xserver-xorg-video-all \
+        apt_install xserver-xorg xinit xserver-xorg-video-all \
             xserver-xorg-input-all lightdm lightdm-gtk-greeter xfonts-base \
             fonts-liberation pulseaudio pavucontrol alsa-utils spice-vdagent \
-            xdg-user-dirs desktop-file-utils shared-mime-info firefox-esr \
-            policykit-1 dbus-user-session ;;
+            xdg-user-dirs desktop-file-utils shared-mime-info firefox-esr firefox \
+            polkitd pkexec policykit-1 dbus-user-session ;;
     *fedora*|*rhel*|*centos*|*rocky*|*alma*)
         as_root dnf install -y xorg-x11-server-Xorg xorg-x11-xinit xorg-x11-drivers \
             lightdm lightdm-gtk liberation-fonts pulseaudio-utils pavucontrol \
