@@ -22,8 +22,9 @@ WM_OBJ  := $(WM_SRC:.c=.o)
 APPS    := $(filter-out bin/w2kswatch,$(patsubst apps/%.c,bin/%,$(wildcard apps/*.c)))
 # The logon screen talks to LightDM when its library is about; without it
 # the greeter still builds, as the picture alone.
-LIGHTDM_CFLAGS := $(shell pkg-config --cflags liblightdm-gobject-1 2>/dev/null)
-LIGHTDM_LIBS   := $(shell pkg-config --libs liblightdm-gobject-1 2>/dev/null)
+# liblightdm's .pc names only itself; the GObject calls need GLib's too.
+LIGHTDM_CFLAGS := $(shell pkg-config --cflags liblightdm-gobject-1 gobject-2.0 glib-2.0 2>/dev/null)
+LIGHTDM_LIBS   := $(shell pkg-config --libs liblightdm-gobject-1 gobject-2.0 glib-2.0 2>/dev/null)
 ifneq ($(LIGHTDM_LIBS),)
 apps/w2klogon.o: CFLAGS += -DHAVE_LIGHTDM $(LIGHTDM_CFLAGS)
 bin/w2klogon: LDLIBS += $(LIGHTDM_LIBS)
