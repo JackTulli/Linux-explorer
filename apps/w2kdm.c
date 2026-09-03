@@ -556,6 +556,8 @@ int main(int argc, char **argv)
     if (w2k_init("w2kdm") < 0) { log_line("cannot open the display"); return 1; }
     XSetErrorHandler(quiet_xerror);
     XSetIOErrorHandler(quiet_xio);
+    /* The Windows arrow on the root as well, from the first moment. */
+    XDefineCursor(w2k.dpy, w2k.root, w2k.cur_arrow);
 
     if (getenv("W2K_RENDER")) {          /* a picture of the screen */
         char u[64];

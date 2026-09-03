@@ -237,6 +237,21 @@ if command -v python3 >/dev/null 2>&1; then
     run python3 "$HERE/tools/gencursortheme.py" "$HOME/.w2k/cursors" "$HOME/.icons/Windows2000"
     backup "$HOME/.icons/default/index.theme"
     run sh -c "printf '[Icon Theme]\nName=Default\nInherits=Windows2000\n' > '$HOME/.icons/default/index.theme'"
+    # ~/.local/share/icons comes first on Xcursor's path; a theme there of
+    # the same name would win, so point that at ours as well.
+    run mkdir -p "$HOME/.local/share/icons"
+    [ -e "$HOME/.local/share/icons/Windows2000" ] || run ln -s "$HOME/.icons/Windows2000" "$HOME/.local/share/icons/Windows2000"
+    [ -e "$HOME/.local/share/icons/default" ] || run ln -s "$HOME/.icons/default" "$HOME/.local/share/icons/default"
+fi
+# Say what the pointer setup came to, so a wrong pointer is not a mystery.
+if [ "$DRY" != 1 ]; then
+    ncur=$(ls "$HOME/.w2k/cursors"/*.cur 2>/dev/null | wc -l)
+    nth=$(ls "$HOME/.icons/Windows2000/cursors" 2>/dev/null | wc -l)
+    if [ "$ncur" -gt 0 ] && [ "$nth" -gt 0 ]; then
+        echo "  Cursors: $ncur Windows cursors in ~/.w2k/cursors, Xcursor theme with $nth names"
+    else
+        echo "  WARNING: the cursor set did not install ($ncur .cur files, theme with $nth names)" >&2
+    fi
 fi
 
 # Chicago95: the Windows 95/2000 look for GTK programs, and its icons.

@@ -7,6 +7,7 @@ Wants=systemd-user-sessions.service
 
 [Service]
 ExecStart=/usr/local/bin/w2kdm
+Environment=XCURSOR_THEME=Windows2000 XCURSOR_SIZE=32
 Restart=always
 RestartSec=2
 KillMode=mixed
