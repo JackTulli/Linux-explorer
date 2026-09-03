@@ -413,7 +413,7 @@ void w2k_cursors_init(void)
     for (int r = 0; r < N_ROLES; r++)
         *role_slot(r) = XCreateFontCursor(w2k.dpy, role_info[r].font_shape);
 
-    const char *dirs[2];
+    const char *dirs[3];
     char home_dir[512];
     int nd = 0;
     const char *home = getenv("HOME");
@@ -422,12 +422,20 @@ void w2k_cursors_init(void)
         dirs[nd++] = home_dir;
     }
     dirs[nd++] = "/usr/local/share/w2k/cursors";
+    dirs[nd++] = "/usr/share/w2k/cursors";
 
     for (int i = 0; i < nd; i++) {
         int n = load_from_dir(dirs[i]);
-        if (getenv("W2K_DEBUG"))
-            fprintf(stderr, "w2k: cursors: %d/%d roles from %s\n",
-                    n, N_ROLES, dirs[i]);
-        if (n) return;
+        if (n) {
+            /* One line in the session log says where the pointer came from,
+             * so a machine showing the wrong one can be told apart from a
+             * machine that never found the set. */
+            if (getenv("W2K_DEBUG") || !getenv("W2K_QUIET"))
+                fprintf(stderr, "w2k: cursors: %d/%d roles from %s\n", n, N_ROLES, dirs[i]);
+            return;
+        }
     }
+    fprintf(stderr, "w2k: cursors: no cursor set found (looked in %s%s%s); "
+            "using the X server's own\n", home ? home_dir : "", home ? ", " : "",
+            "/usr/local/share/w2k/cursors, /usr/share/w2k/cursors");
 }

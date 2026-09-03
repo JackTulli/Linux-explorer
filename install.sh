@@ -173,6 +173,16 @@ if [ "$DO_BUILD" = 1 ]; then
     as_root make -C "$HERE" -s install PREFIX="$PREFIX"
     as_root install -d "$PREFIX/share/w2k/cursors"
     as_root sh -c "install -m644 '$HERE'/cursors/* '$PREFIX/share/w2k/cursors/'"
+    # The Xcursor theme for every other program, system-wide too (Xcursor
+    # looks in /usr/share/icons but not under an arbitrary prefix), and as
+    # the system default when no other default is set.
+    if command -v python3 >/dev/null 2>&1; then
+        as_root python3 "$HERE/tools/gencursortheme.py" "$HERE/cursors" /usr/share/icons/Windows2000
+        if [ ! -e /usr/share/icons/default/index.theme ] || [ "$DRY" = 1 ]; then
+            as_root install -d /usr/share/icons/default
+            as_root sh -c "printf '[Icon Theme]\nName=Default\nInherits=Windows2000\n' > /usr/share/icons/default/index.theme"
+        fi
+    fi
     # A session entry, so display managers list "Windows 2000".
     # (make install wrote the session and greeter entries, with full paths.)
     if [ "$FULL" = 1 ]; then
