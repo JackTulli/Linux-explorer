@@ -178,7 +178,10 @@ if [ "$DO_BUILD" = 1 ]; then
     if [ "$FULL" = 1 ]; then
         # LightDM logs straight into Windows 2000; the greeter looks the part.
         as_root install -d /etc/lightdm/lightdm.conf.d
-        as_root sh -c "printf '[Seat:*]\nuser-session=w2k-session\ngreeter-session=w2klogon\n' > /etc/lightdm/lightdm.conf.d/50-w2k.conf"
+        # Our logon screen only when it was built against LightDM; else the
+        # GTK greeter, themed. Either way the session is Windows 2000.
+        if "$PREFIX/bin/w2klogon" --check 2>/dev/null; then greeter=w2klogon; else greeter=lightdm-gtk-greeter; fi
+        as_root sh -c "printf '[Seat:*]\nuser-session=w2k-session\ngreeter-session=$greeter\n' > /etc/lightdm/lightdm.conf.d/50-w2k.conf"
         as_root sh -c "printf '[greeter]\nbackground=#3a6ea5\ntheme-name=Chicago95\nicon-theme-name=Chicago95\nfont-name=Tahoma 8\ncursor-theme-name=Windows2000\n' > /etc/lightdm/lightdm-gtk-greeter.conf"
         if command -v systemctl >/dev/null 2>&1; then
             as_root systemctl enable lightdm 2>/dev/null || true
