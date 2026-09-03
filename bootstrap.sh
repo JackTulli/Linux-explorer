@@ -2,7 +2,7 @@
 # bootstrap.sh -- from a bare Debian (or any of the distributions install.sh
 # knows) to the Windows 2000 desktop in one command, run as root:
 #
-#   curl -fsSL https://raw.githubusercontent.com/YOURNAME/Linux-explorer/main/bootstrap.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/JackTulli/Linux-explorer/main/bootstrap.sh | sh
 #
 # It installs git, fetches the repository into /usr/local/src, and runs
 # install.sh --full: the X server, LightDM logging straight into the
@@ -10,17 +10,17 @@
 # set, Chicago95 for GTK, the Windows 2000 palette for Qt and Tahoma --
 # all of it for the first ordinary user on the machine (or W2K_USER).
 #
-#   W2K_REPO=https://github.com/YOURNAME/Linux-explorer   where to fetch from
+#   W2K_REPO=https://github.com/JackTulli/Linux-explorer   where to fetch from
 #   W2K_USER=name                                          who to set up
 set -e
-REPO=${W2K_REPO:-https://github.com/YOURNAME/Linux-explorer}
+REPO=${W2K_REPO:-https://github.com/JackTulli/Linux-explorer}
 SRC=/usr/local/src/Linux-explorer
 
 if [ "$(id -u)" != 0 ]; then
     echo "bootstrap.sh: run this as root (su -, or sudo sh)" >&2
     exit 1
 fi
-case "$REPO" in *YOURNAME*)
+case "$REPO" in *JackTulli*)
     echo "bootstrap.sh: set W2K_REPO to the repository's URL first, e.g." >&2
     echo "  W2K_REPO=https://github.com/you/Linux-explorer sh bootstrap.sh" >&2
     exit 1 ;;
