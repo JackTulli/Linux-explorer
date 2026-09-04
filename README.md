@@ -97,7 +97,8 @@ Notifications from every program appear as the yellow balloon over the
 notification area: the desktop provides the `org.freedesktop.Notifications`
 service, so Firefox, mail, `notify-send` and anything using libnotify all
 show the same balloon, one after another, with a close box and a click to
-act on it.
+act on it. `w2knotify "Title" "Text"` sends one from a script without
+any of that.
 
 Other programs match: GTK 2/3/4 get the Chicago95 theme and icons, Qt gets
 the Windows style with a Windows 2000 palette (qt5ct/qt6ct), every program
