@@ -47,6 +47,7 @@ void w2k_list_clear(W2kList *l)
 void w2k_list_free(W2kList *l)
 {
     if (!l) return;
+    w2k_scroll_release(&l->vsb);         /* a held arrow's timer dies with it */
     w2k_list_clear(l);
     for (int c = 0; c < l->ncols; c++) free(l->col[c].title);
     free(l->items);
@@ -764,6 +765,7 @@ static void free_node(W2kTreeNode *n)
 void w2k_tree_free(W2kTree *t)
 {
     if (!t) return;
+    w2k_scroll_release(&t->vsb);
     free_node(t->root->child);
     free(t->root);
     free(t);

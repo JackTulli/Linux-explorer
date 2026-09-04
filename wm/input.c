@@ -199,9 +199,10 @@ static void drag_loop(Client *c, int mode, int px, int py, int keyboard)
         outline_draw(ox, oy, ow, oh);
     }
 
-    int done = 0;
+    int done = 0, gone = 0;
+    Window cw = c->win;
     long last = 0;
-    while (!done) {
+    while (!done && running) {
         XEvent e;
         XNextEvent(w2k.dpy, &e);
         switch (e.type) {
@@ -265,8 +266,10 @@ static void drag_loop(Client *c, int mode, int px, int py, int keyboard)
         default:
             /* Everything else -- exposes of the windows we are dragging over,
              * map requests, title changes -- goes to the normal dispatcher so
-             * the desktop keeps working mid-drag. */
+             * the desktop keeps working mid-drag. The window being dragged
+             * may be destroyed by it: then the drag is over. */
             wm_handle_event(&e);
+            if (client_find(cw) != c) { gone = 1; done = 1; }
             break;
         }
     }
@@ -275,8 +278,9 @@ static void drag_loop(Client *c, int mode, int px, int py, int keyboard)
         outline_draw(ox, oy, ow, oh);          /* erase */
         XUngrabServer(w2k.dpy);
         /* Now put the window where the wire frame ended up. */
-        client_move_resize(c, ox + b, oy + b + cap,
-                           ow - 2 * b, oh - 2 * b - cap);
+        if (!gone)
+            client_move_resize(c, ox + b, oy + b + cap,
+                               ow - 2 * b, oh - 2 * b - cap);
     }
     XUngrabPointer(w2k.dpy, CurrentTime);
 }
@@ -322,8 +326,10 @@ void sysmenu_popup(Client *c, int x, int y)
     w2k_menu_item(m, SC_CLOSE, "&Close", "Alt+F4", ICO_NONE);
     w2k_menu_default(m);
 
+    Window cw = c->win;
     int id = w2k_menu_popup(m, x, y, MPOP_LEFT);
     w2k_menu_free(m);
+    if (client_find(cw) != c) return;      /* closed while the menu was up */
 
     Window r, ch;
     int rx, ry, wx, wy;
@@ -429,7 +435,7 @@ void alt_tab(int backwards)
     XGrabKeyboard(w2k.dpy, w2k.root, False, GrabModeAsync, GrabModeAsync,
                   CurrentTime);
 
-    for (int done = 0; !done; ) {
+    for (int done = 0; !done && running; ) {
         XEvent e;
         XNextEvent(w2k.dpy, &e);
         if (e.type == KeyPress) {
@@ -451,6 +457,17 @@ void alt_tab(int backwards)
             switch_paint(win, w, h, list, n, sel);
         } else if (e.type != KeyPress && e.type != KeyRelease) {
             wm_handle_event(&e);
+            /* Anything that closed meanwhile leaves the list. */
+            for (int i = 0; i < n; ) {
+                int alive = 0;
+                for (Client *k = clients; k; k = k->next) if (k == list[i]) alive = 1;
+                if (alive) { i++; continue; }
+                for (int j = i; j + 1 < n; j++) list[j] = list[j + 1];
+                n--;
+                if (sel > i || sel >= n) sel = sel > 0 ? sel - 1 : 0;
+                switch_paint(win, w, h, list, n, sel);
+            }
+            if (!n) done = 1;
         }
     }
     XUngrabKeyboard(w2k.dpy, CurrentTime);
@@ -510,15 +527,33 @@ static void show_desktop(void)
     }
 }
 
+/* The Windows key opens the Start menu when pressed and released on its
+ * own; pressed with another key it is the Win+E, Win+R... modifier and
+ * must not open anything. */
+static int super_down, super_used;
+
+void handle_key_release(XKeyEvent *e)
+{
+    KeySym ks = XLookupKeysym(e, 0);
+    if (ks != XK_Super_L && ks != XK_Super_R) return;
+    if (super_down && !super_used) {
+        if (startmenu_is_open()) startmenu_close(); else startmenu_open();
+    }
+    super_down = 0;
+    super_used = 0;
+}
+
 void handle_key(XKeyEvent *e)
 {
     KeySym ks = XLookupKeysym(e, 0);
     unsigned mod = e->state & (ShiftMask | ControlMask | Mod1Mask | Mod4Mask);
 
     if (ks == XK_Super_L || ks == XK_Super_R) {
-        if (startmenu_is_open()) startmenu_close(); else startmenu_open();
+        super_down = 1;
+        super_used = 0;
         return;
     }
+    if (mod & Mod4Mask) super_used = 1;
     if ((mod & Mod4Mask) && focused &&
         (ks == XK_Left || ks == XK_Right || ks == XK_Up || ks == XK_Down)) {
         int cx = focused->x + focused->w / 2, cy = focused->y + focused->h / 2;

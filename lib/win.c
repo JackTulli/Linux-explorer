@@ -18,6 +18,13 @@ static int ntimers;
 
 void w2k_add_timer(int ms, void (*fn)(void *), void *user)
 {
+    /* The same timer added twice is one timer, re-armed. */
+    for (int i = 0; i < ntimers; i++)
+        if (timers[i].fn == fn && timers[i].user == user) {
+            timers[i].ms = ms;
+            timers[i].due = w2k_now_ms() + ms;
+            return;
+        }
     if (ntimers >= 8) return;
     timers[ntimers].ms = ms;
     timers[ntimers].fn = fn;
@@ -198,6 +205,7 @@ void w2k_win_destroy(W2kWin *w)
     W2kWin **p = &win_list;
     while (*p) { if (*p == w) { *p = w->next; break; } p = &(*p)->next; }
     if (w->buf) w2k_free_pixmap(w->buf);
+    w2k_font_forget(w->win);
     XDestroyWindow(w2k.dpy, w->win);
     free(w);
 }

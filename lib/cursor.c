@@ -421,7 +421,7 @@ void w2k_cursors_init(void)
         snprintf(home_dir, sizeof home_dir, "%s/.w2k/cursors", home);
         dirs[nd++] = home_dir;
     }
-    dirs[nd++] = "/usr/local/share/w2k/cursors";
+    dirs[nd++] = W2K_PREFIX "/share/w2k/cursors";
     dirs[nd++] = "/usr/share/w2k/cursors";
 
     for (int i = 0; i < nd; i++) {
@@ -437,5 +437,5 @@ void w2k_cursors_init(void)
     }
     fprintf(stderr, "w2k: cursors: no cursor set found (looked in %s%s%s); "
             "using the X server's own\n", home ? home_dir : "", home ? ", " : "",
-            "/usr/local/share/w2k/cursors, /usr/share/w2k/cursors");
+            W2K_PREFIX "/share/w2k/cursors, /usr/share/w2k/cursors");
 }

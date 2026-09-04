@@ -8,6 +8,8 @@ CC      ?= cc
 CFLAGS  ?= -O2 -g
 CFLAGS  += -std=c99 -Wall -Wextra -Wno-unused-parameter -Iinclude
 CPPFLAGS += -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
+# Where skins, cursors, icons and wallpapers are looked for at run time.
+CPPFLAGS += -DW2K_PREFIX=\"$(PREFIX)\"
 CFLAGS  += -I/usr/include/freetype2
 LDLIBS  := -lX11 -lXext -lXrandr -lXcursor -lXft -lfontconfig -lz -ljpeg -lm
 
@@ -65,9 +67,11 @@ install: all
 	install -m644 skins/*.png $(DESTDIR)$(PREFIX)/share/w2k/skins
 	install -d $(DESTDIR)$(PREFIX)/share/w2k/cursors
 	install -m644 cursors/* $(DESTDIR)$(PREFIX)/share/w2k/cursors
-	# A session entry for any other display manager that may be around.
-	install -d $(DESTDIR)/usr/share/xsessions
-	sed 's|^Exec=.*|Exec=$(BINDIR)/w2k-session|; /^TryExec/d' config/w2k-session.desktop > $(DESTDIR)/usr/share/xsessions/w2k-session.desktop
+	# A session entry for any other display manager that may be around --
+	# where that directory can be written (a user prefix cannot).
+	@if install -d $(DESTDIR)/usr/share/xsessions 2>/dev/null; then \
+	    sed 's|^Exec=.*|Exec=$(BINDIR)/w2k-session|; /^TryExec/d' config/w2k-session.desktop > $(DESTDIR)/usr/share/xsessions/w2k-session.desktop; \
+	else echo "(no /usr/share/xsessions entry: not writable)"; fi
 
 .PHONY: all clean install swatch
 .PRECIOUS: apps/%.o

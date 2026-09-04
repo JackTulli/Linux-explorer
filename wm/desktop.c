@@ -203,7 +203,11 @@ void desktop_scan(void)
             snprintf(d->path, sizeof d->path, "%.1023s", full);
 
             size_t len = strlen(de->d_name);
-            if (len > 8 && !strcmp(de->d_name + len - 8, ".desktop")) {
+            /* A .desktop file is a shortcut only when marked executable
+             * (the rule every desktop applies): anything else with the
+             * name is an ordinary file, shown as one. */
+            if (len > 8 && !strcmp(de->d_name + len - 8, ".desktop") &&
+                access(full, X_OK) == 0) {
                 if (!read_shortcut(full, d)) continue;
             } else {
                 struct stat st;
@@ -211,9 +215,11 @@ void desktop_scan(void)
                 char shown[256];
                 w2k_file_display_name(de->d_name, isdir, shown, sizeof shown);
                 snprintf(d->label, sizeof d->label, "%.127s", shown);
-                snprintf(d->cmd, sizeof d->cmd, "%s '%.480s'",
-                         isdir ? "w2kexplorer" : "", full);
-                if (!isdir) w2k_assoc_command(full, d->cmd, sizeof d->cmd);
+                if (isdir) {
+                    char q[2200];
+                    w2k_shell_quote(full, q, sizeof q);
+                    snprintf(d->cmd, sizeof d->cmd, "w2kexplorer %s", q);
+                } else w2k_assoc_command(full, d->cmd, sizeof d->cmd);
                 d->icon = w2k_file_icon_stat(full, de->d_name, isdir);
             }
             nicons++;
@@ -573,8 +579,9 @@ enum { DM_ARRANGE = 1, DM_REFRESH, DM_NEWFOLDER, DM_PROPS, DM_EXPLORE,
 static void desktop_open(int i)
 {
     if (icons[i].cmd[0]) { wm_spawn(icons[i].cmd); return; }
-    char cmd[1200];
-    snprintf(cmd, sizeof cmd, "w2kexplorer '%s'", w2k_trash_files_dir());
+    char cmd[2400], q[2200];
+    w2k_shell_quote(w2k_trash_files_dir(), q, sizeof q);
+    snprintf(cmd, sizeof cmd, "w2kexplorer %s", q);
     wm_spawn(cmd);
 }
 

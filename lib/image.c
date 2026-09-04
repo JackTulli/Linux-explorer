@@ -32,11 +32,13 @@ unsigned char *w2k_jpeg_load(const char *path, int *out_w, int *out_h)
     struct jpeg_bail err;
     /* Both buffers must be visible to the error path: libjpeg longjmps out
      * of the middle of the decode on a corrupt file. */
-    unsigned char *rgba = NULL, *line = NULL;
+    unsigned char *volatile rgba = NULL, *volatile line = NULL;
 
     cinfo.err = jpeg_std_error(&err.mgr);
     err.mgr.error_exit = jpeg_bail_out;
     if (setjmp(err.back)) {
+        free(rgba);
+        free(line);
         jpeg_destroy_decompress(&cinfo);
         free(rgba);
         free(line);
@@ -67,7 +69,8 @@ unsigned char *w2k_jpeg_load(const char *path, int *out_w, int *out_h)
 
     while (cinfo.output_scanline < cinfo.output_height) {
         int y = (int)cinfo.output_scanline;
-        jpeg_read_scanlines(&cinfo, &line, 1);
+        JSAMPROW lp = line;
+        jpeg_read_scanlines(&cinfo, &lp, 1);
         for (int x = 0; x < w; x++) {
             unsigned char *o = rgba + ((size_t)y * w + x) * 4;
             o[0] = line[x * 3];
@@ -127,9 +130,10 @@ int w2k_jpeg_save(const char *path, const unsigned char *rgba, int w, int h)
     struct jpeg_bail err;
     c.err = jpeg_std_error(&err.mgr);
     err.mgr.error_exit = jpeg_bail_out;
-    unsigned char *row = malloc((size_t)w * 3);
-    if (!row || setjmp(err.back)) { free(row); fclose(f); return 0; }
+    unsigned char *volatile row = malloc((size_t)w * 3);
+    if (!row) { fclose(f); return 0; }
     jpeg_create_compress(&c);
+    if (setjmp(err.back)) { jpeg_destroy_compress(&c); free(row); fclose(f); return 0; }
     jpeg_stdio_dest(&c, f);
     c.image_width = (JDIMENSION)w;
     c.image_height = (JDIMENSION)h;

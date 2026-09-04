@@ -318,6 +318,12 @@ static Pixmap menu_buffer(Window win, int w, int h)
     return menu_buf[free_slot].pm;
 }
 
+static int menu_buffer_cached(Window win)
+{
+    for (int i = 0; i < 8; i++) if (menu_buf[i].win == win) return 1;
+    return 0;
+}
+
 /* Called when a menu window is destroyed. */
 static void menu_buffer_drop(Window win)
 {
@@ -539,9 +545,15 @@ static void open_level(Level *lv, W2kMenu *m, int px, int py, int flags,
      * first and the window grows over it, showing more of the picture at
      * each step: the earlier version grew an unpainted window and let
      * the picture arrive afterwards, which looked like a glitch. */
-    if (w2k_effects[FX_FADE_MENUS] && h > 24) {
-        int up = (flags & MPOP_BOTTOMUP) != 0;
+    /* (Only with a cached buffer to copy from: deeper than the cache the
+     * menu just appears, rather than growing over an unpainted pixmap.) */
+    int slide = w2k_effects[FX_FADE_MENUS] && h > 24;
+    if (slide) {
         menu_paint(m, lv->win, w, h, -1);
+        slide = menu_buffer_cached(lv->win);
+    }
+    if (slide) {
+        int up = (flags & MPOP_BOTTOMUP) != 0;
         Pixmap pm = menu_buffer(lv->win, w, h);
         for (int step = 1; step <= 6; step++) {
             int sh = h * step / 6;

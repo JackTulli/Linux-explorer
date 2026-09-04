@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 #include <strings.h>
 #include <fontconfig/fontconfig.h>
 
@@ -873,11 +874,15 @@ static void open_fonts(void)
 static void spawn(const char *cmd)
 {
     if (!cmd) return;
-    if (fork() == 0) {
-        setsid();
-        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (fork() == 0) {
+            setsid();
+            execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        }
         _exit(127);
     }
+    if (pid > 0) { int st; waitpid(pid, &st, 0); }
 }
 
 /* The Start menu's own settings belong to the window manager -- it draws

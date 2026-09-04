@@ -41,6 +41,7 @@
 static char session_cmd[1024] = "/usr/local/bin/w2k-session";
 static char cookie[33];
 static pid_t xpid;
+static pid_t session_pid;                 /* the session leader, while one runs */
 static volatile sig_atomic_t x_ready, x_died;
 
 static void log_line(const char *fmt, ...)
@@ -59,6 +60,37 @@ static void log_line(const char *fmt, ...)
 static void on_usr1(int s) { (void)s; x_ready = 1; }
 static void on_chld(int s) { (void)s; x_died = 1; }
 
+/* Add the server's cookie to an authority file. The cookie goes down
+ * xauth's standard input, never on to a command line where every process
+ * on the machine could read it. */
+static int xauth_add(const char *file)
+{
+    setenv("XAUTHORITY", file, 1);
+    FILE *p = popen("xauth -q source /dev/stdin", "w");
+    if (!p) return 0;
+    fprintf(p, "add %s . %s\n", DISPLAY_NAME, cookie);
+    return pclose(p) == 0;
+}
+
+/* The name that was last logged on, kept across our own restarts. */
+#define LAST_FILE RUN_DIR "/last"
+static void last_user_save(const char *user)
+{
+    FILE *f = fopen(LAST_FILE, "w");
+    if (!f) return;
+    fputs(user, f);
+    fclose(f);
+}
+static void last_user_load(char *buf, size_t n)
+{
+    buf[0] = 0;
+    FILE *f = fopen(LAST_FILE, "r");
+    if (!f) return;
+    if (!fgets(buf, (int)n, f)) buf[0] = 0;
+    fclose(f);
+    buf[strcspn(buf, "\r\n")] = 0;
+}
+
 static int start_x(void)
 {
     mkdir(RUN_DIR, 0700);
@@ -69,9 +101,7 @@ static int start_x(void)
     fclose(r);
     for (int i = 0; i < 16; i++) snprintf(cookie + 2 * i, 3, "%02x", raw[i]);
     unlink(AUTH_FILE);
-    char cmd[300];
-    snprintf(cmd, sizeof cmd, "xauth -q -f %s add %s . %s", AUTH_FILE, DISPLAY_NAME, cookie);
-    if (system(cmd) != 0) { log_line("xauth failed"); return 0; }
+    if (!xauth_add(AUTH_FILE)) { log_line("xauth failed"); return 0; }
 
     /* The server signals SIGUSR1 to a parent that ignores it once it is
      * ready to take connections. */
@@ -234,8 +264,8 @@ static int converse(int n, const struct pam_message **msg, struct pam_response *
     return PAM_SUCCESS;
 }
 
-/* Name and password through the stack; on success the session is open
- * and pamh stays for run_session(). */
+/* Name and password through the stack; on success pamh stays for
+ * run_session(), which opens the session. */
 static int authenticate(const char *user)
 {
     struct pam_conv conv = { converse, NULL };
@@ -254,9 +284,14 @@ static int authenticate(const char *user)
 
     rc = pam_authenticate(pamh, 0);
     if (rc == PAM_SUCCESS) rc = pam_acct_mgmt(pamh, 0);
-    if (rc == PAM_NEW_AUTHTOK_REQD) rc = pam_chauthtok(pamh, PAM_CHANGE_EXPIRED_AUTHTOK);
-    if (rc == PAM_SUCCESS) rc = pam_setcred(pamh, PAM_ESTABLISH_CRED);
-    if (rc == PAM_SUCCESS) rc = pam_open_session(pamh, 0);
+    if (rc == PAM_NEW_AUTHTOK_REQD) {
+        /* The conversation only knows the password that was typed, so it
+         * cannot answer a "new password" prompt: say so rather than have
+         * the stack reject the old one twice. */
+        snprintf(pam_info, sizeof pam_info,
+                 "Your password has expired and must be changed before you can "
+                 "log on. Change it from a text console (Ctrl+Alt+F2), then try again.");
+    }
     if (rc != PAM_SUCCESS) {
         log_line("logon for %s refused: %s", user, pam_strerror(pamh, rc));
         pam_end(pamh, rc);
@@ -267,49 +302,89 @@ static int authenticate(const char *user)
 }
 
 /* The session, as the user, with what PAM put in the environment. */
-static int run_session(const char *user)
+static void pam_finish(void)
 {
-    struct passwd *pw = getpwnam(user);
-    if (!pw) return -1;
-    pid_t pid = fork();
-    if (pid == 0) {
-        char **env = pam_getenvlist(pamh);
-        char home[1200], usr[300], logname[300], shell[300], path[400], disp[64], xauth[1300];
-        snprintf(home, sizeof home, "HOME=%s", pw->pw_dir);
-        snprintf(usr, sizeof usr, "USER=%s", pw->pw_name);
-        snprintf(logname, sizeof logname, "LOGNAME=%s", pw->pw_name);
-        snprintf(shell, sizeof shell, "SHELL=%s", pw->pw_shell && *pw->pw_shell ? pw->pw_shell : "/bin/sh");
-        snprintf(path, sizeof path, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/games:/usr/games");
-        snprintf(disp, sizeof disp, "DISPLAY=%s", DISPLAY_NAME);
-        snprintf(xauth, sizeof xauth, "XAUTHORITY=%s/.Xauthority", pw->pw_dir);
-        int n = 0;
-        for (char **e = env; e && *e; e++) n++;
-        char **envp = calloc((size_t)n + 12, sizeof *envp);
-        int k = 0;
-        for (char **e = env; e && *e; e++) envp[k++] = *e;
-        envp[k++] = home; envp[k++] = usr; envp[k++] = logname; envp[k++] = shell;
-        envp[k++] = path; envp[k++] = disp; envp[k++] = xauth;
-        envp[k] = NULL;
-
-        setsid();
-        if (initgroups(pw->pw_name, pw->pw_gid) != 0 || setgid(pw->pw_gid) != 0 ||
-            setuid(pw->pw_uid) != 0) _exit(126);
-        if (chdir(pw->pw_dir) != 0) chdir("/");
-        /* The server's cookie, in the user's own file. */
-        char cmd[400];
-        snprintf(cmd, sizeof cmd, "XAUTHORITY=%s/.Xauthority xauth -q add %s . %s", pw->pw_dir,
-                 DISPLAY_NAME, cookie);
-        system(cmd);
-        char run[1200];
-        snprintf(run, sizeof run, "exec '%s'", session_cmd);
-        execle("/bin/sh", "sh", "-l", "-c", run, (char *)NULL, envp);
-        _exit(127);
-    }
-    if (pid < 0) return -1;
-    int st = 0;
-    while (waitpid(pid, &st, 0) < 0 && errno == EINTR) ;
+    if (!pamh) return;
     pam_close_session(pamh, 0);
     pam_setcred(pamh, PAM_DELETE_CRED);
+    pam_end(pamh, PAM_SUCCESS);
+    pamh = NULL;
+}
+
+
+/* The desktop itself, as the user. Runs in a child of the session leader. */
+static void exec_desktop(struct passwd *pw)
+{
+    char **env = pam_getenvlist(pamh);
+    char home[1200], usr[300], logname[300], shell[300], path[400], disp[64], xauth[1300];
+    snprintf(home, sizeof home, "HOME=%s", pw->pw_dir);
+    snprintf(usr, sizeof usr, "USER=%s", pw->pw_name);
+    snprintf(logname, sizeof logname, "LOGNAME=%s", pw->pw_name);
+    snprintf(shell, sizeof shell, "SHELL=%s", pw->pw_shell && *pw->pw_shell ? pw->pw_shell : "/bin/sh");
+    snprintf(path, sizeof path, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/games:/usr/games");
+    snprintf(disp, sizeof disp, "DISPLAY=%s", DISPLAY_NAME);
+    snprintf(xauth, sizeof xauth, "XAUTHORITY=%s/.Xauthority", pw->pw_dir);
+    int n = 0;
+    for (char **e = env; e && *e; e++) n++;
+    char **envp = calloc((size_t)n + 12, sizeof *envp);
+    if (!envp) _exit(126);
+    int k = 0;
+    for (char **e = env; e && *e; e++) envp[k++] = *e;
+    envp[k++] = home; envp[k++] = usr; envp[k++] = logname; envp[k++] = shell;
+    envp[k++] = path; envp[k++] = disp; envp[k++] = xauth;
+    envp[k] = NULL;
+
+    /* Nothing of ours -- the display connection, the journal -- goes
+     * into the session. */
+    long maxfd = sysconf(_SC_OPEN_MAX);
+    for (int fd = 3; fd < (maxfd > 0 && maxfd < 65536 ? maxfd : 1024); fd++) close(fd);
+    if (initgroups(pw->pw_name, pw->pw_gid) != 0 || setgid(pw->pw_gid) != 0 ||
+        setuid(pw->pw_uid) != 0) _exit(126);
+    if (chdir(pw->pw_dir) != 0) chdir("/");
+    /* The server's cookie, in the user's own file. */
+    char uauth[1200];
+    snprintf(uauth, sizeof uauth, "%s/.Xauthority", pw->pw_dir);
+    if (!xauth_add(uauth)) _exit(125);
+    char run[1200];
+    snprintf(run, sizeof run, "exec '%s'", session_cmd);
+    execle("/bin/sh", "sh", "-l", "-c", run, (char *)NULL, envp);
+    _exit(127);
+}
+
+/* Run the desktop for an authenticated user and wait for it. A session
+ * leader is forked first, and it is that process which opens the PAM
+ * session: logind attaches the session to whoever calls pam_open_session,
+ * and that must be something that ends when the user logs off -- not this
+ * service, which lives for the whole boot. */
+static int run_session(const char *user)
+{
+    /* Only ever reached after authenticate() succeeded. */
+    if (!pamh) return -1;
+    struct passwd *pw = getpwnam(user);
+    if (!pw) { pam_end(pamh, PAM_SUCCESS); pamh = NULL; return -1; }
+    pid_t leader = fork();
+    if (leader == 0) {
+        setsid();
+        int rc = pam_setcred(pamh, PAM_ESTABLISH_CRED);
+        if (rc == PAM_SUCCESS) rc = pam_open_session(pamh, 0);
+        if (rc != PAM_SUCCESS) {
+            log_line("session for %s refused: %s", user, pam_strerror(pamh, rc));
+            pam_end(pamh, rc);
+            _exit(124);
+        }
+        pid_t pid = fork();
+        if (pid == 0) exec_desktop(pw);
+        int st = 0;
+        if (pid > 0) while (waitpid(pid, &st, 0) < 0 && errno == EINTR) ;
+        pam_finish();
+        _exit(pid < 0 ? 1 : WIFEXITED(st) ? WEXITSTATUS(st) : 1);
+    }
+    if (leader < 0) { pam_end(pamh, PAM_SUCCESS); pamh = NULL; return -1; }
+    session_pid = leader;
+    int st = 0;
+    while (waitpid(leader, &st, 0) < 0 && errno == EINTR) ;
+    session_pid = 0;
+    /* The leader closed the session; this handle only needs releasing. */
     pam_end(pamh, PAM_SUCCESS);
     pamh = NULL;
     return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
@@ -321,7 +396,7 @@ static int authenticate(const char *user)
     set_message("Built without PAM: no one can log on.");
     return 0;
 }
-static int run_session(const char *user) { (void)user; return 1; }
+static int run_session(const char *user) { (void)user; return -1; }
 #endif
 
 /* ------------------------------------------------------------------ *
@@ -474,6 +549,15 @@ static int quiet_xerror(Display *d, XErrorEvent *e)
     return 0;
 }
 
+/* systemctl stop, or the shutdown: the session and the server go too. */
+static void on_term(int sig)
+{
+    (void)sig;
+    if (session_pid > 0) kill(session_pid, SIGTERM);
+    if (xpid > 0) kill(xpid, SIGTERM);
+    _exit(0);
+}
+
 static int quiet_xio(Display *d)
 {
     (void)d;
@@ -526,7 +610,22 @@ static int logon_screen(const char *last_user, char *user_out, int n)
     w2k_edit_free(lg.pass);
     if (lg.banner) w2k_skin_free(lg.banner);
     XFlush(w2k.dpy);
-    return rc == ID_OK ? 0 : lg.want;
+    /* Log on only when the dialog was dismissed by a successful logon:
+     * anything else (a shutdown request, or a close forced on the window
+     * from outside) is never an authentication. */
+    if (rc == ID_OK) return 0;
+    return lg.want == 10 || lg.want == 11 ? lg.want : -1;
+}
+
+/* 10 shuts down, 11 restarts; whichever tool the system has. */
+static void power(int what)
+{
+    const char *verb = what == 10 ? "poweroff" : "reboot";
+    execlp("systemctl", "systemctl", verb, (char *)NULL);
+    execlp("loginctl", "loginctl", verb, (char *)NULL);
+    execlp(verb, verb, (char *)NULL);
+    log_line("cannot %s: no systemctl, loginctl or %s", verb, verb);
+    exit(1);
 }
 
 int main(int argc, char **argv)
@@ -551,8 +650,16 @@ int main(int argc, char **argv)
         if (slash) { *slash = 0; snprintf(session_cmd, sizeof session_cmd, "%.900s/w2k-session", self); }
     }
 
+    struct sigaction st = { .sa_handler = on_term };
+    sigemptyset(&st.sa_mask);
+    sigaction(SIGTERM, &st, NULL);
+    sigaction(SIGINT, &st, NULL);
+
     int own_x = !getenv("DISPLAY");
-    if (own_x && !start_x()) return 1;
+    if (own_x && !start_x()) {
+        log_line("no X server: see the lines above (journalctl -u w2kdm)");
+        return 1;
+    }
     if (w2k_init("w2kdm") < 0) { log_line("cannot open the display"); return 1; }
     XSetErrorHandler(quiet_xerror);
     XSetIOErrorHandler(quiet_xio);
@@ -566,6 +673,7 @@ int main(int argc, char **argv)
     }
 
     char last[64] = "";
+    last_user_load(last, sizeof last);
     for (;;) {
         if (own_x && !x_alive()) { log_line("the X server has gone"); return 1; }
         char user[64];
@@ -573,17 +681,28 @@ int main(int argc, char **argv)
         if (want == 10 || want == 11) {
             log_line("%s requested from the logon screen", want == 10 ? "shutdown" : "restart");
             if (own_x) kill(xpid, SIGTERM);
-            execlp("systemctl", "systemctl", want == 10 ? "poweroff" : "reboot", (char *)NULL);
-            return 0;
+            power(want);
         }
+        if (want != 0) continue;             /* the dialog closed without a logon */
         snprintf(last, sizeof last, "%s", user);
+        last_user_save(last);
         log_line("%s logged on", user);
         int rc = run_session(user);
         log_line("session for %s ended with %d", user, rc);
         if (rc == 10 || rc == 11) {
             if (own_x) kill(xpid, SIGTERM);
-            execlp("systemctl", "systemctl", rc == 10 ? "poweroff" : "reboot", (char *)NULL);
-            return 0;
+            power(rc);
+        }
+        if (own_x) {
+            /* The cookie that session was given must not open the next
+             * one's server, so the server goes with the session: stop it,
+             * wait for the terminal to come free, and start over with a
+             * new server and a new cookie. */
+            kill(xpid, SIGTERM);
+            int st;
+            while (waitpid(xpid, &st, 0) < 0 && errno == EINTR) ;
+            execv("/proc/self/exe", argv);
+            return 0;                        /* systemd starts us again */
         }
     }
 }

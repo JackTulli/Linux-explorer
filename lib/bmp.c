@@ -32,10 +32,18 @@ unsigned char *w2k_bmp_load(const char *path, int *wout, int *hout)
     int topdown = h < 0;
     if (topdown) h = -h;
     if (comp != 0 || w <= 0 || h <= 0 || w > 8192 || h > 8192) { free(buf); return NULL; }
-    if (bpp <= 8 && ncol == 0) ncol = 1L << bpp;
+    if (bpp != 1 && bpp != 4 && bpp != 8 && bpp != 24 && bpp != 32) { free(buf); return NULL; }
+    /* Every offset comes from the file, so each one is checked against the
+     * file's length before it is used: the info header, the palette that
+     * follows it, and the pixel rows. */
+    if (hdr < 40 || hdr > n - 14) { free(buf); return NULL; }
+    if (bpp <= 8) {
+        if (ncol <= 0 || ncol > (1L << bpp)) ncol = 1L << bpp;
+        if (14 + hdr + ncol * 4 > n) { free(buf); return NULL; }
+    }
     const unsigned char *pal = buf + 14 + hdr;
     long stride = ((long)w * bpp + 31) / 32 * 4;
-    if (off + stride * h > n) { free(buf); return NULL; }
+    if (off < 14 + hdr || off > n || stride * h > n - off) { free(buf); return NULL; }
 
     unsigned char *out = w2k_alloc((size_t)w * h * 4);
     for (int y = 0; y < h; y++) {

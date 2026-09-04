@@ -194,6 +194,9 @@ int w2k_trash_restore(const char *name)
         fclose(f);
     }
     if (!dest[0]) return -1;
+    /* Something newer of the same name at the original place stays. */
+    struct stat st;
+    if (lstat(dest, &st) == 0) { errno = EEXIST; return -1; }
     if (rename(from, dest) != 0) {
         if (errno != EXDEV) return -1;
         FILE *in = fopen(from, "rb");

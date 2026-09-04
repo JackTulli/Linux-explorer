@@ -85,7 +85,10 @@ unsigned char *w2k_png_load(const char *path, int *out_w, int *out_h)
         unsigned clen = be32(file + p);
         const unsigned char *type = file + p + 4;
         const unsigned char *data = file + p + 8;
-        if (clen > (unsigned)(len - p - 12)) break;
+        /* Length, type and CRC must all fit inside the file. (len - p) is
+         * at least 8 here, but the subtraction below would wrap if it were
+         * under 12, so test that first.) */
+        if (len - p < 12 || clen > (unsigned)(len - p - 12)) break;
 
         if (!memcmp(type, "IHDR", 4) && clen >= 13) {
             w = (int)be32(data);

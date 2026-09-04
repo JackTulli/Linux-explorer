@@ -237,9 +237,9 @@ int taskbar_button_rect(Client *c, int *x, int *y, int *w, int *h)
     for (int i = 0; i < ntasks; i++) {
         if (tasks[i].c != c) continue;
         *x = tb_x + tasks[i].x;
-        *y = tb_y + BTN_TOP + tasks[i].row * TASKBAR_ROW;
+        *y = tb_y + tasks[i].y;
         *w = tasks[i].w;
-        *h = BTN_H;
+        *h = tasks[i].h;
         return 1;
     }
     return 0;
@@ -298,7 +298,7 @@ static void layout_vertical(void)
     vol_y = tray_y - 4 - 16;
     notify_w = tray_width();
     notify_y = vol_y - (notify_w ? notify_w + 4 : 0);
-    tray_layout(TB_PAD + (tb_w - 2 * TB_PAD - 16) / 2, notify_y, 16);
+    tray_layout_column(TB_PAD + (tb_w - 2 * TB_PAD - 16) / 2, notify_y);
 
     ql_y = TB_PAD + BTN_H + START_GAP + GRIP_W;
     task_y = ql_y + NQL * QL_BTN + START_GAP + GRIP_W;
@@ -505,7 +505,7 @@ static void taskbar_draw(Pixmap pm, int h)
     for (int i = 0; i < ntasks; i++) {
         Client *c = tasks[i].c;
         int x = tasks[i].x, w = tasks[i].w;
-        int by = BTN_TOP + tasks[i].row * TASKBAR_ROW;
+        int by = tasks[i].y, bh = tasks[i].h;   /* a column's buttons differ */
         int active = (c == focused && !c->minimized);
 
         if (w2k_theme != THEME_CLASSIC) {
@@ -513,46 +513,46 @@ static void taskbar_draw(Pixmap pm, int h)
              * them is white -- there is no raised edge anywhere. */
             int state = active ? W2K_TB_DOWN
                       : (i == hover_task ? W2K_TB_HOT : W2K_TB_NORMAL);
-            w2k_theme_taskbutton(pm, x, by, w, BTN_H, state, w2k_theme);
+            w2k_theme_taskbutton(pm, x, by, w, bh, state, w2k_theme);
         } else if (active) {
             /* A depressed task button gets the classic 50% dither. */
-            w2k_edge(pm, x, by, w, BTN_H, EDGE_SUNKEN, BF_RECT);
-            w2k_dither(pm, x + 2, by + 2, w - 4, BTN_H - 4, C_HILIGHT, C_FACE);
+            w2k_edge(pm, x, by, w, bh, EDGE_SUNKEN, BF_RECT);
+            w2k_dither(pm, x + 2, by + 2, w - 4, bh - 4, C_HILIGHT, C_FACE);
         } else {
-            w2k_button(pm, x, by, w, BTN_H, 0);
+            w2k_button(pm, x, by, w, bh, 0);
         }
         if (w2k_theme == THEME_BASIC7) {
             int isz = w2k_taskbar_small ? 16 : 32;
             if (!w2k_taskbar_labels) {
                 /* Combined: the icon alone, centred. */
                 if (w >= isz) {
-                    int ix = x + (w - isz) / 2, iy = by + (BTN_H - isz) / 2;
+                    int ix = x + (w - isz) / 2, iy = by + (bh - isz) / 2;
                     if (isz == 32) w2k_bigicon_draw(pm, ix, iy, c->icon);
                     else           w2k_icon_draw(pm, ix, iy, c->icon);
                 }
                 continue;
             }
             /* Never combine: icon at the left, the title beside it. */
-            int ix = x + 6, iy = by + (BTN_H - isz) / 2;
+            int ix = x + 6, iy = by + (bh - isz) / 2;
             if (isz == 32) w2k_bigicon_draw(pm, ix, iy, c->icon);
             else           w2k_icon_draw(pm, ix, iy, c->icon);
             int tx = ix + isz + 6, avail = x + w - 6 - tx;
             if (avail > 6) {
                 char buf[160];
                 w2k_ellipsis(F_UI, c->name, avail, buf, sizeof buf);
-                w2k_text_rgb(pm, F_UI, tx, by + (BTN_H - w2k_font_height(F_UI)) / 2,
+                w2k_text_rgb(pm, F_UI, tx, by + (bh - w2k_font_height(F_UI)) / 2,
                              buf, 0, 0, 0);
             }
             continue;
         }
         int o = active ? 1 : 0;
         int ix = x + 4 + o, tx = ix + 20;
-        if (w > 26) w2k_icon_draw(pm, ix, by + (BTN_H - 16) / 2 + o, c->icon);
+        if (w > 26) w2k_icon_draw(pm, ix, by + (bh - 16) / 2 + o, c->icon);
         int avail = x + w - 4 - tx;
         if (avail > 6) {
             char buf[160];
             w2k_ellipsis(F_UI, c->name, avail, buf, sizeof buf);
-            int ty = by + (BTN_H - w2k_font_height(F_UI)) / 2 + o;
+            int ty = by + (bh - w2k_font_height(F_UI)) / 2 + o;
             if (w2k_theme == THEME_CLASSIC)
                 w2k_text(pm, F_UI, tx, ty, buf, C_TEXT);
             else
@@ -561,6 +561,23 @@ static void taskbar_draw(Pixmap pm, int h)
     }
 
     /* --- Tray: docked icons, the speaker, then the clock -------------- */
+    if (vert) {
+        int wx = TB_PAD, ww = tb_w - 2 * TB_PAD;
+        int wy = notify_y - 4, wh = tb_h - TB_PAD - wy;
+        if (w2k_theme == THEME_CLASSIC)
+            w2k_edge(pm, wx, wy, ww, wh, EDGE_SUNKEN_THIN, BF_RECT);
+        else if (w2k_theme != THEME_BASIC7)
+            w2k_theme_taskbutton(pm, wx, wy, ww, wh, W2K_TB_DOWN, w2k_theme);
+        volume_draw(pm, TB_PAD + (ww - 16) / 2, vol_y);
+        if (w2k_taskbar_showclock) {
+            int tw = w2k_text_width(F_UI, clock_text, -1);
+            int cx = TB_PAD + (ww - tw) / 2, cy = tray_y + (BTN_H - w2k_font_height(F_UI)) / 2;
+            if (w2k_theme == THEME_CLASSIC) w2k_text(pm, F_UI, cx, cy, clock_text, C_TEXT);
+            else if (w2k_theme == THEME_BASIC7) w2k_text_rgb(pm, F_UI, cx, cy, clock_text, 0, 0, 0);
+            else w2k_text_rgb(pm, F_UI, cx, cy, clock_text, 255, 255, 255);
+        }
+        return;
+    }
     int well_x = notify_x - 4;
     if (w2k_theme == THEME_CLASSIC) {
         w2k_edge(pm, well_x, by, tb_w - TB_PAD - well_x, BTN_H,
@@ -855,8 +872,10 @@ static void task_context_menu(Client *c, int x, int y)
     w2k_menu_sep(m);
     w2k_menu_item(m, TM_CLOSE, "&Close", "Alt+F4", ICO_NONE);
 
+    Window cw = c->win;
     int id = w2k_menu_popup(m, x, y, MPOP_BOTTOMUP);
     w2k_menu_free(m);
+    if (client_find(cw) != c) return;      /* closed while the menu was up */
 
     switch (id) {
     case TM_RESTORE: client_restore(c); client_maximize(c, 0); break;
@@ -1037,6 +1056,23 @@ int taskbar_event(XEvent *e)
     if (!tb) return 0;
     if (w2k_tooltip_event(e)) return 1;
 
+    /* The clock's tooltip is the full date, as in Windows. */
+    if (e->type == MotionNotify && e->xmotion.window == tb &&
+        w2k_taskbar_showclock && drag_task < 0 &&
+        (vertical() ? e->xmotion.y >= tray_y : e->xmotion.x >= tray_x)) {
+        if (hover_task >= 0) hover_clear();      /* off a button, on to the clock */
+        if (!tip_up) {
+            time_t t = time(NULL);
+            struct tm tm;
+            char date[96];
+            localtime_r(&t, &tm);
+            strftime(date, sizeof date, "%A, %d %B %Y", &tm);
+            w2k_tooltip_show(date, e->xmotion.x_root + 12, e->xmotion.y_root - 34);
+            tip_up = 1;
+        }
+        return 1;
+    }
+
     /* Hovering a task button, and dragging one to a new position. */
     if (e->type == MotionNotify && e->xmotion.window == tb) {
         /* The themed Start button has a hot state of its own. */
@@ -1071,20 +1107,6 @@ int taskbar_event(XEvent *e)
         return 1;
     }
     if (e->type == LeaveNotify && e->xcrossing.window == tb) hover_clear();
-
-    /* The clock's tooltip is the full date, as in Windows. */
-    if (e->type == MotionNotify && e->xmotion.window == tb &&
-        w2k_taskbar_showclock &&
-        (vertical() ? e->xmotion.y >= tray_y : e->xmotion.x >= tray_x)) {
-        time_t t = time(NULL);
-        struct tm tm;
-        char date[96];
-        localtime_r(&t, &tm);
-        strftime(date, sizeof date, "%A, %d %B %Y", &tm);
-        w2k_tooltip_show(date, e->xmotion.x_root + 12, e->xmotion.y_root - 34);
-        tip_up = 1;
-        return 1;
-    }
     if (e->type == ButtonRelease && drag_task >= 0) { drag_task = -1; return 1; }
     if (e->type == ButtonPress) hover_clear();
 
@@ -1132,7 +1154,8 @@ int taskbar_event(XEvent *e)
             wm_startmenu_dialog();
             return 1;
         }
-        for (int i = 1; i < NQL; i++) {          /* 0 is Show Desktop */
+        for (int i = 0; i < NQL; i++) {
+            if (!ql[i].cmd[0]) continue;         /* Show Desktop has no menu */
             int qx = vertical() ? TB_PAD : ql_x + i * QL_BTN;
             int qy = vertical() ? ql_y + i * QL_BTN : 0;
             if (vertical()) { if (y < qy || y >= qy + QL_BTN) continue; }

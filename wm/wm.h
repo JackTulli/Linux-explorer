@@ -57,6 +57,8 @@ struct Client {
     unsigned mapped      : 1;
     unsigned takes_focus : 1;
     unsigned deleteable  : 1;      /* supports WM_DELETE_WINDOW   */
+    unsigned take_focus_proto : 1; /* supports WM_TAKE_FOCUS      */
+    unsigned state_read  : 1;      /* _NET_WM_STATE taken from the app once */
 
     int      icon;                 /* w2k icon id for caption/taskbar */
     int      btn_down;             /* caption button being clicked    */
@@ -81,6 +83,7 @@ extern int     wa_x, wa_y, wa_w, wa_h;  /* primary monitor, minus the taskbar */
 /* Cleared by the SIGTERM/SIGINT handler, so it is signal-safe rather
  * than a plain int the compiler may keep in a register. */
 extern volatile sig_atomic_t running;
+extern Time    wm_last_time;       /* of the last input event seen */
 
 /* client.c */
 Client *client_find(Window w);
@@ -97,6 +100,8 @@ void    client_close(Client *c);
 void    client_minimize(Client *c);
 void    client_restore(Client *c);
 void    client_maximize(Client *c, int on);
+void    client_fullscreen(Client *c, int on);
+void    client_publish_state(Client *c);  /* write _NET_WM_STATE back */
 void    client_send_protocol(Client *c, Atom proto);
 void    clients_restack(void);
 int     client_frame_w(Client *c);
@@ -120,6 +125,7 @@ void    do_move(Client *c, XButtonEvent *e);
 void    do_resize(Client *c, XButtonEvent *e, int ht);
 void    grab_keys(void);
 void    handle_key(XKeyEvent *e);
+void    handle_key_release(XKeyEvent *e);
 void    sysmenu_popup(Client *c, int x, int y);
 void    alt_tab(int backwards);
 /* Zoom a wire frame between two rectangles (the minimise animation). */
@@ -146,6 +152,7 @@ void    taskbar_start_origin(int *x, int *y);
 /* tray.c -- the notification area (freedesktop system tray protocol) */
 void tray_init(Window taskbar);
 void tray_layout(int x, int y, int h);
+void tray_layout_column(int x, int y);
 int  tray_width(void);
 int  tray_count(void);
 int  tray_owns(Window w);

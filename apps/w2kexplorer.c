@@ -299,8 +299,13 @@ static void refill_list(void)
                 e->size = e->isdir ? 0 : (long long)st.st_size;
                 e->mtime = st.st_mtime;
                 e->icon = w2k_file_icon_stat(full, e->name, e->isdir);
-                if (!strcasecmp(w2k_file_ext(de->d_name), "desktop")) {
-                    /* A shortcut wears the icon of what it points at. */
+                if (!strcasecmp(w2k_file_ext(de->d_name), "desktop") &&
+                    access(full, X_OK) == 0) {
+                    /* A shortcut wears the icon of what it points at --
+                     * but only a shortcut marked executable is trusted to
+                     * be one. Anything else that merely ends in .desktop
+                     * (a download, something out of an archive) is shown
+                     * for what it is, extension and all. */
                     char ico[128];
                     e->link = 1;
                     if (w2k_desktop_entry(full, NULL, 0, NULL, 0,
@@ -319,9 +324,12 @@ static void refill_list(void)
         int r = w2k_list_add(ex.list, e->icon, NULL);
         ex.list->items[r].link = e->link;
         char shown[256];
-        w2k_list_set(ex.list, r, 0,
-                     w2k_file_display_name(e->name, e->isdir, shown,
-                                           sizeof shown));
+        if (!e->isdir && !e->link &&
+            !strcasecmp(w2k_file_ext(e->name), "desktop"))
+            snprintf(shown, sizeof shown, "%s", e->name);   /* untrusted: full name */
+        else
+            w2k_file_display_name(e->name, e->isdir, shown, sizeof shown);
+        w2k_list_set(ex.list, r, 0, shown);
         if (!e->isdir) {
             char sz[32];
             size_text(e->size, sz, sizeof sz);
@@ -673,6 +681,14 @@ static void undo_push(int op, const char *from, const char *to)
 /* Copying a folder copies what is in it. Windows does this without
  * comment; doing anything less means dragging a folder in Explorer
  * quietly produces nothing. */
+/* Is `path` the Recycle Bin's folder, or inside it? A prefix match alone
+ * would also take a sibling such as Trash-old. */
+static int under_dir(const char *path, const char *dir)
+{
+    size_t n = strlen(dir);
+    return n && !strncmp(path, dir, n) && (path[n] == '/' || path[n] == 0);
+}
+
 static int copy_tree(const char *from, const char *to, int depth)
 {
     (void)depth;
@@ -708,7 +724,7 @@ static void do_delete_ex(int permanent)
     selected_paths(paths, 64, &n);
     if (!n) return;
 
-    if (!strncmp(ex.cur.path, w2k_trash_dir(), strlen(w2k_trash_dir())))
+    if (under_dir(ex.cur.path, w2k_trash_dir()))
         permanent = 1;
 
     char msg[1200];
@@ -925,12 +941,14 @@ static void do_create_shortcut(const char *into)
             return;
         }
         /* A folder opens in Explorer; a file goes to whatever opens it. */
-        char cmd[2200];
-        if (isdir) snprintf(cmd, sizeof cmd, "w2kexplorer '%.1024s'", paths[i]);
+        char cmd[4400], q[4200];
+        w2k_shell_quote(paths[i], q, sizeof q);
+        if (isdir) snprintf(cmd, sizeof cmd, "w2kexplorer %s", q);
         else       w2k_assoc_command(paths[i], cmd, sizeof cmd);
         fprintf(f, "[Desktop Entry]\nType=Application\nName=%s\nExec=%s\n"
                    "Terminal=false\n", base, cmd);
         fclose(f);
+        chmod(link, 0755);                   /* a shortcut we made is trusted */
         undo_push(U_NEW, link, NULL);
     }
     refill_list();
@@ -979,9 +997,10 @@ static void do_open_with(void)
         return;
     if (!out[0]) return;
 
-    char cmd[2400];
-    if (strstr(out, "%s")) snprintf(cmd, sizeof cmd, out, full);
-    else                   snprintf(cmd, sizeof cmd, "%s '%s'", out, full);
+    char cmd[4400], q[4200];
+    w2k_shell_quote(full, q, sizeof q);
+    if (strstr(out, "%s")) w2k_splice(out, q, cmd, sizeof cmd);
+    else                   snprintf(cmd, sizeof cmd, "%s %s", out, q);
     spawn("%s", cmd);
 }
 
@@ -1002,13 +1021,17 @@ static void do_undo(void)
         }
         break;
     case U_COPY:
-        ok = remove_tree(u.to, 0);
+        /* The copy goes to the Recycle Bin, not away for good: what is
+         * there now may not be what was copied. */
+        ok = w2k_trash_move(u.to) == 0;
         break;
     case U_TRASH:
         ok = w2k_trash_restore(u.from) == 0;
         break;
     case U_NEW:
-        ok = remove_tree(u.from, 0);
+        /* Only the empty thing that was made: a folder that has since
+         * been filled stays (rmdir refuses it). */
+        ok = rmdir(u.from) == 0 || unlink(u.from) == 0;
         break;
     }
     if (!ok) {
@@ -1035,14 +1058,21 @@ static void do_properties(void)
  * ------------------------------------------------------------------ */
 static void spawn(const char *fmt, const char *arg)
 {
-    char cmd[2200];
+    char cmd[4400];
     snprintf(cmd, sizeof cmd, fmt, arg);
-    if (fork() == 0) {
-        close(ConnectionNumber(w2k.dpy));
-        setsid();
-        execlp("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-        _exit(127);
+    /* Forked twice: the grandchild is init's to reap, so a long-lived
+     * Explorer does not collect a zombie for everything it ever opened. */
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (fork() == 0) {
+            close(ConnectionNumber(w2k.dpy));
+            setsid();
+            execlp("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+            _exit(127);
+        }
+        _exit(0);
     }
+    if (pid > 0) { int st; waitpid(pid, &st, 0); }
 }
 
 static void on_activate(void *u, int idx)
@@ -1066,15 +1096,19 @@ static void on_activate(void *u, int idx)
     }
     char full[2048];
     path_join(full, sizeof full, ex.cur.path, e->name);
+    char q[4200];
+    w2k_shell_quote(full, q, sizeof q);
     if (e->isdir) {
-        if (w2k_folder_newwindow) spawn("w2kexplorer '%s'", full);
+        if (w2k_folder_newwindow) spawn("w2kexplorer %s", q);
         else navigate_path(full, 1);
         return;
     }
 
     /* A .desktop file is a shortcut: run what it points at, the way
-     * double-clicking a .lnk does, rather than opening the file itself. */
-    if (!strcasecmp(w2k_file_ext(e->name), "desktop")) {
+     * double-clicking a .lnk does, rather than opening the file itself.
+     * Only a shortcut marked executable is trusted that far (the same
+     * rule every desktop applies); any other opens as the text it is. */
+    if (!strcasecmp(w2k_file_ext(e->name), "desktop") && e->link) {
         char cmd[1024];
         if (w2k_desktop_entry(full, NULL, 0, cmd, sizeof cmd, NULL, 0)) {
             spawn("%s", cmd);
@@ -1085,9 +1119,10 @@ static void on_activate(void *u, int idx)
     /* Whatever the Control Panel says opens this kind of file -- pictures
      * in the viewer, video in VLC, and so on. An executable still runs. */
     if (access(full, X_OK) == 0 && !w2k_image_is_image(full) &&
+        strcasecmp(w2k_file_ext(e->name), "desktop") &&
         strcmp(w2k_assoc_class_for(full), "video") &&
         strcmp(w2k_assoc_class_for(full), "audio")) {
-        spawn("'%s'", full);
+        spawn("%s", q);
     } else {
         char cmd[2048];
         w2k_assoc_command(full, cmd, sizeof cmd);
@@ -1116,7 +1151,7 @@ static int recycle_in_view(void)
 {
     if (ex.cur.kind == K_RECYCLE) return 1;
     if (ex.cur.kind == K_FS &&
-        !strncmp(ex.cur.path, w2k_trash_dir(), strlen(w2k_trash_dir())))
+        under_dir(ex.cur.path, w2k_trash_dir()))
         return 1;
     if (ex.list->sel >= 0 && ex.list->sel < ex.list->n) {
         const char *t = ex.list->items[ex.list->sel].text[0];
@@ -1386,7 +1421,7 @@ static int progress_event(W2kWin *w, XEvent *e)
     case ButtonRelease:
         if (p->down && w2k_rect_hit(&p->cancel, e->xbutton.x, e->xbutton.y)) {
             p->cancelled = 1;
-            if (p->pid > 0) kill(p->pid, SIGTERM);
+            if (p->pid > 0) kill(-p->pid, SIGTERM);
             w2k_win_close(w, ID_CANCEL);
         }
         p->down = 0;
@@ -1395,7 +1430,7 @@ static int progress_event(W2kWin *w, XEvent *e)
     case KeyPress:
         if (XLookupKeysym(&e->xkey, 0) == XK_Escape) {
             p->cancelled = 1;
-            if (p->pid > 0) kill(p->pid, SIGTERM);
+            if (p->pid > 0) kill(-p->pid, SIGTERM);
             w2k_win_close(w, ID_CANCEL);
         }
         return 1;
@@ -1420,6 +1455,7 @@ static int run_with_progress(const char *title, const char *cmd, int total,
     if (pipe(pipefd) != 0) return 0;
     p.pid = fork();
     if (p.pid == 0) {
+        setpgid(0, 0);           /* Cancel stops the tool, not just the shell */
         dup2(pipefd[1], 1);
         dup2(pipefd[1], 2);
         close(pipefd[0]);
@@ -1726,7 +1762,11 @@ static void do_zip(void)
     int il = 0;
     for (int i = 0; i < n && il < (int)sizeof items - 1200; i++) {
         const char *nm = strrchr(paths[i], '/');
-        shell_quote(nm ? nm + 1 : paths[i], q, sizeof q);
+        /* As ./name: a name beginning with a dash is a file, not an
+         * option to the archiver (or to rm). */
+        char rel[1100];
+        snprintf(rel, sizeof rel, "./%.1000s", nm ? nm + 1 : paths[i]);
+        shell_quote(rel, q, sizeof q);
         il += snprintf(items + il, sizeof items - il, " %s", q);
     }
     char cmd[8192], qd[1200], qt[1200];
@@ -1932,8 +1972,7 @@ static W2kMenu *build_file(void *u)
     }
     /* Looking inside the bin: Restore puts things back. */
     if (ex.cur.kind == K_FS &&
-        !strncmp(ex.cur.path, w2k_trash_files_dir(),
-                 strlen(w2k_trash_files_dir()))) {
+        under_dir(ex.cur.path, w2k_trash_files_dir())) {
         w2k_menu_sep(m);
         w2k_menu_item(m, ID_RESTORE, "R&estore", NULL, ICO_BACK);
         if (!has) w2k_menu_disable(m);
@@ -2018,8 +2057,7 @@ static W2kMenu *build_item_context(void)
         w2k_menu_item(m, ID_SHORTCUT, "Create &Shortcut", NULL, ICO_APP);
         w2k_menu_item(m, ID_DELETE, "&Delete", NULL, ICO_DELETE);
         w2k_menu_item(m, ID_RENAME, "Rena&me", NULL, ICO_NONE);
-        if (!strncmp(ex.cur.path, w2k_trash_files_dir(),
-                     strlen(w2k_trash_files_dir()))) {
+        if (under_dir(ex.cur.path, w2k_trash_files_dir())) {
             w2k_menu_sep(m);
             w2k_menu_item(m, ID_RESTORE, "R&estore", NULL, ICO_BACK);
         }
@@ -2211,9 +2249,12 @@ static void favorites_add(void)
                    "Cannot add this favorite.", MB_OK | MB_ICONERROR);
         return;
     }
+    char q[4200];
+    w2k_shell_quote(ex.cur.path, q, sizeof q);
     fprintf(f, "[Desktop Entry]\nType=Application\nName=%s\n"
-               "Exec=w2kexplorer '%s'\nTerminal=false\n", name, ex.cur.path);
+               "Exec=w2kexplorer %s\nTerminal=false\n", name, q);
     fclose(f);
+    chmod(link, 0755);                       /* a shortcut we made is trusted */
     favorites_load();
 }
 
@@ -2594,8 +2635,11 @@ static int event(W2kWin *w, XEvent *e)
         }
         if ((e->xkey.state & ControlMask) && (ks == XK_n || ks == XK_N)) {
             /* A new window on this folder. */
-            if (ex.cur.kind == K_FS) spawn("w2kexplorer '%s'", ex.cur.path);
-            else spawn("%s", "w2kexplorer");
+            if (ex.cur.kind == K_FS) {
+                char q[4200];
+                w2k_shell_quote(ex.cur.path, q, sizeof q);
+                spawn("w2kexplorer %s", q);
+            } else spawn("%s", "w2kexplorer");
             return 1;
         }
         if (e->xkey.state & ControlMask) {
@@ -2733,17 +2777,21 @@ int main(int argc, char **argv)
         a.chk_label[0] = "&Include subfolders"; a.chk_label[1] = "&Store relative paths";
         a.chk_label[2] = "&Delete files after adding"; a.chk[0] = a.chk[1] = 1;
         snprintf(a.info, sizeof a.info, "14 file(s) in 3 folder(s), 2,310 KB");
-        arc_dialog(&a, "Add to Archive", "/home/jack/Documents/Archive.zip");
+        char p[1200];
+        snprintf(p, sizeof p, "%s/Documents/Archive.zip", ex.home);
+        arc_dialog(&a, "Add to Archive", p);
     } else if (demo && !strcmp(demo, "unzip")) {
         ArcDlg a; memset(&a, 0, sizeof a); a.extract = 1;
         a.chk_label[0] = "Extract into a &folder named after the archive";
         a.chk_label[1] = "&Overwrite existing files"; a.chk_label[2] = "&Show extracted files when complete";
         a.chk[0] = a.chk[1] = a.chk[2] = 1;
         snprintf(a.info, sizeof a.info, "Archive.zip: 14 item(s), 2,310 KB");
-        arc_dialog(&a, "Extract", "/home/jack/Documents");
+        char p[1200];
+        snprintf(p, sizeof p, "%s/Documents", ex.home);
+        arc_dialog(&a, "Extract", p);
     } else if (demo && !strcmp(demo, "progress")) {
         run_with_progress("Compressing...", "for i in 1 2 3 4; do echo \"  adding: photos/holiday $i.jpg (deflated 3%)\"; sleep 1; done",
-                          10, "/home/jack/Pictures", "Archive.zip");
+                          10, ex.home, "Archive.zip");
     }
     w2k_win_show(ex.win);
     w2k_run();

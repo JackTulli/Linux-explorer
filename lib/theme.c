@@ -47,7 +47,7 @@ int w2k_skin_path(const char *name, char *out, int n)
             if (access(out, R_OK) == 0) return 1;
         }
     }
-    snprintf(out, (size_t)n, "/usr/local/share/w2k/skins/%s", name);
+    snprintf(out, (size_t)n, W2K_PREFIX "/share/w2k/skins/%s", name);
     return access(out, R_OK) == 0;
 }
 

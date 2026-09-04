@@ -869,7 +869,7 @@ int startpanel_run(int bx, int by)
     long opened = w2k_now_ms();
     int result = 0, done = 0;
     char typed[8] = "";              /* a key typed: the panel searches for it */
-    while (!done) {
+    while (!done && running) {
         XEvent e;
         XNextEvent(w2k.dpy, &e);
         switch (e.type) {

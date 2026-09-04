@@ -9,6 +9,7 @@
 #include "w2k.h"
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,10 +23,21 @@ static void join(char *out, size_t n, const char *dir, const char *name)
 
 static int copy_one(const char *from, const char *to)
 {
+    struct stat st;
+    if (stat(from, &st) != 0) return 0;
+    /* Only regular files are copied as data: a FIFO would block for ever
+     * and a device node would never end. */
+    if (!S_ISREG(st.st_mode)) { errno = EINVAL; return 0; }
     FILE *a = fopen(from, "rb");
     if (!a) return 0;
-    FILE *b = fopen(to, "wb");
-    if (!b) { fclose(a); return 0; }
+    /* Created with the source's own mode from the start (not world-
+     * readable while a private file is half copied), and never through a
+     * symlink that happens to be sitting at the destination. */
+    unlink(to);
+    int fd = open(to, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, st.st_mode & 07777);
+    if (fd < 0) { fclose(a); return 0; }
+    FILE *b = fdopen(fd, "wb");
+    if (!b) { close(fd); fclose(a); return 0; }
     char buf[65536];
     size_t n;
     int ok = 1;
@@ -123,6 +135,10 @@ int w2k_fs_transfer(char paths[][1024], int n, const char *dir, int move,
         if (!strcmp(paths[i], to)) continue;          /* onto itself */
         struct stat st;
         if (lstat(to, &st) == 0) {
+            /* Replacing a folder that the source lives inside would delete
+             * the source along with it: never that. */
+            size_t tl = strlen(to);
+            if (!strncmp(paths[i], to, tl) && paths[i][tl] == '/') { errno = EINVAL; continue; }
             int c = confirm ? confirm(to, user) : 1;
             if (c < 0) break;
             if (c == 0) continue;

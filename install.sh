@@ -49,6 +49,11 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# Run as root through sudo, the caller is the user to set up.
+if [ "$(id -u)" = 0 ] && [ -z "$TARGET_USER" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    TARGET_USER=$SUDO_USER
+fi
+
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 run() { if [ "$DRY" = 1 ]; then echo "  + $*"; else "$@"; fi; }
 as_root() {
@@ -89,13 +94,16 @@ if [ "$DO_DEPS" = 1 ]; then
             pulseaudio-utils xterm python3 git curl fonts-dejavu-core dbus-x11 \
             cabextract qt5ct qt6ct libpam0g-dev xauth ;;
     *fedora*|*rhel*|*centos*|*rocky*|*alma*)
-        as_root dnf install -y gcc make libX11-devel libXext-devel libXrandr-devel \
+        # strict=0: a name this release no longer has is skipped, not fatal.
+        as_root dnf install -y --setopt=strict=0 gcc make libX11-devel libXext-devel libXrandr-devel \
             libXcursor-devel libXft-devel fontconfig-devel freetype-devel zlib-devel \
             libjpeg-turbo-devel xrandr xset xsetroot xrdb xmessage xdg-utils zip unzip \
             tar p7zip p7zip-plugins pulseaudio-utils xterm python3 git curl \
             dejavu-sans-fonts dbus-x11 cabextract qt5ct qt6ct pam-devel xorg-x11-xauth ;;
     *arch*|*manjaro*|*endeavouros*)
-        as_root pacman -Sy --needed --noconfirm base-devel libx11 libxext libxrandr \
+        # -Syu, never -Sy: a refreshed database with an unrefreshed system
+        # is the partial upgrade Arch warns about.
+        as_root pacman -Syu --needed --noconfirm base-devel libx11 libxext libxrandr \
             libxcursor libxft fontconfig freetype2 zlib libjpeg-turbo xorg-xrandr \
             xorg-xset xorg-xsetroot xorg-xrdb xorg-xmessage xdg-utils zip unzip tar \
             p7zip libpulse xterm python git curl ttf-dejavu dbus cabextract qt5ct qt6ct pam xorg-xauth ;;
@@ -139,12 +147,12 @@ if [ "$DO_DEPS" = 1 ] && [ "$FULL" = 1 ]; then
             xdg-user-dirs desktop-file-utils shared-mime-info firefox-esr firefox \
             polkitd pkexec policykit-1 dbus-user-session ;;
     *fedora*|*rhel*|*centos*|*rocky*|*alma*)
-        as_root dnf install -y xorg-x11-server-Xorg xorg-x11-xinit xorg-x11-drivers \
+        as_root dnf install -y --setopt=strict=0 xorg-x11-server-Xorg xorg-x11-xinit xorg-x11-drivers \
             liberation-fonts pulseaudio-utils pavucontrol \
             spice-vdagent xdg-user-dirs desktop-file-utils shared-mime-info firefox \
             polkit ;;
     *arch*|*manjaro*|*endeavouros*)
-        as_root pacman -S --needed --noconfirm xorg-server xorg-xinit xf86-video-vesa \
+        as_root pacman -Syu --needed --noconfirm xorg-server xorg-xinit xf86-video-vesa \
             xf86-video-vmware xf86-video-qxl \
             ttf-liberation pipewire pipewire-pulse pavucontrol spice-vdagent \
             xdg-user-dirs desktop-file-utils shared-mime-info firefox polkit ;;
@@ -193,16 +201,29 @@ if [ "$DO_BUILD" = 1 ]; then
             echo "  Install them (libpam0g-dev / pam-devel) and rerun." >&2
             exit 1
         fi
-        as_root sh -c "sed 's|^ExecStart=.*|ExecStart=$PREFIX/bin/w2kdm|' '$HERE/config/w2kdm.service' > /etc/systemd/system/w2kdm.service"
-        if [ -f /etc/pam.d/common-auth ]; then pamsrc=w2kdm.pam.debian; else pamsrc=w2kdm.pam.generic; fi
+        # The PAM stack in the words this distribution's stacks use.
+        if [ -f /etc/pam.d/common-auth ]; then pamsrc=w2kdm.pam.debian
+        elif [ -f /etc/pam.d/password-auth ]; then pamsrc=w2kdm.pam.fedora
+        elif [ -f /etc/pam.d/base-auth ]; then pamsrc=w2kdm.pam.alpine
+        else pamsrc=w2kdm.pam.generic; fi
         as_root install -m644 "$HERE/config/$pamsrc" /etc/pam.d/w2kdm
-        if command -v systemctl >/dev/null 2>&1; then
-            for dm in lightdm gdm gdm3 sddm xdm lxdm; do
-                as_root systemctl disable --now "$dm" >/dev/null 2>&1 || true
+        if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+            as_root sh -c "sed 's|^ExecStart=.*|ExecStart=$PREFIX/bin/w2kdm|' '$HERE/config/w2kdm.service' > /etc/systemd/system/w2kdm.service"
+            # Another display manager stands down at the next boot; it is
+            # not stopped now, because this may well be running under it.
+            for dm in lightdm gdm gdm3 sddm xdm lxdm slim ly greetd; do
+                as_root systemctl disable "$dm" >/dev/null 2>&1 || true
             done
+            # Whoever held the display-manager alias last leaves it, or
+            # enable refuses.
+            as_root rm -f /etc/systemd/system/display-manager.service
             as_root systemctl daemon-reload
-            as_root systemctl enable w2kdm >/dev/null 2>&1 || true
+            as_root systemctl enable w2kdm
             as_root systemctl set-default graphical.target >/dev/null 2>&1 || true
+            echo "  w2kdm takes over the console at the next boot (or now: systemctl start w2kdm)."
+        else
+            echo "  No systemd here: start '$PREFIX/bin/w2kdm' as root at boot from your" >&2
+            echo "  init system (it runs in the foreground and restarts the logon screen itself)." >&2
         fi
     fi
 fi
@@ -293,7 +314,9 @@ if [ "$DO_TAHOMA" = 1 ] && ! fc-list 2>/dev/null | grep -qi tahoma; then
     if command -v cabextract >/dev/null 2>&1; then
         say "Fetching Tahoma"
         tmp=$(mktemp -d)
-        run sh -c "curl -sL -o '$tmp/IELPKTH.CAB' https://downloads.sourceforge.net/corefonts/IELPKTH.CAB && cd '$tmp' && cabextract -q -F 'tahoma*.ttf' IELPKTH.CAB && cp -f tahoma*.ttf '$HOME/.local/share/fonts/' && fc-cache -f '$HOME/.local/share/fonts'"
+        # A mirror's error page is not a font: -f, and a miss is not fatal.
+        run sh -c "curl -fsSL -o '$tmp/IELPKTH.CAB' https://downloads.sourceforge.net/corefonts/IELPKTH.CAB && cd '$tmp' && cabextract -q -F 'tahoma*.ttf' IELPKTH.CAB && cp -f tahoma*.ttf '$HOME/.local/share/fonts/' && fc-cache -f '$HOME/.local/share/fonts'" \
+            || echo "  Tahoma could not be fetched; the shell falls back to DejaVu Sans." >&2
         rm -rf "$tmp"
     else
         echo "  cabextract is needed for --tahoma; skipped." >&2

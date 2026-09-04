@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 enum {
     ID_NEWTASK = 1, ID_EXIT, ID_ENDTASK, ID_SWITCHTO, ID_ENDPROCESS,
@@ -298,7 +299,10 @@ static int is_task_window(Window w)
 
 static void refresh_apps(void)
 {
-    int oldsel = tm.apps->sel;
+    /* The selection follows the window, not the row: the list is rebuilt
+     * every tick and windows come and go above it. */
+    Window oldwin = tm.apps->sel >= 0 && tm.apps->sel < tm.napps
+                  ? tm.appwin[tm.apps->sel] : None;
     w2k_list_clear(tm.apps);
     tm.napps = 0;
 
@@ -322,10 +326,13 @@ static void refresh_apps(void)
         }
         XFree(data);
     }
-    if (oldsel >= 0 && oldsel < tm.apps->n) {
-        tm.apps->sel = oldsel;
-        tm.apps->items[oldsel].selected = 1;
-    }
+    tm.apps->sel = -1;
+    for (int i = 0; oldwin && i < tm.napps; i++)
+        if (tm.appwin[i] == oldwin) {
+            tm.apps->sel = i;
+            tm.apps->items[i].selected = 1;
+            break;
+        }
 }
 
 /* ------------------------------------------------------------------ *
@@ -810,12 +817,16 @@ static void command(void *user, int id)
         if (w2k_prompt(tm.win, "Create New Task",
                        "Type the name of a program to open:", "", out,
                        sizeof out, ICO_RUN) && out[0]) {
-            if (fork() == 0) {
-                close(ConnectionNumber(w2k.dpy));
-                setsid();
-                execlp("/bin/sh", "sh", "-c", out, (char *)NULL);
+            pid_t pid = fork();
+            if (pid == 0) {
+                if (fork() == 0) {
+                    close(ConnectionNumber(w2k.dpy));
+                    setsid();
+                    execlp("/bin/sh", "sh", "-c", out, (char *)NULL);
+                }
                 _exit(127);
             }
+            if (pid > 0) { int st; waitpid(pid, &st, 0); }
         }
         break;
     }

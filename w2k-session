@@ -85,22 +85,24 @@ dbus-update-activation-environment --systemd \
 xsetroot -solid "#3a6ea5" 2>/dev/null
 xset b off 2>/dev/null
 
-autostart=""
+# Each autostart line is one argument to the WM, exactly as written: no
+# second parse of quotes, dollars or backticks.
+set --
 if [ -r "$HOME/.w2k/autostart" ]; then
     while IFS= read -r line; do
         case "$line" in ''|'#'*) continue ;; esac
-        autostart="$autostart \"$line\""
+        set -- "$@" "$line"
     done < "$HOME/.w2k/autostart"
 fi
 
 # The WM exits when the user logs off (0), shuts down (10) or restarts (11).
-eval w2kwm -- $autostart
+w2kwm -- "$@"
 rc=$?
 echo "=== $(date) : w2kwm exited with $rc ==="
 case $rc in
     0)  ;;
-    10) systemctl poweroff 2>/dev/null || loginctl poweroff 2>/dev/null ;;
-    11) systemctl reboot   2>/dev/null || loginctl reboot   2>/dev/null ;;
+    10) systemctl poweroff 2>/dev/null || loginctl poweroff 2>/dev/null || poweroff ;;
+    11) systemctl reboot   2>/dev/null || loginctl reboot   2>/dev/null || reboot ;;
     *)  die "w2kwm exited with status $rc (see the log for its last words)." ;;
 esac
 exit 0

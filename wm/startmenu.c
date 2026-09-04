@@ -33,7 +33,7 @@ static int have_cmd(const char *cmd)
     while (*p) {
         const char *q = strchr(p, ':');
         size_t len = q ? (size_t)(q - p) : strlen(p);
-        if (len && len < sizeof buf - strlen(cmd) - 2) {
+        if (len && len + strlen(cmd) + 2 <= sizeof buf) {
             memcpy(buf, p, len);
             buf[len] = '/';
             strcpy(buf + len + 1, cmd);

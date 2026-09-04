@@ -61,6 +61,7 @@ void w2k_tooltip_show(const char *text, int x, int y)
 void w2k_tooltip_hide(void)
 {
     if (!tip) return;
+    w2k_font_forget(tip);
     XDestroyWindow(w2k.dpy, tip);
     tip = 0;
     tip_text[0] = 0;

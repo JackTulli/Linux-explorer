@@ -1,6 +1,7 @@
 /* app.c -- toolkit initialisation: colours, fonts, GCs, cursors, atoms. */
 #define _POSIX_C_SOURCE 200809L
 #include "w2k.h"
+#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -741,6 +742,27 @@ void *w2k_alloc(size_t n)
     return p;
 }
 
+void w2k_shell_quote(const char *in, char *out, int n)
+{
+    int o = 0;
+    if (n < 3) { if (n > 0) out[0] = 0; return; }
+    out[o++] = '\'';
+    for (const char *p = in; *p && o < n - 6; p++) {
+        if (*p == '\'') {
+            out[o++] = '\''; out[o++] = '\\'; out[o++] = '\''; out[o++] = '\'';
+        } else out[o++] = *p;
+    }
+    out[o++] = '\'';
+    out[o] = 0;
+}
+
+void w2k_splice(const char *tmpl, const char *arg, char *out, int n)
+{
+    const char *at = strstr(tmpl, "%s");
+    if (!at) { snprintf(out, (size_t)n, "%s", tmpl); return; }
+    snprintf(out, (size_t)n, "%.*s%s%s", (int)(at - tmpl), tmpl, arg, at + 2);
+}
+
 char *w2k_strdup(const char *s)
 {
     if (!s) return NULL;
@@ -780,6 +802,10 @@ static int default_xerror(Display *d, XErrorEvent *e)
 
 int w2k_init(const char *appname)
 {
+    /* Text is UTF-8 throughout; the keyboard side needs a locale that
+     * says so before the display is opened. */
+    if (!setlocale(LC_CTYPE, "") || !strstr(setlocale(LC_CTYPE, NULL), "UTF-8"))
+        if (!setlocale(LC_CTYPE, "C.UTF-8")) setlocale(LC_CTYPE, "en_US.UTF-8");
     Display *d = XOpenDisplay(NULL);
     if (!d) {
         fprintf(stderr, "%s: cannot open display \"%s\"\n", appname,

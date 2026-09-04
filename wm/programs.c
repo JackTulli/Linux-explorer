@@ -159,6 +159,7 @@ static void scan_all(void)
         free(apps[i].id);
         free(apps[i].name);
         free(apps[i].exec);
+        free(apps[i].icon);
     }
     napps = 0;
 

@@ -8,6 +8,8 @@
 #define TEXT_FILTERS "Text Documents (*.txt)|*.txt|All Files (*.*)|*"
 #include <errno.h>
 #include <stdio.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -34,6 +36,7 @@ typedef struct {
 
     char        find_what[256];
     int         find_case, find_up;
+    int         crlf, binary;     /* line endings on disk; NULs inside */
 } Pad;
 
 static Pad pad;
@@ -107,7 +110,11 @@ static int load_file(const char *path)
     buf[got] = 0;
     fclose(f);
 
-    /* Strip CRs so DOS files do not sprout stray glyphs. */
+    /* Strip CRs so DOS files do not sprout stray glyphs -- and remember
+     * them, so the file is written back the way it came. A NUL inside the
+     * file would be lost on save, so such a file opens read-only. */
+    pad.crlf = memchr(buf, '\r', got) != NULL;
+    pad.binary = strlen(buf) != got;
     char *w = buf;
     for (char *r = buf; *r; r++) if (*r != '\r') *w++ = *r;
     *w = 0;
@@ -132,7 +139,18 @@ int do_save(int saveas)
         snprintf(pad.path, sizeof pad.path, "%s", p);
         pad.untitled = 0;
     }
-    FILE *f = fopen(pad.path, "wb");
+    if (pad.binary && !saveas) {
+        w2k_msgbox(pad.win, "Notepad",
+                   "This file contains characters Notepad cannot keep. "
+                   "Use Save As to write a copy of what is shown.",
+                   MB_OK | MB_ICONWARNING);
+        return 0;
+    }
+    /* Written beside the file and renamed over it, so a full disk or a
+     * pulled drive leaves the old contents rather than an empty file. */
+    char tmp[1100];
+    snprintf(tmp, sizeof tmp, "%.1024s.w2ktmp", pad.path);
+    FILE *f = fopen(tmp, "wb");
     if (!f) {
         char msg[1200];
         snprintf(msg, sizeof msg, "Cannot create the file %s.\n\n%s",
@@ -141,8 +159,28 @@ int do_save(int saveas)
         return 0;
     }
     const char *t = w2k_edit_text(pad.ed);
-    fwrite(t, 1, strlen(t), f);
-    fclose(f);
+    int ok = 1;
+    if (pad.crlf) {
+        for (const char *p = t; *p && ok; p++) {
+            if (*p == '\n' && fputc('\r', f) == EOF) ok = 0;
+            if (fputc(*p, f) == EOF) ok = 0;
+        }
+    } else if (fwrite(t, 1, strlen(t), f) != strlen(t)) ok = 0;
+    if (fclose(f) != 0) ok = 0;
+    if (ok) {
+        struct stat st;
+        if (stat(pad.path, &st) == 0) chmod(tmp, st.st_mode & 07777);
+        if (rename(tmp, pad.path) != 0) ok = 0;
+    }
+    if (!ok) {
+        char msg[1200];
+        snprintf(msg, sizeof msg, "Cannot save the file %s.\n\n%s",
+                 pad.path, strerror(errno));
+        unlink(tmp);
+        w2k_msgbox(pad.win, "Notepad", msg, MB_OK | MB_ICONERROR);
+        return 0;
+    }
+    pad.binary = 0;
     pad.dirty = 0;
     update_title();
     return 1;

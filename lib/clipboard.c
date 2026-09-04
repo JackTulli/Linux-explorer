@@ -125,6 +125,13 @@ char *w2k_clipboard_get(void)
                                    True, AnyPropertyType, &type, &fmt, &n,
                                    &after, &data) != Success || !data)
                 return NULL;
+            /* A very large selection arrives in INCR pieces, which this
+             * does not collect: better nothing than the length word. */
+            if (fmt != 8 || (type != w2k.a_utf8 && type != XA_STRING &&
+                             type != a_text)) {
+                XFree(data);
+                return NULL;
+            }
             char *out = w2k_alloc(n + 1);
             memcpy(out, data, n);
             out[n] = 0;

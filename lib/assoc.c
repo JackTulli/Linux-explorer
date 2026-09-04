@@ -151,12 +151,15 @@ void w2k_assoc_command(const char *path, char *out, int n)
     char cmd[512];
     w2k_assoc_get(cls, cmd, sizeof cmd);
 
+    /* The path is quoted for the shell -- a name with a quote or a $ in
+     * it is data, not a command -- and the configured template is spliced
+     * literally rather than used as a format. */
+    char quoted[4200];
+    w2k_shell_quote(path, quoted, sizeof quoted);
     if (strstr(cmd, "%s")) {
-        char quoted[1200];
-        snprintf(quoted, sizeof quoted, "'%s'", path);
-        snprintf(out, (size_t)n, cmd, quoted);
+        w2k_splice(cmd, quoted, out, n);
     } else {
-        snprintf(out, (size_t)n, "%s '%s'", cmd, path);
+        snprintf(out, (size_t)n, "%s %s", cmd, quoted);
     }
 }
 

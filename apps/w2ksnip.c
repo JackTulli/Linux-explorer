@@ -1122,7 +1122,8 @@ static void do_save(void)
         return;
     unsigned char *flat = flattened();
     if (!flat) return;
-    const char *dot = strrchr(path, '.');
+    const char *base = strrchr(path, '/');
+    const char *dot = strrchr(base ? base : path, '.');
     int ok;
     if (dot && (!strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".jpeg")))
         ok = w2k_jpeg_save(path, flat, st.iw, st.ih);

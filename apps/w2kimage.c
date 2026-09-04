@@ -66,8 +66,13 @@ static void target_size(int *tw, int *th)
     W2kRect v = view_rect();
     if (!im.iw || !im.ih) { *tw = *th = 0; return; }
     if (!im.fit) {
-        *tw = (int)(im.iw * im.zoom);
-        *th = (int)(im.ih * im.zoom);
+        /* The X protocol stops at 32767 a side, and a 16x photo would
+         * want gigabytes: the zoom is what the picture can take. */
+        double z = im.zoom, lim = 8192.0;
+        if (im.iw * z > lim) z = lim / im.iw;
+        if (im.ih * z > lim) z = lim / im.ih;
+        *tw = (int)(im.iw * z);
+        *th = (int)(im.ih * z);
     } else {
         double sx = (double)(v.w - 4) / im.iw, sy = (double)(v.h - 4) / im.ih;
         double s = sx < sy ? sx : sy;
@@ -90,10 +95,12 @@ static void rescale(void)
     if (im.scaled && tw == im.sw && th == im.sh) return;
     drop_scaled();
 
+    void *pixels = malloc((size_t)tw * th * 4);
+    if (!pixels) return;
     im.scaled = XCreatePixmap(w2k.dpy, w2k.root, tw, th, w2k.depth);
     XImage *xi = XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap, 0,
-                              malloc((size_t)tw * th * 4), tw, th, 32, 0);
-    if (!xi) { drop_scaled(); return; }
+                              pixels, tw, th, 32, 0);
+    if (!xi) { free(pixels); drop_scaled(); return; }
 
     int shrink = (tw < im.iw || th < im.ih);
     for (int y = 0; y < th; y++) {

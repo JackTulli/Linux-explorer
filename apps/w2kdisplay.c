@@ -492,7 +492,7 @@ static void fill_walls(void)
     int nd = 0;
     pictures_dir(dirs[nd++], 1024);
     if (home) snprintf(dirs[nd++], 1024, "%s/.w2k/wallpapers", home);
-    snprintf(dirs[nd++], 1024, "/usr/local/share/w2k/wallpapers");
+    snprintf(dirs[nd++], 1024, W2K_PREFIX "/share/w2k/wallpapers");
     for (int d = 0; d < nd; d++) {
         DIR *dp = opendir(dirs[d]);
         if (!dp) continue;

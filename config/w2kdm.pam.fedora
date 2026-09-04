@@ -1,0 +1,13 @@
+#%PAM-1.0
+# w2kdm -- the Windows 2000 logon screen (Fedora, RHEL and their relatives:
+# the password-auth / postlogin stacks)
+auth      requisite  pam_nologin.so
+auth      substack   password-auth
+auth      include    postlogin
+account   required   pam_nologin.so
+account   include    password-auth
+password  include    password-auth
+session   required   pam_loginuid.so
+session   optional   pam_keyinit.so force revoke
+session   include    password-auth
+session   include    postlogin

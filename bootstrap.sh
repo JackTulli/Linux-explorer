@@ -2,7 +2,10 @@
 # bootstrap.sh -- from a bare Debian (or any of the distributions install.sh
 # knows) to the Windows 2000 desktop in one command, run as root:
 #
-#   sh -c "$(curl -fsSL https://raw.githubusercontent.com/JackTulli/Linux-explorer/main/bootstrap.sh)"
+#   curl -sL jacktulli.github.io/w2k | sh
+#
+# (which serves a copy of this file; the long form is
+#   sh -c "$(curl -fsSL https://raw.githubusercontent.com/JackTulli/Linux-explorer/main/bootstrap.sh)")
 #
 # It installs git, fetches the repository into /usr/local/src, and runs
 # install.sh --full: the X server, w2kdm (our own logon screen, no LightDM),
@@ -40,10 +43,12 @@ elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive install gi
 elif command -v apk >/dev/null 2>&1; then apk add git curl
 elif command -v xbps-install >/dev/null 2>&1; then xbps-install -Sy git curl
 fi
+# The checkout stays root's: root builds and installs from it, and a tree
+# the desktop user could edit would be a way to become root at the next
+# run. (Earlier versions handed it to the user; take it back.)
 if [ -d "$SRC/.git" ]; then
-    # The checkout belongs to the user (chown below), and git will not let
-    # root pull in a directory owned by someone else -- so pull as them.
-    if ! su -s /bin/sh "$USERNAME" -c "git -C '$SRC' pull -q --ff-only"; then
+    chown -R root:root "$SRC"
+    if ! git -c safe.directory="$SRC" -C "$SRC" pull -q --ff-only; then
         echo "==> Could not update $SRC; fetching it afresh"
         rm -rf "$SRC"
         git clone -q "$REPO" "$SRC"
@@ -52,8 +57,7 @@ else
     mkdir -p "$(dirname "$SRC")"
     git clone -q "$REPO" "$SRC"
 fi
-chown -R "$USERNAME" "$SRC"
-echo "==> Source at $SRC, $(git -c safe.directory='*' -C "$SRC" log -1 --format='%h %s')"
+echo "==> Source at $SRC, $(git -C "$SRC" log -1 --format='%h %s')"
 
 cd "$SRC"
 sh ./install.sh --full --tahoma --xinitrc --user "$USERNAME"

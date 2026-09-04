@@ -133,9 +133,15 @@ static int combo_dropdown(W2kCombo *c, int rx, int ry)
         XResizeWindow(w2k.dpy, win, w, h);
     }
     XMapRaised(w2k.dpy, win);
-    XGrabPointer(w2k.dpy, win, True,
-                 ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
-                 GrabModeAsync, GrabModeAsync, None, w2k.cur_arrow, CurrentTime);
+    /* Without the pointer grab a click outside would never arrive and the
+     * list could not be dismissed: then there is no list. */
+    if (XGrabPointer(w2k.dpy, win, True,
+                     ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+                     GrabModeAsync, GrabModeAsync, None, w2k.cur_arrow,
+                     CurrentTime) != GrabSuccess) {
+        XDestroyWindow(w2k.dpy, win);
+        return -1;
+    }
     XGrabKeyboard(w2k.dpy, win, True, GrabModeAsync, GrabModeAsync, CurrentTime);
 
     int top = 0, hot = c->sel;
@@ -186,7 +192,13 @@ static int combo_dropdown(W2kCombo *c, int rx, int ry)
             else if (ks == XK_Up && hot > 0) { hot--; repaint = 1; }
             if (hot < top) { top = hot; repaint = 1; }
             if (hot >= top + rows) { top = hot - rows + 1; repaint = 1; }
-        } else if (e.type == Expose) repaint = 1;
+        } else if (e.type == Expose && e.xexpose.window == win) repaint = 1;
+        else if (w2k_win_foreign_event) {
+            /* Not ours: the window manager (when this runs inside it)
+             * must keep managing while the list is open, and other
+             * dialogs keep painting. */
+            w2k_win_foreign_event(&e);
+        }
     }
     XUngrabKeyboard(w2k.dpy, CurrentTime);
     XUngrabPointer(w2k.dpy, CurrentTime);

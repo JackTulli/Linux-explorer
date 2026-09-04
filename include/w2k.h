@@ -642,7 +642,16 @@ void w2k_icon_draw_disabled(Drawable d, int x, int y, int id);
 /* ------------------------------------------------------------------ *
  * Small helpers
  * ------------------------------------------------------------------ */
+#ifndef W2K_PREFIX
+#define W2K_PREFIX "/usr/local"         /* where make install put the data */
+#endif
 void *w2k_alloc(size_t n);          /* calloc that aborts on failure */
+/* Quote a string for /bin/sh: single quotes, with any quote inside spliced
+ * as '\''. Every path that reaches a shell must go through this. */
+void  w2k_shell_quote(const char *in, char *out, int n);
+/* Copy `tmpl` to `out` with the first "%s" replaced by `arg` (a literal
+ * splice, never a printf format: the template is user configuration). */
+void  w2k_splice(const char *tmpl, const char *arg, char *out, int n);
 char *w2k_strdup(const char *s);
 void  w2k_set_wm_name(Window w, const char *name);
 long  w2k_now_ms(void);

@@ -217,18 +217,26 @@ void w2k_dnd_cancel(void)
 /* ------------------------------------------------------------------ *
  * Events -- both roles
  * ------------------------------------------------------------------ */
-static void read_and_deliver(Window w, int x, int y, int move)
+static int read_and_deliver(Window w, int x, int y, int move)
 {
     Atom type;
     int fmt;
     unsigned long n, after;
     unsigned char *data = NULL;
+    int ok = 0;
     if (XGetWindowProperty(w2k.dpy, w, a_prop, 0, 65536, True,
                            AnyPropertyType, &type, &fmt, &n, &after,
                            &data) == Success && data) {
-        if (w2k_dnd_on_drop) w2k_dnd_on_drop(w, x, y, (const char *)data, move);
+        if (type != a_urilist && type != w2k.a_utf8 && type != XA_STRING) {
+            /* An INCR transfer, or something that is not text: refused
+             * rather than parsed as a list of files. */
+        } else if (w2k_dnd_on_drop) {
+            w2k_dnd_on_drop(w, x, y, (const char *)data, move);
+            ok = 1;
+        }
         XFree(data);
     }
+    return ok;
 }
 
 int w2k_dnd_event(XEvent *e)
@@ -262,10 +270,14 @@ int w2k_dnd_event(XEvent *e)
         e->xselection.selection == a_selection) {
         /* Our request for the dropped files came back: deliver it where
          * the pointer last was, as the move or copy the source asked for. */
-        read_and_deliver(e->xselection.requestor, in_x, in_y, in_move);
+        /* XdndFinished says whether the drop was taken: a source doing a
+         * move deletes its originals on a yes, so it must be true. */
+        int ok = e->xselection.property != None &&
+                 read_and_deliver(e->xselection.requestor, in_x, in_y, in_move);
         if (in_source)
             send_client(in_source, a_finished, (long)e->xselection.requestor,
-                        1, (long)(in_move ? a_actionmove : a_actioncopy), 0, 0);
+                        ok, ok ? (long)(in_move ? a_actionmove : a_actioncopy) : 0,
+                        0, 0);
         in_source = None;
         return 1;
     }
@@ -398,7 +410,9 @@ int w2k_uri_list_paths(const char *uris, char paths[][1024], int max)
 /* The reverse: build a URI list from paths, for a drag. Caller frees. */
 char *w2k_uri_list_build(char paths[][1024], int n)
 {
-    size_t cap = (size_t)n * 1100 + 16;
+    /* Every byte may become %XX: room for that, so nothing truncates and
+     * the offset never runs past the buffer. */
+    size_t cap = (size_t)n * (7 + 3 * 1024 + 2) + 16;
     char *out = malloc(cap);
     if (!out) return NULL;
     size_t o = 0;

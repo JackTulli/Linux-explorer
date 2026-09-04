@@ -7,6 +7,86 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+#include <X11/Xlocale.h>
+
+/* ------------------------------------------------------------------ *
+ * UTF-8
+ *
+ * The text is UTF-8 (that is what the renderer draws), so the caret must
+ * never come to rest inside a character, and a key must arrive as UTF-8.
+ * ------------------------------------------------------------------ */
+static int is_cont(unsigned char c) { return (c & 0xc0) == 0x80; }
+
+/* Back up to the start of the character `off` is inside. */
+static int char_start(const W2kEdit *e, int off)
+{
+    while (off > 0 && off < e->len && is_cont((unsigned char)e->text[off])) off--;
+    return off;
+}
+static int char_prev(const W2kEdit *e, int off)
+{
+    if (off <= 0) return 0;
+    off--;
+    while (off > 0 && is_cont((unsigned char)e->text[off])) off--;
+    return off;
+}
+static int char_next(const W2kEdit *e, int off)
+{
+    if (off >= e->len) return e->len;
+    off++;
+    while (off < e->len && is_cont((unsigned char)e->text[off])) off++;
+    return off;
+}
+
+static int utf8_put(unsigned cp, char *out)
+{
+    if (cp < 0x80) { out[0] = (char)cp; return 1; }
+    if (cp < 0x800) { out[0] = (char)(0xc0 | cp >> 6); out[1] = (char)(0x80 | (cp & 0x3f)); return 2; }
+    if (cp < 0x10000) {
+        out[0] = (char)(0xe0 | cp >> 12); out[1] = (char)(0x80 | ((cp >> 6) & 0x3f));
+        out[2] = (char)(0x80 | (cp & 0x3f)); return 3;
+    }
+    out[0] = (char)(0xf0 | cp >> 18); out[1] = (char)(0x80 | ((cp >> 12) & 0x3f));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3f)); out[3] = (char)(0x80 | (cp & 0x3f)); return 4;
+}
+
+/* The key's text, as UTF-8. Through an input context when the locale
+ * allows one (that is where Cyrillic, Greek and dead keys come from);
+ * otherwise Latin-1 and Unicode keysyms are converted by hand. */
+static int key_text(XKeyEvent *k, char *buf, int n, KeySym *ks)
+{
+    static XIM im;
+    static XIC ic;
+    static int tried;
+    if (!tried) {
+        tried = 1;
+        if (XSupportsLocale()) {
+            XSetLocaleModifiers("");
+            im = XOpenIM(w2k.dpy, NULL, NULL, NULL);
+            if (im) ic = XCreateIC(im, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+                                   XNClientWindow, k->window, NULL);
+        }
+    }
+    if (ic) {
+        XSetICValues(ic, XNFocusWindow, k->window, NULL);
+        Status st;
+        int r = Xutf8LookupString(ic, k, buf, n - 1, ks, &st);
+        if (st == XBufferOverflow || st == XLookupKeySym || st == XLookupNone) r = 0;
+        if (r < 0) r = 0;
+        buf[r] = 0;
+        return r;
+    }
+    char raw[32];
+    int r = XLookupString(k, raw, sizeof raw - 1, ks, NULL);
+    unsigned cp = 0;
+    if (r == 1 && (unsigned char)raw[0] < 0x80) { buf[0] = raw[0]; buf[1] = 0; return 1; }
+    if ((*ks >= 0x20 && *ks <= 0x7e) || (*ks >= 0xa0 && *ks <= 0xff)) cp = (unsigned)*ks;
+    else if ((*ks & 0xff000000) == 0x01000000) cp = (unsigned)(*ks & 0xffffff);
+    if (!cp || n < 5) { buf[0] = 0; return 0; }
+    r = utf8_put(cp, buf);
+    buf[r] = 0;
+    return r;
+}
 
 #define PAD_X 2          /* text inset inside the sunken well */
 #define PAD_Y 1
@@ -53,6 +133,7 @@ void w2k_edit_bind(W2kEdit *e, W2kWin *w)
 void w2k_edit_free(W2kEdit *e)
 {
     if (!e) return;
+    w2k_scroll_release(&e->vsb);
     free(e->text);
     free(e->vls);
     free(e);
@@ -537,6 +618,7 @@ int w2k_edit_press(W2kEdit *e, XButtonEvent *b)
         e->caret = z;
         last = 0;
     } else {
+        off = char_start(e, off);
         e->caret = off;
         if (!(b->state & ShiftMask)) e->sel = off;
         last = b->time;
@@ -559,7 +641,7 @@ int w2k_edit_motion(W2kEdit *e, XMotionEvent *m)
         return 1;
     }
     if (!(m->state & Button1Mask) || !e->focused) return 0;
-    e->caret = offset_at(e, m->x, m->y);
+    e->caret = char_start(e, offset_at(e, m->x, m->y));
     ensure_caret_visible(e);
     if (e->owner) w2k_win_dirty(e->owner);
     return 1;
@@ -578,8 +660,7 @@ int w2k_edit_key(W2kEdit *e, XKeyEvent *k)
 {
     char buf[32];
     KeySym ks;
-    int n = XLookupString(k, buf, sizeof buf - 1, &ks, NULL);
-    buf[n > 0 ? n : 0] = 0;
+    int n = key_text(k, buf, sizeof buf, &ks);
 
     int ctrl = (k->state & ControlMask) != 0;
     int shift = (k->state & ShiftMask) != 0;
@@ -608,8 +689,8 @@ int w2k_edit_key(W2kEdit *e, XKeyEvent *k)
     }
 
     switch (ks) {
-    case XK_Left:  if (e->caret > 0) e->caret--; goto moved;
-    case XK_Right: if (e->caret < e->len) e->caret++; goto moved;
+    case XK_Left:  e->caret = char_prev(e, e->caret); goto moved;
+    case XK_Right: e->caret = char_next(e, e->caret); goto moved;
 
     case XK_Up:
     case XK_Down: {
@@ -649,10 +730,10 @@ int w2k_edit_key(W2kEdit *e, XKeyEvent *k)
         if (e->readonly) return 1;
         if (w2k_edit_has_sel(e)) { w2k_edit_delete_sel(e); return 1; }
         if (e->caret > 0) {
-            memmove(e->text + e->caret - 1, e->text + e->caret,
-                    e->len - e->caret + 1);
-            e->len--;
-            e->caret--;
+            int from = char_prev(e, e->caret), k = e->caret - from;
+            memmove(e->text + from, e->text + e->caret, e->len - e->caret + 1);
+            e->len -= k;
+            e->caret = from;
             e->sel = e->caret;
             changed(e);
             ensure_caret_visible(e);
@@ -663,9 +744,9 @@ int w2k_edit_key(W2kEdit *e, XKeyEvent *k)
         if (e->readonly) return 1;
         if (w2k_edit_has_sel(e)) { w2k_edit_delete_sel(e); return 1; }
         if (e->caret < e->len) {
-            memmove(e->text + e->caret, e->text + e->caret + 1,
-                    e->len - e->caret);
-            e->len--;
+            int to = char_next(e, e->caret), k = to - e->caret;
+            memmove(e->text + e->caret, e->text + to, e->len - to + 1);
+            e->len -= k;
             changed(e);
         }
         return 1;
@@ -695,6 +776,7 @@ int w2k_edit_key(W2kEdit *e, XKeyEvent *k)
     return 1;
 
 moved:
+    e->caret = char_start(e, e->caret);
     if (!shift) e->sel = e->caret;
     if (e->caret != old || shift) {
         e->caret_on = 1;

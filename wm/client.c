@@ -85,7 +85,7 @@ void client_update_name(Client *c)
 /* The icon an application publishes in _NET_WM_ICON: a list of
  * width, height, then width*height ARGB pixels, largest last as a rule.
  * The one nearest 32 pixels is taken and scaled to the two sizes the shell
- * draws. This is where Firefox, Claude and the rest get a real taskbar icon
+ * draws. This is where Firefox, terminals and the rest get a real taskbar icon
  * instead of a generic one. */
 static int icon_from_property(Window win)
 {
@@ -174,11 +174,10 @@ static int icon_for_client(Client *c)
     /* Either half of WM_CLASS may be the icon theme's name for it. */
     if (id < 0) id = w2k_icon_by_name(c->cls);
     if (id == ICO_APP && c->cls_name) id = w2k_icon_by_name(c->cls_name);
-    if (ncache < (int)(sizeof cache / sizeof *cache)) {
-        snprintf(cache[ncache].cls, sizeof cache[ncache].cls, "%.63s", c->cls);
-        cache[ncache].id = id;
-        ncache++;
-    }
+    static int next;
+    int slot = ncache < (int)(sizeof cache / sizeof *cache) ? ncache++ : next++ % (int)(sizeof cache / sizeof *cache);
+    snprintf(cache[slot].cls, sizeof cache[slot].cls, "%.63s", c->cls);
+    cache[slot].id = id;
     return id;
 }
 
@@ -217,7 +216,7 @@ void client_update_hints(Client *c)
     if (XGetWMProtocols(w2k.dpy, c->win, &pr, &np)) {
         for (int i = 0; i < np; i++) {
             if (pr[i] == w2k.a_wm_delete)     c->deleteable = 1;
-            if (pr[i] == w2k.a_wm_take_focus) c->takes_focus = 1;
+            if (pr[i] == w2k.a_wm_take_focus) c->take_focus_proto = 1;
         }
         XFree(pr);
     }
@@ -291,7 +290,11 @@ void client_update_type(Client *c)
         c->is_dialog = 1;
     }
 
-    if (XGetWindowProperty(w2k.dpy, c->win, w2k.a_net_wm_state, 0, 16, False,
+    /* The app's initial _NET_WM_STATE, once: after that the property is
+     * ours, written back as the state changes, and re-reading it on a
+     * theme change would resurrect a maximize the user has undone. */
+    if (!c->state_read &&
+        XGetWindowProperty(w2k.dpy, c->win, w2k.a_net_wm_state, 0, 16, False,
                            XA_ATOM, &type, &fmt, &n, &after, &data) == Success
         && data) {
         Atom *a = (Atom *)data;
@@ -304,6 +307,20 @@ void client_update_type(Client *c)
         }
         XFree(data);
     }
+    c->state_read = 1;
+}
+
+void client_publish_state(Client *c)
+{
+    Atom st[8];
+    int n = 0;
+    if (c->maximized)    { st[n++] = w2k.a_net_wm_state_maxv; st[n++] = w2k.a_net_wm_state_maxh; }
+    if (c->minimized)    st[n++] = w2k.a_net_wm_state_hidden;
+    if (c->fullscreen)   st[n++] = w2k.a_net_wm_state_fullscreen;
+    if (c->above)        st[n++] = w2k.a_net_wm_state_above;
+    if (c->skip_taskbar) st[n++] = w2k.a_net_wm_state_skip_taskbar;
+    XChangeProperty(w2k.dpy, c->win, w2k.a_net_wm_state, XA_ATOM, 32,
+                    PropModeReplace, (unsigned char *)st, n);
 }
 
 /* ------------------------------------------------------------------ *
@@ -378,11 +395,14 @@ void clients_restack(void)
     if (trigger) wins[n++] = trigger;
     /* "Always on top" is what puts the taskbar at the head of the stack;
      * without it the bar is just another window and can be covered. */
+    /* A full-screen window covers the bar: that is the point of it. */
+    for (Client *c = stack; c && n < 250; c = c->snext)
+        if (c->fullscreen && !c->minimized) wins[n++] = c->frame;
     if (w2k_taskbar_ontop) wins[n++] = taskbar_window();
     for (Client *c = stack; c && n < 250; c = c->snext)
-        if (c->above && !c->minimized) wins[n++] = c->frame;
+        if (c->above && !c->minimized && !c->fullscreen) wins[n++] = c->frame;
     for (Client *c = stack; c && n < 250; c = c->snext)
-        if (!c->above && !c->minimized) wins[n++] = c->frame;
+        if (!c->above && !c->minimized && !c->fullscreen) wins[n++] = c->frame;
     if (!w2k_taskbar_ontop) wins[n++] = taskbar_window();
     wins[n++] = desktop_window();
     XRestackWindows(w2k.dpy, wins, n);
@@ -410,7 +430,7 @@ void client_focus(Client *c)
     if (c) {
         if (c->takes_focus)
             XSetInputFocus(w2k.dpy, c->win, RevertToPointerRoot, CurrentTime);
-        if (c->deleteable)
+        if (c->take_focus_proto)
             client_send_protocol(c, w2k.a_wm_take_focus);
         frame_paint(c);
     } else {
@@ -427,7 +447,8 @@ void client_send_protocol(Client *c, Atom proto)
         .message_type = w2k.a_wm_protocols, .format = 32
     };
     ev.data.l[0] = proto;
-    ev.data.l[1] = CurrentTime;
+    /* ICCCM: the time of the event that caused it, never CurrentTime. */
+    ev.data.l[1] = (long)(wm_last_time ? wm_last_time : CurrentTime);
     XSendEvent(w2k.dpy, c->win, False, NoEventMask, (XEvent *)&ev);
 }
 
@@ -458,9 +479,12 @@ void client_minimize(Client *c)
                         client_frame_w(c), client_frame_h(c), bx, by, bw, bh);
 
     if (!c || c->minimized) return;
+    /* A dialog has no task button to come back from: it stays. */
+    if (c->skip_taskbar) return;
     c->minimized = 1;
     XUnmapWindow(w2k.dpy, c->frame);
     wm_set_state(c->win, IconicState);
+    client_publish_state(c);
     if (focused == c) {
         focused = NULL;
         /* Hand focus to the next visible window in stacking order. */
@@ -487,6 +511,7 @@ void client_restore(Client *c)
         c->minimized = 0;
         XMapWindow(w2k.dpy, c->frame);
         wm_set_state(c->win, NormalState);
+        client_publish_state(c);
     }
     client_raise(c);
     client_focus(c);
@@ -509,6 +534,35 @@ void client_maximize(Client *c, int on)
         c->maximized = 0;
         client_move_resize(c, c->rx, c->ry, c->rw, c->rh);
     }
+    client_publish_state(c);
+    frame_paint(c);
+}
+
+/* Full screen: the window covers its monitor, taskbar and all, with no
+ * frame (client_border and client_caption_h are 0 while it lasts). Media
+ * players and browsers ask for this through _NET_WM_STATE. */
+void client_fullscreen(Client *c, int on)
+{
+    if (!c) return;
+    if (on && !c->fullscreen) {
+        if (!c->maximized) { c->rx = c->x; c->ry = c->y; c->rw = c->w; c->rh = c->h; }
+        c->fullscreen = 1;
+        const W2kMonitor *m = w2k_monitor_at(c->x + c->w / 2, c->y + c->h / 2);
+        int mx = m ? m->x : 0, my = m ? m->y : 0;
+        int mw = m ? m->w : w2k.sw, mh = m ? m->h : w2k.sh;
+        client_move_resize(c, mx, my, mw, mh);
+        client_raise(c);
+    } else if (!on && c->fullscreen) {
+        c->fullscreen = 0;
+        if (c->maximized) {
+            c->maximized = 0;           /* re-applied below, at frame size */
+            client_maximize(c, 1);
+        } else
+            client_move_resize(c, c->rx, c->ry, c->rw, c->rh);
+        clients_restack();
+    }
+    client_publish_state(c);
+    frame_shape(c);
     frame_paint(c);
 }
 
@@ -629,7 +683,6 @@ void client_manage(Window w, int initial_map)
     client_update_hints(c);
     client_update_type(c);
     client_update_name(c);
-    if (c->is_dialog) c->resizable = 0;
 
     XSizeHints sh;
     long sup;
@@ -717,7 +770,9 @@ void client_unmanage(Client *c, int destroyed)
         XUngrabButton(w2k.dpy, Button1, AnyModifier, c->win);
         XSetWindowBorderWidth(w2k.dpy, c->win, 0);
         /* Hand the window back to the root at its true position. */
-        XReparentWindow(w2k.dpy, c->win, w2k.root, c->x, c->y);
+        int ub = c->static_gravity ? 0 : client_border(c);
+        int ucap = c->static_gravity ? 0 : client_caption_h(c);
+        XReparentWindow(w2k.dpy, c->win, w2k.root, c->x - ub, c->y - ub - ucap);
         XRemoveFromSaveSet(w2k.dpy, c->win);
         wm_set_state(c->win, WithdrawnState);
         XSync(w2k.dpy, False);

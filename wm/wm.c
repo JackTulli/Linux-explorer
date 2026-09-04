@@ -17,6 +17,7 @@
 Window wm_check;
 int    wa_x, wa_y, wa_w, wa_h;
 volatile sig_atomic_t running = 1;
+Time wm_last_time;
 
 static int other_wm;
 
@@ -299,7 +300,8 @@ static void handle_configurerequest(XConfigureRequestEvent *e)
         return;
     }
     int x = c->x, y = c->y, w = c->w, h = c->h;
-    int b = client_border(c), cap = client_caption_h(c);
+    int b = c->static_gravity ? 0 : client_border(c);
+    int cap = c->static_gravity ? 0 : client_caption_h(c);
     if (e->value_mask & CWX)      x = e->x + b;
     if (e->value_mask & CWY)      y = e->y + b + cap;
     if (e->value_mask & CWWidth)  w = e->width;
@@ -363,12 +365,20 @@ static void handle_clientmessage(XClientMessageEvent *e)
     if (e->message_type == w2k.a_net_wm_state && c) {
         /* data.l[0]: 0 remove, 1 add, 2 toggle */
         long act = e->data.l[0];
+        int max_done = 0;
         for (int i = 1; i <= 2; i++) {
             Atom a = e->data.l[i];
             if (!a) continue;
             if (a == w2k.a_net_wm_state_maxv || a == w2k.a_net_wm_state_maxh) {
+                /* Both halves usually come together; a toggle must not
+                 * flip twice. */
+                if (max_done) continue;
+                max_done = 1;
                 int on = (act == 2) ? !c->maximized : (act == 1);
                 client_maximize(c, on);
+            } else if (a == w2k.a_net_wm_state_fullscreen) {
+                int on = (act == 2) ? !c->fullscreen : (act == 1);
+                client_fullscreen(c, on);
             } else if (a == w2k.a_net_wm_state_above) {
                 c->above = (act == 2) ? !c->above : (act == 1);
                 clients_restack();
@@ -377,6 +387,7 @@ static void handle_clientmessage(XClientMessageEvent *e)
                 else          client_restore(c);
             }
         }
+        client_publish_state(c);
         return;
     }
     /* Our own shell apps ask the WM for things through _W2K_COMMAND. */
@@ -454,7 +465,10 @@ void wm_handle_event(XEvent *e)
         c = client_find(e->xunmap.window);
         if (!c || e->xunmap.event == w2k.root) break;
         if (c->ignore_unmap > 0) { c->ignore_unmap--; break; }
-        if (!c->minimized) client_unmanage(c, 0);
+        /* The client window itself is never unmapped here (minimising
+         * hides the frame), so any real unmap is the app withdrawing --
+         * an iconified window included. */
+        client_unmanage(c, 0);
         break;
 
     case DestroyNotify:
@@ -469,6 +483,7 @@ void wm_handle_event(XEvent *e)
         break;
 
     case ButtonPress:
+        wm_last_time = e->xbutton.time;
         c = client_find_frame(e->xbutton.window);
         if (c) { frame_button_press(c, &e->xbutton); break; }
         /* A click inside an unfocused client: focus it, then replay so the
@@ -488,6 +503,7 @@ void wm_handle_event(XEvent *e)
         break;
 
     case MotionNotify:
+        wm_last_time = e->xmotion.time;
         c = client_find_frame(e->xmotion.window);
         if (c) frame_motion(c, &e->xmotion);
         break;
@@ -542,7 +558,13 @@ void wm_handle_event(XEvent *e)
         break;
 
     case KeyPress:
+        wm_last_time = e->xkey.time;
         handle_key(&e->xkey);
+        break;
+
+    case KeyRelease:
+        wm_last_time = e->xkey.time;
+        handle_key_release(&e->xkey);
         break;
 
     case MappingNotify:

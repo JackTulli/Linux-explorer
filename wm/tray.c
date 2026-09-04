@@ -80,6 +80,19 @@ void tray_layout(int x, int y, int h)
     }
 }
 
+/* The same, down a column (the bar at the left or right). */
+void tray_layout_column(int x, int y)
+{
+    for (int i = 0; i < nicons; i++) {
+        int iy = y + i * (TRAY_ICON + TRAY_GAP);
+        XMoveResizeWindow(w2k.dpy, icons[i].win, x, iy, TRAY_ICON, TRAY_ICON);
+        if (!icons[i].mapped) {
+            XMapRaised(w2k.dpy, icons[i].win);
+            icons[i].mapped = 1;
+        }
+    }
+}
+
 static void dock(Window w)
 {
     if (nicons >= MAX_TRAY || tray_find(w) >= 0) return;

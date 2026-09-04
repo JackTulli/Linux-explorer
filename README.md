@@ -29,13 +29,17 @@ first run is interrupted, run the same command again; it carries on.
 
     git clone https://github.com/JackTulli/Linux-explorer
     cd Linux-explorer
-    ./install.sh              # packages, build, install, cursors, Chicago95, Qt
-    ./install.sh --xinitrc    # ...and make it your startx session
+    ./install.sh --xinitrc    # packages, build, install, cursors, Chicago95,
+                              # Qt, and w2k-session as your startx session
 
 Then `startx /usr/local/bin/w2k-session`, or pick "Windows 2000" in your
-display manager. `./install.sh --help` lists the options (`--full` adds the
-X server and w2kdm, `--tahoma` fetches the shell's typeface, `--user-only`
-touches only your own configuration, `--dry-run` shows what would happen).
+display manager. `./install.sh --help` lists the options: `--tahoma`
+fetches the shell's typeface, `--user-only` touches only your own
+configuration (run it again as another user), `--dry-run` shows what would
+happen. `--full` adds the X server and w2kdm and *disables your current
+display manager for the next boot*, so the machine then logs on through
+Log On to Windows; leave it out to keep GDM, LightDM or SDDM and just pick
+the session there.
 
 **By hand:** the build needs a C compiler, make, and the development
 packages for X11, Xext, Xrandr, Xcursor, Xft, fontconfig, freetype, zlib

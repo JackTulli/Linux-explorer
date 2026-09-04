@@ -202,7 +202,7 @@ void volume_popup(int bx, int by)
     int done = 0, dragging = 0, pending = -1, applied = -1;
     long last_set = 0;
     popup_paint(win);
-    while (!done) {
+    while (!done && running) {
         XEvent e;
         XNextEvent(w2k.dpy, &e);
         switch (e.type) {
@@ -211,9 +211,13 @@ void volume_popup(int bx, int by)
             break;
         case ButtonPress:
         case MotionNotify: {
+            /* The grab reports events on our other windows relative to
+             * them (owner_events): those are outside by definition. */
+            Window on = (e.type == ButtonPress) ? e.xbutton.window : e.xmotion.window;
             int ex = (e.type == ButtonPress) ? e.xbutton.x : e.xmotion.x;
             int ey = (e.type == ButtonPress) ? e.xbutton.y : e.xmotion.y;
-            int inside = ex >= 0 && ex < VP_W && ey >= 0 && ey < VP_H;
+            int inside = on == win && ex >= 0 && ex < VP_W && ey >= 0 && ey < VP_H;
+            if (e.type == MotionNotify && on != win) break;
             if (e.type == ButtonPress && !inside) { done = 1; break; }
             if (e.type == ButtonPress && ey >= VP_H - 26) {
                 volume_toggle_mute();

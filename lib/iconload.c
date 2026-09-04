@@ -255,7 +255,7 @@ int w2k_icon_load_dir(const char *dir)
 
 int w2k_icon_load_default(void)
 {
-    int n = w2k_icon_load_dir("/usr/local/share/w2k/icons");
+    int n = w2k_icon_load_dir(W2K_PREFIX "/share/w2k/icons");
     const char *home = getenv("HOME");
     if (home) {
         char path[1024];
