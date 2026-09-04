@@ -81,6 +81,10 @@ install: all
 	    ln -sfn $$b $(DESTDIR)$(BINDIR)/w2k$${b#l2k}; done
 	install -d $(DESTDIR)$(PREFIX)/share/w2k/skins
 	install -m644 skins/*.png $(DESTDIR)$(PREFIX)/share/w2k/skins
+	# The sound packs (Sounds and Multimedia in Control Panel).
+	for s in sounds/*/; do n=$$(basename $$s); \
+	    install -d $(DESTDIR)$(PREFIX)/share/w2k/sounds/$$n; \
+	    install -m644 $$s*.wav $(DESTDIR)$(PREFIX)/share/w2k/sounds/$$n; done
 	install -d $(DESTDIR)$(PREFIX)/share/w2k/cursors
 	install -m644 cursors/* $(DESTDIR)$(PREFIX)/share/w2k/cursors
 	# The switchable icon sets (Display Properties > Appearance > Icons).

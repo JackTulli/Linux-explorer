@@ -218,6 +218,13 @@ static long logout_deadline;
 
 void wm_logout(int what)
 {
+    /* Log off plays Windows Logoff; shutting down or restarting, Exit
+     * Windows. The player outlives the session, so the sound finishes. */
+    char path[1200];
+    if (what == 0 && w2k_sound_file(SND_WINDOWSLOGOFF, path, sizeof path))
+        w2k_sound_play_file(path);
+    else
+        w2k_sound_play(SND_SYSTEMEXIT);
     for (Client *c = clients; c; c = c->next) client_close(c);
     XFlush(w2k.dpy);
     logging_out = 1 + what;
@@ -629,6 +636,7 @@ static void wm_restart(void)
         self[n] = 0;
         char *del = strstr(self, " (deleted)");
         if (del) *del = 0;
+        setenv("W2K_RESTARTED", "1", 1);
         if (access(self, X_OK) == 0) execv(self, saved_argv);
     }
     execvp(saved_argv[0], saved_argv);
@@ -772,6 +780,8 @@ int main(int argc, char **argv)
     desktop_init();
     taskbar_init();
     grab_keys();
+    /* Start Windows -- once per session, not again on an in-place restart. */
+    if (!getenv("W2K_RESTARTED")) w2k_sound_play(SND_SYSTEMSTART);
 
     /* Menus run their own modal loop; let them keep the shell painted. */
     w2k_menu_foreign_event = wm_handle_event;

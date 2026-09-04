@@ -649,6 +649,33 @@ extern char w2k_gtk_theme[64], w2k_icon_theme[64], w2k_qt_style[64];
 int  w2k_gtk_themes(char (*out)[64], int max);
 int  w2k_icon_themes(char (*out)[64], int max);
 int  w2k_qt_styles(char (*out)[64], int max);
+
+/* ---- Sound events (lib/sound.c) -------------------------------------- *
+ * The events Sounds and Multimedia lists, played through whatever sound
+ * player the machine has. The pack, volume and per-event choices live in
+ * ~/.w2k/scheme. */
+enum { SND_SYSTEMSTART, SND_SYSTEMEXIT, SND_WINDOWSLOGON, SND_WINDOWSLOGOFF,
+       SND_DEFAULT, SND_ASTERISK, SND_HAND, SND_EXCLAMATION, SND_QUESTION,
+       SND_APPGPFAULT, SND_OPEN, SND_CLOSE, SND_MINIMIZE, SND_MAXIMIZE,
+       SND_RESTOREUP, SND_RESTOREDOWN, SND_MENUCOMMAND, SND_MENUPOPUP,
+       SND_MAILBEEP, SND_NOTIFICATION, SND_NAVIGATING, SND_EMPTYRECYCLE,
+       N_SOUNDS };
+extern char w2k_sound_pack[32];               /* "win2000", "winxp", ... */
+extern int  w2k_sound_volume;                 /* 0..100; 0 is silence */
+extern char w2k_sound_override[N_SOUNDS][256]; /* "", "none", a file in the pack, or a path */
+const char *w2k_sound_slug(int ev);
+const char *w2k_sound_label(int ev);
+int         w2k_sound_group(int ev);          /* 0 Windows, 1 Windows Explorer */
+int         w2k_sound_by_slug(const char *slug);
+int         w2k_sound_packs(char (*ids)[32], char (*labels)[48], int max);
+const char *w2k_sound_pack_label(const char *id);
+int         w2k_sound_pack_dir(const char *pack, char *out, int n);
+int         w2k_sound_pack_files(const char *pack, char (*out)[128], int max);
+const char *w2k_sound_default(int ev, const char *pack);
+/* The file an event plays now; 0 when it plays nothing. */
+int         w2k_sound_file(int ev, char *out, int n);
+void        w2k_sound_play(int ev);
+void        w2k_sound_play_file(const char *path);
 /* 1: the Windows 2000 pointer set (the .cur files); 0: the X server's own
  * pointers, for a server that will not show ARGB cursors. Also forced by
  * W2K_CURSORS=x11 in the environment. */

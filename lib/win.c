@@ -679,10 +679,11 @@ int w2k_msgbox(W2kWin *over, const char *title, const char *text, int flags)
     MsgBox m = { .focus = 0, .down = -1, .icon = ICO_NONE };
 
     switch (flags & 0xf0) {
-    case MB_ICONINFO:     m.icon = ICO_INFO; break;
-    case MB_ICONWARNING:  m.icon = ICO_WARNING; break;
-    case MB_ICONQUESTION: m.icon = ICO_QUESTION; break;
-    case MB_ICONERROR:    m.icon = ICO_ERROR; break;
+    case MB_ICONINFO:     m.icon = ICO_INFO; w2k_sound_play(SND_ASTERISK); break;
+    case MB_ICONWARNING:  m.icon = ICO_WARNING; w2k_sound_play(SND_EXCLAMATION); break;
+    case MB_ICONQUESTION: m.icon = ICO_QUESTION; w2k_sound_play(SND_QUESTION); break;
+    case MB_ICONERROR:    m.icon = ICO_ERROR; w2k_sound_play(SND_HAND); break;
+    default:              w2k_sound_play(SND_DEFAULT); break;
     }
     switch (flags & 0x0f) {
     case MB_OKCANCEL:

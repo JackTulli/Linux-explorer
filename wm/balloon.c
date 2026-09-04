@@ -220,6 +220,7 @@ void balloon_queue(const char *title, const char *text, int icon, int ms, unsign
 {
     if (!title) title = "";
     if (!text) text = "";
+    if (!(id && balloon && cur.id == id)) w2k_sound_play(SND_NOTIFICATION);
     if (id && balloon && cur.id == id) {
         /* Replacing the one on screen: repaint it in place. */
         snprintf(cur.title, sizeof cur.title, "%s", title);

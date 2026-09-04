@@ -9,3 +9,6 @@ w2k-session.bak
 icons/winxp/
 icons/win7/
 __MACOSX/
+
+# The sound pack archives the sounds/<pack>/ folders were extracted from.
+sounds/*.zip

@@ -344,6 +344,9 @@ void w2k_scheme_reset(void)
     snprintf(w2k_gtk_theme, sizeof w2k_gtk_theme, "Chicago95");
     snprintf(w2k_icon_theme, sizeof w2k_icon_theme, "Chicago95");
     snprintf(w2k_qt_style, sizeof w2k_qt_style, "Windows");
+    snprintf(w2k_sound_pack, sizeof w2k_sound_pack, "win2000");
+    w2k_sound_volume = 100;
+    memset(w2k_sound_override, 0, sizeof w2k_sound_override);
     w2k_wallpaper[0] = 0;
     w2k_wallpaper_style = 0;
     w2k_force_decorations = 1;
@@ -641,6 +644,13 @@ int w2k_scheme_load(const char *path)
             snprintf(w2k_icon_set, sizeof w2k_icon_set, "%.31s", val);
             continue;
         }
+        if (!strcasecmp(line, "SoundPack"))   { snprintf(w2k_sound_pack, sizeof w2k_sound_pack, "%.31s", val); continue; }
+        if (!strcasecmp(line, "SoundVolume")) { w2k_sound_volume = atoi(val); if (w2k_sound_volume < 0) w2k_sound_volume = 0; if (w2k_sound_volume > 100) w2k_sound_volume = 100; continue; }
+        if (!strncasecmp(line, "Sound.", 6)) {
+            int ev = w2k_sound_by_slug(line + 6);
+            if (ev >= 0) snprintf(w2k_sound_override[ev], sizeof w2k_sound_override[ev], "%.255s", val);
+            continue;
+        }
         if (!strcasecmp(line, "GtkTheme"))  { snprintf(w2k_gtk_theme, sizeof w2k_gtk_theme, "%.63s", val); continue; }
         if (!strcasecmp(line, "IconTheme")) { snprintf(w2k_icon_theme, sizeof w2k_icon_theme, "%.63s", val); continue; }
         if (!strcasecmp(line, "QtStyle"))   { snprintf(w2k_qt_style, sizeof w2k_qt_style, "%.63s", val); continue; }
@@ -717,6 +727,11 @@ int w2k_scheme_save(const char *path)
     fprintf(f, "Theme=%s\n", w2k_theme == THEME_XP ? "xp" :
             w2k_theme == THEME_BASIC7 ? "basic7" : "classic");
     fprintf(f, "IconSet=%s\n", w2k_icon_set);
+    fprintf(f, "SoundPack=%s\n", w2k_sound_pack);
+    fprintf(f, "SoundVolume=%d\n", w2k_sound_volume);
+    for (int i = 0; i < N_SOUNDS; i++)
+        if (w2k_sound_override[i][0])
+            fprintf(f, "Sound.%s=%s\n", w2k_sound_slug(i), w2k_sound_override[i]);
     fprintf(f, "GtkTheme=%s\n", w2k_gtk_theme);
     fprintf(f, "IconTheme=%s\n", w2k_icon_theme);
     fprintf(f, "QtStyle=%s\n", w2k_qt_style);

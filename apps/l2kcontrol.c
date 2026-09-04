@@ -5,6 +5,7 @@
  * what opens pictures, video, music and the rest (see lib/assoc.c). */
 #include "w2k.h"
 #include "w2kui.h"
+#include <stdint.h>
 #include <math.h>
 #include <time.h>
 #include <stdio.h>
@@ -650,38 +651,395 @@ static void open_keyboard(void)
     input_run(&id, 320);
 }
 
-static void sounds_commit(InputDlg *id)
+/* ------------------------------------------------------------------ *
+ * Sounds and Multimedia
+ *
+ * The Windows 2000 applet: the sound events in their two groups, each
+ * with the file it plays and a speaker beside it when it plays one; the
+ * Name box with a play button and Browse; the Scheme box, which here
+ * lists the sound packs (Windows 98, 2000, XP, 7 and the 7 themes); the
+ * volume slider. A second page keeps the system beep's settings.
+ * ------------------------------------------------------------------ */
+typedef struct {
+    W2kWin   *win;
+    W2kTabs  *tabs;
+    W2kList  *list;
+    W2kCombo *name, *scheme;
+    W2kRect   play, browse, saveas, del, ok, cancel, apply;
+    W2kSlider vol;
+    char      files[64][128];
+    int       nfiles;
+    char      pack_ids[24][32], pack_labels[24][48];
+    int       npacks;
+    int       cur;                  /* the event picked, -1 */
+    int       down, dirty, fill;
+    /* the beep page */
+    W2kSlider bvol, bpitch, bdur;
+    W2kRect   beep_box;
+    int       beep_on;
+} SndDlg;
+
+static SndDlg *sd_active;
+
+/* Which event a list row is: the group rows carry -1. */
+static int snd_row_event(SndDlg *sd, int row)
 {
-    w2k_bell_on = id->chk[0].on;
-    w2k_bell_volume = id->sl[0].s.pos * 10;
-    w2k_bell_pitch = 100 + id->sl[1].s.pos * 100;
-    w2k_bell_duration = 20 + id->sl[2].s.pos * 40;
+    if (row < 0 || row >= sd->list->n) return -1;
+    return (int)(intptr_t)sd->list->items[row].data - 1;
+}
+
+static void snd_fill_list(SndDlg *sd)
+{
+    int keep = sd->list->sel;
+    w2k_list_clear(sd->list);
+    for (int g = 0; g < 2; g++) {
+        int r = w2k_list_add(sd->list, ICO_NONE, (void *)(intptr_t)0);
+        w2k_list_set(sd->list, r, 0, g ? "Windows Explorer" : "Windows");
+        for (int ev = 0; ev < N_SOUNDS; ev++) {
+            if (w2k_sound_group(ev) != g) continue;
+            char path[1200], label[80];
+            int has = w2k_sound_file(ev, path, sizeof path);
+            snprintf(label, sizeof label, "    %s", w2k_sound_label(ev));
+            r = w2k_list_add(sd->list, has ? ICO_SPEAKER : ICO_NONE, (void *)(intptr_t)(ev + 1));
+            w2k_list_set(sd->list, r, 0, label);
+        }
+    }
+    sd->list->sel = keep;
+}
+
+/* The Name box: (None), the pack's files, and the event's own file when
+ * it is one from elsewhere. */
+static void snd_fill_name(SndDlg *sd)
+{
+    sd->fill = 1;
+    w2k_combo_clear(sd->name);
+    sd->nfiles = w2k_sound_pack_files(w2k_sound_pack, sd->files, 63);
+    w2k_combo_add(sd->name, "(None)");
+    for (int i = 0; i < sd->nfiles; i++) w2k_combo_add(sd->name, sd->files[i]);
+    int sel = 0;
+    if (sd->cur >= 0) {
+        char path[1200];
+        if (w2k_sound_file(sd->cur, path, sizeof path)) {
+            const char *base = strrchr(path, '/');
+            base = base ? base + 1 : path;
+            const char *ov = w2k_sound_override[sd->cur];
+            if (ov[0] == '/') {
+                snprintf(sd->files[sd->nfiles], 128, "%s", ov);
+                w2k_combo_add(sd->name, base);
+                sel = ++sd->nfiles;
+            } else {
+                for (int i = 0; i < sd->nfiles; i++)
+                    if (!strcmp(sd->files[i], base)) sel = i + 1;
+            }
+        }
+    }
+    sd->name->sel = sel;
+    sd->fill = 0;
+}
+
+static void snd_on_select(void *u, int idx)
+{
+    SndDlg *sd = u;
+    sd->cur = snd_row_event(sd, idx);
+    snd_fill_name(sd);
+    w2k_win_dirty(sd->win);
+}
+
+static void snd_on_name(void *u, int i)
+{
+    SndDlg *sd = u;
+    if (sd->fill || sd->cur < 0) return;
+    char *ov = w2k_sound_override[sd->cur];
+    if (i <= 0) {
+        snprintf(ov, 256, "none");
+    } else if (i - 1 < sd->nfiles) {
+        const char *f = sd->files[i - 1];
+        /* The pack's own choice is recorded as nothing, so a change of
+         * pack changes it too. */
+        if (!strcmp(f, w2k_sound_default(sd->cur, w2k_sound_pack))) ov[0] = 0;
+        else snprintf(ov, 256, "%s", f);
+    }
+    sd->dirty = 1;
+    snd_fill_list(sd);
+    w2k_win_dirty(sd->win);
+}
+
+static void snd_on_scheme(void *u, int i)
+{
+    SndDlg *sd = u;
+    if (i < 0 || i >= sd->npacks) return;
+    snprintf(w2k_sound_pack, sizeof w2k_sound_pack, "%s", sd->pack_ids[i]);
+    memset(w2k_sound_override, 0, sizeof w2k_sound_override);
+    sd->dirty = 1;
+    snd_fill_list(sd);
+    snd_fill_name(sd);
+    w2k_win_dirty(sd->win);
+}
+
+static void snd_on_volume(void *u, int pos)
+{
+    SndDlg *sd = u;
+    w2k_sound_volume = pos * 10;
+    sd->dirty = 1;
+    w2k_win_dirty(sd->win);
+}
+
+static void snd_on_beep(void *u, int pos)
+{
+    SndDlg *sd = u;
+    (void)pos;
+    sd->dirty = 1;
+    w2k_win_dirty(sd->win);
+}
+
+static void snd_commit(SndDlg *sd)
+{
+    w2k_bell_on = sd->beep_on;
+    w2k_bell_volume = sd->bvol.pos * 10;
+    w2k_bell_pitch = 100 + sd->bpitch.pos * 100;
+    w2k_bell_duration = 20 + sd->bdur.pos * 40;
+    w2k_input_apply();
+    w2k_scheme_save(NULL);
+    w2k_scheme_broadcast();
+    sd->dirty = 0;
+}
+
+static void snd_paint(W2kWin *w, Drawable d)
+{
+    SndDlg *sd = w->user;
+    int fh = w2k_font_height(F_UI);
+    w2k_tabs_draw(d, sd->tabs);
+    W2kRect c = w2k_tabs_client(sd->tabs);
+
+    if (sd->tabs->sel == 0) {
+        w2k_text_mnemonic(d, F_UI, c.x + 9, c.y + 8, "Sound &Events:", C_TEXT, 1);
+        w2k_list_draw(d, sd->list);
+
+        W2kRect g = { c.x + 9, sd->list->r.y + sd->list->r.h + 8, c.w - 18, 64 };
+        w2k_draw_groupbox(d, &g, "Sound");
+        w2k_text_mnemonic(d, F_UI, g.x + 10, sd->name->r.y - fh - 3, "&Name:", C_TEXT, 1);
+        w2k_combo_draw(d, sd->name);
+        /* The play button: a small triangle, as the applet's. */
+        w2k_button(d, sd->play.x, sd->play.y, sd->play.w, sd->play.h, sd->down == 5);
+        int px = sd->play.x + sd->play.w / 2 - 3 + (sd->down == 5), py = sd->play.y + sd->play.h / 2 - 5 + (sd->down == 5);
+        for (int i = 0; i < 6; i++) w2k_vline(d, px + i, py + i, 11 - 2 * i, sd->cur >= 0 ? C_TEXT : C_GRAYTEXT);
+        w2k_draw_pushbutton(d, &sd->browse, "&Browse...",
+                            (sd->cur < 0 ? BS_DISABLED : 0) | (sd->down == 6 ? BS_PRESSED : 0));
+
+        int sy = g.y + g.h + 10;
+        w2k_text_mnemonic(d, F_UI, c.x + 9, sy, "&Scheme:", C_TEXT, 1);
+        w2k_combo_draw(d, sd->scheme);
+        w2k_draw_pushbutton(d, &sd->saveas, "Sa&ve As...", BS_DISABLED);
+        w2k_draw_pushbutton(d, &sd->del, "&Delete", BS_DISABLED);
+
+        W2kRect v = { c.x + 9, sd->del.y + sd->del.h + 12, c.w - 18, 60 };
+        w2k_draw_groupbox(d, &v, "Sound Volume");
+        w2k_text(d, F_UI, v.x + 10, sd->vol.r.y + 4, "Low", C_TEXT);
+        w2k_slider_draw(d, &sd->vol);
+        w2k_text(d, F_UI, v.x + v.w - 10 - w2k_text_width(F_UI, "High", -1), sd->vol.r.y + 4, "High", C_TEXT);
+    } else {
+        int y = c.y + 14;
+        w2k_draw_checkbox(d, sd->beep_box.x, sd->beep_box.y, "Play the system &beep",
+                          sd->beep_on, 0, 0);
+        y = sd->bvol.r.y - fh - 4;
+        w2k_text_mnemonic(d, F_UI, c.x + 9, y, "&Volume:", C_TEXT, 1);
+        w2k_slider_draw(d, &sd->bvol);
+        w2k_text_mnemonic(d, F_UI, c.x + 9, sd->bpitch.r.y - fh - 4, "&Pitch:", C_TEXT, 1);
+        w2k_slider_draw(d, &sd->bpitch);
+        w2k_text_mnemonic(d, F_UI, c.x + 9, sd->bdur.r.y - fh - 4, "&Duration:", C_TEXT, 1);
+        w2k_slider_draw(d, &sd->bdur);
+        w2k_text(d, F_UI, c.x + 9, c.y + c.h - fh * 2 - 12,
+                 "The beep is the X server's; the events on the Sounds page", C_GRAYTEXT);
+        w2k_text(d, F_UI, c.x + 9, c.y + c.h - fh - 8,
+                 "play through the sound card.", C_GRAYTEXT);
+    }
+    w2k_draw_pushbutton(d, &sd->ok, "OK", BS_DEFAULT | (sd->down == 1 ? BS_PRESSED : 0));
+    w2k_draw_pushbutton(d, &sd->cancel, "Cancel", sd->down == 2 ? BS_PRESSED : 0);
+    w2k_draw_pushbutton(d, &sd->apply, "&Apply",
+                        (sd->dirty ? 0 : BS_DISABLED) | (sd->down == 3 ? BS_PRESSED : 0));
+}
+
+static void snd_play_current(SndDlg *sd)
+{
+    char path[1200];
+    if (sd->cur >= 0 && w2k_sound_file(sd->cur, path, sizeof path))
+        w2k_sound_play_file(path);
+}
+
+static void snd_browse(SndDlg *sd)
+{
+    if (sd->cur < 0) return;
+    char path[1024];
+    char dir[1024];
+    if (w2k_sound_pack_dir(w2k_sound_pack, dir, sizeof dir))
+        snprintf(path, sizeof path, "%s/", dir);
+    else
+        snprintf(path, sizeof path, "%s/", getenv("HOME") ? getenv("HOME") : "/");
+    if (!w2k_file_dialog(sd->win, 0, path, sizeof path)) return;
+    snprintf(w2k_sound_override[sd->cur], 256, "%s", path);
+    sd->dirty = 1;
+    snd_fill_list(sd);
+    snd_fill_name(sd);
+}
+
+static int snd_event(W2kWin *w, XEvent *e)
+{
+    SndDlg *sd = w->user;
+    int tab = sd->tabs->sel;
+    switch (e->type) {
+    case ButtonPress: {
+        int x = e->xbutton.x, y = e->xbutton.y;
+        if (w2k_tabs_press(sd->tabs, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        if (tab == 0) {
+            if (w2k_list_press(sd->list, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+            if (w2k_combo_press(sd->name, &e->xbutton) ||
+                w2k_combo_press(sd->scheme, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+            if (w2k_slider_press(&sd->vol, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+            if (w2k_rect_hit(&sd->play, x, y) && sd->cur >= 0) sd->down = 5;
+            else if (w2k_rect_hit(&sd->browse, x, y) && sd->cur >= 0) sd->down = 6;
+        } else {
+            if (w2k_rect_hit(&sd->beep_box, x, y)) {
+                sd->beep_on = !sd->beep_on;
+                sd->dirty = 1;
+                w2k_win_dirty(w);
+                return 1;
+            }
+            if (w2k_slider_press(&sd->bvol, &e->xbutton) ||
+                w2k_slider_press(&sd->bpitch, &e->xbutton) ||
+                w2k_slider_press(&sd->bdur, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        }
+        if (w2k_rect_hit(&sd->ok, x, y)) sd->down = 1;
+        else if (w2k_rect_hit(&sd->cancel, x, y)) sd->down = 2;
+        else if (w2k_rect_hit(&sd->apply, x, y) && sd->dirty) sd->down = 3;
+        w2k_win_dirty(w);
+        return 1;
+    }
+    case ButtonRelease: {
+        int b = sd->down, x = e->xbutton.x, y = e->xbutton.y;
+        sd->down = 0;
+        w2k_list_release(sd->list, &e->xbutton);
+        w2k_slider_release(&sd->vol);
+        w2k_slider_release(&sd->bvol);
+        w2k_slider_release(&sd->bpitch);
+        w2k_slider_release(&sd->bdur);
+        if (b == 1 && w2k_rect_hit(&sd->ok, x, y)) { snd_commit(sd); w2k_win_close(w, ID_OK); }
+        else if (b == 2 && w2k_rect_hit(&sd->cancel, x, y)) w2k_win_close(w, ID_CANCEL);
+        else if (b == 3 && w2k_rect_hit(&sd->apply, x, y)) snd_commit(sd);
+        else if (b == 5 && w2k_rect_hit(&sd->play, x, y)) snd_play_current(sd);
+        else if (b == 6 && w2k_rect_hit(&sd->browse, x, y)) snd_browse(sd);
+        w2k_win_dirty(w);
+        return 1;
+    }
+    case MotionNotify:
+        if (tab == 0) {
+            if (w2k_slider_motion(&sd->vol, &e->xmotion) ||
+                w2k_list_motion(sd->list, &e->xmotion)) { w2k_win_dirty(w); return 1; }
+        } else if (w2k_slider_motion(&sd->bvol, &e->xmotion) ||
+                   w2k_slider_motion(&sd->bpitch, &e->xmotion) ||
+                   w2k_slider_motion(&sd->bdur, &e->xmotion)) { w2k_win_dirty(w); return 1; }
+        return 0;
+    case KeyPress: {
+        KeySym ks = XLookupKeysym(&e->xkey, 0);
+        if (ks == XK_Escape) { w2k_win_close(w, ID_CANCEL); return 1; }
+        if (ks == XK_Return || ks == XK_KP_Enter) { snd_commit(sd); w2k_win_close(w, ID_OK); return 1; }
+        if (w2k_tabs_key(sd->tabs, &e->xkey)) { w2k_win_dirty(w); return 1; }
+        if (tab == 0 && w2k_list_key(sd->list, &e->xkey)) {
+            sd->cur = snd_row_event(sd, sd->list->sel);
+            snd_fill_name(sd);
+            w2k_win_dirty(w);
+            return 1;
+        }
+        return 1;
+    }
+    }
+    return 0;
 }
 
 static void open_sounds(void)
 {
-    InputDlg id;
-    memset(&id, 0, sizeof id);
-    id.title = "Sounds and Multimedia Properties";
-    id.commit = sounds_commit;
-    id.test = 1;
-    id.nsl = 3;
-    id.sl[0].label = "&Volume:";
-    id.sl[0].lo = "Low"; id.sl[0].hi = "High";
-    id.sl[0].s = (W2kSlider){ .lo = 0, .hi = 10, .ticks = 10,
-                              .pos = w2k_bell_volume / 10 };
-    id.sl[1].label = "&Pitch:";
-    id.sl[1].lo = "Low"; id.sl[1].hi = "High";
-    id.sl[1].s = (W2kSlider){ .lo = 0, .hi = 10, .ticks = 10,
-                              .pos = (w2k_bell_pitch - 100) / 100 };
-    id.sl[2].label = "&Duration:";
-    id.sl[2].lo = "Short"; id.sl[2].hi = "Long";
-    id.sl[2].s = (W2kSlider){ .lo = 0, .hi = 10, .ticks = 10,
-                              .pos = (w2k_bell_duration - 20) / 40 };
-    id.ncheck = 1;
-    id.chk[0].label = "Play the system &beep";
-    id.chk[0].on = w2k_bell_on;
-    input_run(&id, 350);
+    SndDlg sd;
+    memset(&sd, 0, sizeof sd);
+    sd.cur = -1;
+    int cw = 400, chh = 470;
+    W2kWin *w = w2k_win_new("Sounds and Multimedia Properties", "l2kcontrol", cw, chh, 0);
+    sd.win = w;
+    sd.tabs = w2k_tabs_new(&sd, NULL);
+    w2k_tabs_add(sd.tabs, "Sounds");
+    w2k_tabs_add(sd.tabs, "System Beep");
+    sd.tabs->r = (W2kRect){ 7, 7, cw - 14, chh - 7 - 41 };
+    W2kRect c = w2k_tabs_client(sd.tabs);
+
+    sd.list = w2k_list_new(LV_REPORT);
+    sd.list->hdr_h = 0;
+    sd.list->fullrow = 1;
+    sd.list->focused = 1;
+    sd.list->user = &sd;
+    sd.list->on_select = snd_on_select;
+    w2k_list_add_col(sd.list, "Event", c.w - 18 - SCROLL_W - 6, 0);
+    sd.list->r = (W2kRect){ c.x + 9, c.y + 24, c.w - 18, 150 };
+    w2k_scroll_bind(&sd.list->vsb, w);
+
+    int gy = sd.list->r.y + sd.list->r.h + 8;
+    sd.name = w2k_combo_new(0);
+    sd.name->user = &sd;
+    sd.name->on_change = snd_on_name;
+    sd.name->r = (W2kRect){ c.x + 19, gy + 34, c.w - 38 - 30 - 75 - 12, 21 };
+    sd.play = (W2kRect){ sd.name->r.x + sd.name->r.w + 6, gy + 34, 24, 21 };
+    sd.browse = (W2kRect){ sd.play.x + sd.play.w + 6, gy + 34, 75, 21 };
+
+    int sy = gy + 64 + 10;
+    sd.scheme = w2k_combo_new(0);
+    sd.scheme->user = &sd;
+    sd.scheme->on_change = snd_on_scheme;
+    sd.scheme->r = (W2kRect){ c.x + 9, sy + 16, c.w - 18 - 75 * 2 - 12, 21 };
+    sd.saveas = (W2kRect){ sd.scheme->r.x + sd.scheme->r.w + 6, sy + 16, 75, 21 };
+    sd.del = (W2kRect){ sd.saveas.x + 75 + 6, sy + 16, 75, 21 };
+    sd.npacks = w2k_sound_packs(sd.pack_ids, sd.pack_labels, 24);
+    for (int i = 0; i < sd.npacks; i++) {
+        w2k_combo_add(sd.scheme, sd.pack_labels[i]);
+        if (!strcmp(sd.pack_ids[i], w2k_sound_pack)) sd.scheme->sel = i;
+    }
+    if (!sd.npacks) w2k_combo_add(sd.scheme, "(no sound packs installed)");
+
+    int vy = sd.del.y + sd.del.h + 12;
+    sd.vol = (W2kSlider){ .r = { c.x + 9 + 40, vy + 22, c.w - 18 - 80, 24 },
+                          .lo = 0, .hi = 10, .ticks = 10, .pos = w2k_sound_volume / 10,
+                          .owner = w, .user = &sd, .on_change = snd_on_volume };
+
+    /* The beep page. */
+    sd.beep_on = w2k_bell_on;
+    sd.beep_box = (W2kRect){ c.x + 9, c.y + 14, c.w - 18, 16 };
+    int by = c.y + 60;
+    sd.bvol = (W2kSlider){ .r = { c.x + 9, by, c.w - 18, 24 }, .lo = 0, .hi = 10, .ticks = 10,
+                           .pos = w2k_bell_volume / 10, .owner = w, .user = &sd, .on_change = snd_on_beep };
+    sd.bpitch = (W2kSlider){ .r = { c.x + 9, by + 60, c.w - 18, 24 }, .lo = 0, .hi = 10, .ticks = 10,
+                             .pos = (w2k_bell_pitch - 100) / 100, .owner = w, .user = &sd, .on_change = snd_on_beep };
+    sd.bdur = (W2kSlider){ .r = { c.x + 9, by + 120, c.w - 18, 24 }, .lo = 0, .hi = 10, .ticks = 10,
+                           .pos = (w2k_bell_duration - 20) / 40, .owner = w, .user = &sd, .on_change = snd_on_beep };
+
+    int bby = chh - 12 - 23;
+    sd.apply  = (W2kRect){ cw - 12 - 75, bby, 75, 23 };
+    sd.cancel = (W2kRect){ cw - 12 - 75 * 2 - 6, bby, 75, 23 };
+    sd.ok     = (W2kRect){ cw - 12 - 75 * 3 - 12, bby, 75, 23 };
+
+    snd_fill_list(&sd);
+    snd_fill_name(&sd);
+
+    w->user = &sd;
+    w->paint = snd_paint;
+    w->event = snd_event;
+    w2k_win_center(w, cp.win);
+    Atom t = w2k.a_net_wm_wt_dialog;
+    XChangeProperty(w2k.dpy, w->win, w2k.a_net_wm_window_type, XA_ATOM, 32,
+                    PropModeReplace, (unsigned char *)&t, 1);
+    sd_active = &sd;
+    int rc = w2k_win_modal(w);
+    sd_active = NULL;
+    if (rc != ID_OK) w2k_scheme_load(NULL);        /* discard what was not applied */
+    w2k_list_free(sd.list);
+    w2k_combo_free(sd.name);
+    w2k_combo_free(sd.scheme);
+    w2k_tabs_free(sd.tabs);
 }
 
 /* ------------------------------------------------------------------ *

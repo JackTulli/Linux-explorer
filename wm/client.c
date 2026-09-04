@@ -479,6 +479,7 @@ void client_close(Client *c)
  * ------------------------------------------------------------------ */
 void client_minimize(Client *c)
 {
+    w2k_sound_play(SND_MINIMIZE);
     /* Fly the wire frame down to the task button on the way out. */
     int bx, by, bw, bh;
     if (c && c->mapped && !c->minimized && taskbar_button_rect(c, &bx, &by, &bw, &bh))
@@ -506,6 +507,7 @@ void client_minimize(Client *c)
 
 void client_restore(Client *c)
 {
+    w2k_sound_play(SND_RESTOREUP);
     /* ...and back out of it on the way in. */
     int bx, by, bw, bh;
     if (c && c->minimized && taskbar_button_rect(c, &bx, &by, &bw, &bh))
@@ -529,6 +531,7 @@ void client_restore(Client *c)
 void client_maximize(Client *c, int on)
 {
     if (!c || !c->decorate) return;
+    if (on != c->maximized) w2k_sound_play(on ? SND_MAXIMIZE : SND_RESTOREDOWN);
     if (on && !c->maximized) {
         c->rx = c->x; c->ry = c->y; c->rw = c->w; c->rh = c->h;
         c->maximized = 1;

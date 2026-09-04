@@ -109,6 +109,16 @@ Windows 2000 (the built-in artwork), Windows 98, Windows XP, Windows 7 and
 ReactOS. Every window, the desktop, Explorer and the Start menu follow the
 choice at once.
 
+Sounds: Control Panel > Sounds and Multimedia is the Windows 2000 applet,
+with the event list (Start Windows, Exit Windows, Asterisk, Critical Stop,
+Menu Popup, Minimize, System Notification, Empty Recycle Bin and the
+rest), a Name box with a play button and Browse, and a Scheme box that
+picks the sound pack: Windows 98, Windows 2000, Windows XP, Windows 7 and
+the thirteen Windows 7 themes, shipped under `sounds/`. The desktop plays
+them at logon and logoff, on menus, message boxes, balloons, minimizing
+and restoring windows, and as Explorer navigates and empties the Recycle
+Bin, through paplay, pw-play, aplay, ffplay or mpv, whichever is there.
+
 Notifications from every program appear as the yellow balloon over the
 notification area: the desktop provides the `org.freedesktop.Notifications`
 service, so Firefox, mail, `notify-send` and anything using libnotify all
@@ -158,6 +168,7 @@ turned into the `Windows2000` Xcursor theme by `tools/gencursortheme.py`.
     wm/              the window manager, taskbar, desktop, Start menus, dialogs
     apps/            the applications and the display manager
     skins/           the XP and Windows 7 chrome, cropped from screenshots
+    sounds/          the sound packs, one folder per scheme
     config/          GTK/Qt settings, the l2kdm service and PAM stacks
     tools/           icon and cursor-theme baking, development helpers
     install.sh       the installer; bootstrap.sh the one-command form

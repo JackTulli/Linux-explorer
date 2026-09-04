@@ -626,6 +626,7 @@ int w2k_menu_popup(W2kMenu *m, int x, int y, int flags)
     Level lv[MAXLEVEL];
     int n = 1;
     open_level(&lv[0], m, x, y, flags, -1, -1);
+    w2k_sound_play(SND_MENUPOPUP);
 
     if (XGrabPointer(w2k.dpy, lv[0].win, True,
                      ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
@@ -797,5 +798,6 @@ int w2k_menu_popup(W2kMenu *m, int x, int y, int flags)
     for (int i = 0; i < n; i++) level_destroy(&lv[i]);
     XFlush(w2k.dpy);
     if (w2k_menu_closed) w2k_menu_closed();
+    if (result) w2k_sound_play(SND_MENUCOMMAND);
     return result;
 }

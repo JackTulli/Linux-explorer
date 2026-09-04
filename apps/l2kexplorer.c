@@ -482,6 +482,7 @@ static void viewmem_apply(const Node *nd)
 
 static void navigate(const Node *nd, int record)
 {
+    w2k_sound_play(SND_NAVIGATING);
     viewmem_store();                 /* the folder we are leaving */
     ex.cur = *nd;
     viewmem_apply(nd);
@@ -1917,6 +1918,7 @@ static void do_empty_bin(void)
                    MB_YESNO | MB_ICONWARNING) != ID_YES)
         return;
     w2k_trash_empty();
+    w2k_sound_play(SND_EMPTYRECYCLE);
     refill_list();
 }
 
