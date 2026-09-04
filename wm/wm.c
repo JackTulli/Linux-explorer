@@ -777,6 +777,7 @@ int main(int argc, char **argv)
     ewmh_init();
     wm_update_workarea();
     w2k_input_apply();              /* mouse, keyboard, bell */
+    pins_seed();                    /* Windows Update on the Start menu, once */
     desktop_init();
     taskbar_init();
     grab_keys();

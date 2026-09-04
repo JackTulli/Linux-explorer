@@ -190,7 +190,7 @@ static int on_context(int id, int x, int y)
         return program_ctx(cmd, label, icon, x, y);
 
     /* The shell's own accessories can be pinned too. */
-    const char *own = NULL, *own_label = NULL;
+    const char *own = NULL, *own_label = NULL, *own_icon = NULL;
     switch (id) {
     case SM_EXPLORER: own = "l2kexplorer"; own_label = "Windows Explorer"; break;
     case SM_NOTEPAD:  own = "l2knotepad";  own_label = "Notepad"; break;
@@ -198,12 +198,12 @@ static int on_context(int id, int x, int y)
     case SM_CALC:     own = "l2kcalc";     own_label = "Calculator"; break;
     case SM_CHARMAP:  own = "l2kcharmap";  own_label = "Character Map"; break;
     case SM_DEVMGMT:  own = "l2kdevmgmt";  own_label = "Device Manager"; break;
-    case SM_LINVER:   own = "linver";      own_label = "About Linux 2000"; break;
-    case SM_UPDATE:   own = "l2kupdate";   own_label = "Windows Update"; break;
+    case SM_LINVER:   own = "linver";      own_label = "About Linux 2000"; own_icon = "w2k:startflag"; break;
+    case SM_UPDATE:   own = "l2kupdate";   own_label = "Windows Update"; own_icon = "w2k:winupdate"; break;
     case SM_IMAGING:  own = "l2kimage";    own_label = "Imaging"; break;
     case SM_CONTROLPANEL: own = "l2kcontrol"; own_label = "Control Panel"; break;
     }
-    if (own) return program_ctx(own, own_label, NULL, x, y);
+    if (own) return program_ctx(own, own_label, own_icon, x, y);
 
     /* An entry from the user's own Start Menu folder. */
     const char *sd = startdir_command(id);
@@ -243,6 +243,9 @@ void startmenu_open(void)
     prog_item(systools, SM_CHARMAP, "&Character Map", "l2kcharmap", ICO_CHARMAP);
     prog_item(systools, SM_DEVMGMT, "&Device Manager", "l2kdevmgmt", ICO_MYCOMPUTER);
     prog_item(systools, SM_LINVER, "&About Linux 2000", "linver", ICO_STARTFLAG);
+    /* Windows Update is pinned to the Start menu at first, as an ordinary
+     * pin; this is where it can be pinned again from. */
+    prog_item(systools, SM_UPDATE, "Windows &Update", "l2kupdate", ICO_WINUPDATE);
 
     W2kMenu *acc = w2k_menu_new();
     w2k_menu_sub(acc, "S&ystem Tools", ICO_ACCESSORIES, systools);
@@ -308,9 +311,6 @@ void startmenu_open(void)
         w2k_menu_item(m, SM_PIN_BASE + i, pinned[i].label, NULL,
                       pin_icon(&pinned[i]));
     if (npinned) w2k_menu_sep(m);
-    /* Windows Update sat above Programs on Windows 2000's menu. */
-    prog_item(m, SM_UPDATE, "Windows &Update", "l2kupdate", ICO_WINUPDATE);
-    w2k_menu_sep(m);
     w2k_menu_sub(m, "&Programs",  ICO_PROGRAMS,  progs);
     w2k_menu_sub(m, "&Documents", ICO_DOCUMENTS, docs);
     w2k_menu_sub(m, "&Settings",  ICO_SETTINGS,  settings);

@@ -257,3 +257,18 @@ void pin_command_for_client(Client *c, char *cmd, int cn, char *label, int ln,
     snprintf(label, ln, "%s", base ? base : cmd);
     if (label[0] >= 'a' && label[0] <= 'z') label[0] -= 32;
 }
+
+/* The pins a fresh desktop starts with -- Windows Update, as Windows 2000
+ * had it at the top of the Start menu -- added once and remembered by a
+ * marker file, so removing them is respected ever after. */
+void pins_seed(void)
+{
+    const char *home = getenv("HOME");
+    if (!home) return;
+    char marker[1024];
+    snprintf(marker, sizeof marker, "%s/.w2k/pins-seeded", home);
+    if (access(marker, F_OK) == 0) return;
+    pins_add(PIN_START, "l2kupdate", "Windows Update", "w2k:winupdate");
+    FILE *f = fopen(marker, "w");
+    if (f) { fputs("Windows Update\n", f); fclose(f); }
+}

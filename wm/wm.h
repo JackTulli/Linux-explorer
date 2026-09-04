@@ -214,6 +214,7 @@ int  pins_contains(int which, const char *cmd);
 void pins_add(int which, const char *cmd, const char *label,
               const char *icon);
 void pins_remove(int which, const char *cmd);
+void pins_seed(void);                  /* the default pins, once */
 void pin_command_for_client(Client *c, char *cmd, int cn, char *label, int ln,
                             char *icon, int in);
 

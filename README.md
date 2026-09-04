@@ -34,8 +34,11 @@ Nothing updates on its own. There are three ways to update, and they all
 end the same way: the new version is installed over the old one and a
 running desktop restarts in place with every window kept.
 
-**From the desktop:** Start > Windows Update (or `l2kupdate`, or the
-Windows Update link in Control Panel). It looks the way Windows Update
+**From the desktop:** Windows Update is pinned at the top of the Start
+menu to begin with, as on Windows 2000; it is an ordinary pin, so
+right-click it to rename or remove it, and pin it again from Programs >
+Accessories > System Tools. Run > `l2kupdate` and the Windows Update link
+in Control Panel open it too. It looks the way Windows Update
 did. "Check for updates" asks the project's release list what the latest
 version is and compares it with yours; "Install" runs the update in a
 terminal window in front of you, asking for your password there. The
