@@ -181,6 +181,19 @@ if [ "$DO_BUILD" = 1 ]; then
     as_root make -C "$HERE" -s install PREFIX="$PREFIX"
     as_root install -d "$PREFIX/share/w2k/cursors"
     as_root sh -c "install -m644 '$HERE'/cursors/* '$PREFIX/share/w2k/cursors/'"
+    # A desktop that is running picks the new build up in place: the
+    # window manager restarts itself with every window kept (w2kwm
+    # --restart), each session found by its w2kwm process.
+    if [ "$DRY" != 1 ] && [ "$(id -u)" = 0 ]; then
+        for pid in $(pgrep -x w2kwm 2>/dev/null); do
+            u=$(stat -c %U "/proc/$pid" 2>/dev/null) || continue
+            disp=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^DISPLAY=//p' | head -1)
+            xauth=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^XAUTHORITY=//p' | head -1)
+            [ -n "$disp" ] || continue
+            say "Restarting the desktop of $u on $disp"
+            su -s /bin/sh "$u" -c "DISPLAY='$disp' XAUTHORITY='${xauth:-$(getent passwd "$u" | cut -d: -f6)/.Xauthority}' '$PREFIX/bin/w2kwm' --restart" || true
+        done
+    fi
     # The Xcursor theme for every other program, system-wide too (Xcursor
     # looks in /usr/share/icons but not under an arbitrary prefix), and as
     # the system default when no other default is set.
@@ -330,7 +343,7 @@ if [ "$DO_XINITRC" = 1 ]; then
     run chmod +x "$HOME/.xinitrc"
 fi
 
-say "Done."
+say "Done: $("$PREFIX/bin/w2kwm" --version 2>/dev/null || echo "w2kwm installed")"
 echo "  Start it with:  startx $PREFIX/bin/w2k-session"
 echo "  or pick \"Windows 2000\" in your display manager. Explorer becomes the"
 echo "  folder handler for other programs the first time the shell runs."

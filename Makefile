@@ -10,6 +10,9 @@ CFLAGS  += -std=c99 -Wall -Wextra -Wno-unused-parameter -Iinclude
 CPPFLAGS += -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 # Where skins, cursors, icons and wallpapers are looked for at run time.
 CPPFLAGS += -DW2K_PREFIX=\"$(PREFIX)\"
+# The release number, from the VERSION file; a git checkout adds its hash.
+W2K_VERSION := $(shell cat VERSION)$(shell git rev-parse --short HEAD 2>/dev/null | sed "s/^/+/")
+CPPFLAGS += -DW2K_VERSION=\"$(W2K_VERSION)\"
 CFLAGS  += -I/usr/include/freetype2
 LDLIBS  := -lX11 -lXext -lXrandr -lXcursor -lXft -lfontconfig -lz -ljpeg -lm
 

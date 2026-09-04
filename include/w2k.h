@@ -653,6 +653,9 @@ void w2k_icon_draw_disabled(Drawable d, int x, int y, int id);
 /* ------------------------------------------------------------------ *
  * Small helpers
  * ------------------------------------------------------------------ */
+#ifndef W2K_VERSION
+#define W2K_VERSION "dev"
+#endif
 #ifndef W2K_PREFIX
 #define W2K_PREFIX "/usr/local"         /* where make install put the data */
 #endif

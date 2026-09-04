@@ -25,6 +25,10 @@ on and you are on the desktop above.
 If `curl` is missing on a bare Debian: `apt install curl` first. If the
 first run is interrupted, run the same command again; it carries on.
 
+**Updating** is the same command: it pulls the latest source, rebuilds,
+installs over the old copy and restarts a running desktop in place, with
+every window kept. `w2kwm --version` says what is installed.
+
 **A machine that already has a desktop:**
 
     git clone https://github.com/JackTulli/Linux-explorer
@@ -77,6 +81,10 @@ classic scheme (and its colour variants), Windows XP (Luna, with the
 two-column Start menu), and Windows 7 Basic (with its Start menu, orb and
 taskbar). The XP and 7 chrome is cropped from screenshots and checked by
 diffing against them.
+
+![Windows XP look: Luna windows, the two-column Start menu, Explorer, Task Manager and Display Properties](docs/windows-xp.png)
+
+![Windows 7 Basic look: the orb, the Windows 7 Start menu and taskbar, with the Windows 7 icon set](docs/windows-7.png)
 
 Icons come in five sets, from Display Properties > Appearance > Icons:
 Windows 2000 (the built-in artwork), Windows 98, Windows XP, Windows 7 and

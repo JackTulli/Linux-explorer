@@ -31,7 +31,15 @@ if [ -z "$USERNAME" ] || [ "$USERNAME" = root ]; then
     USERNAME=$(getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 && $7 !~ /nologin|false/ { print $1; exit }')
 fi
 [ -n "$USERNAME" ] || { echo "bootstrap.sh: no ordinary user found; set W2K_USER" >&2; exit 1; }
-echo "==> Setting up the Windows 2000 desktop for $USERNAME"
+# Run again on a machine that has it: the source is updated, the shell
+# rebuilt and installed over the old one, and a desktop that is running
+# restarts in place with its windows. Nothing of the user's is touched
+# twice (configuration files are only written when missing).
+if [ -x /usr/local/bin/w2kwm ]; then
+    echo "==> Updating the Windows 2000 desktop ($(/usr/local/bin/w2kwm --version 2>/dev/null | cut -d' ' -f2)) for $USERNAME"
+else
+    echo "==> Setting up the Windows 2000 desktop for $USERNAME"
+fi
 
 # git and curl, then the source.
 if command -v apt-get >/dev/null 2>&1; then
@@ -61,3 +69,4 @@ echo "==> Source at $SRC, $(git -C "$SRC" log -1 --format='%h %s')"
 
 cd "$SRC"
 sh ./install.sh --full --tahoma --xinitrc --user "$USERNAME"
+echo "==> $(/usr/local/bin/w2kwm --version 2>/dev/null || echo 'w2kwm') is installed. Run this command again any time to update."
