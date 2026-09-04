@@ -174,6 +174,41 @@ static void blit(Drawable d, int x, int y, int id, int size, int dimmed)
     XSetClipMask(w2k.dpy, w2k.gc_icon, None);
 }
 
+/* Any size, from the 32-pixel art: for the 24-pixel icons Luna's Start
+ * panel and its footer use. Kept per (icon, size) once built. */
+void w2k_icon_draw_scaled(Drawable d, int x, int y, int id, int size)
+{
+    if (size == 16 || size == 32) { blit(d, x, y, id, size, 0); return; }
+    if (!w2k_icon_valid(id) || size < 4 || size > 128) return;
+    static struct { int id, size; Cached c; } scaled[48];
+    static int nscaled, next_slot;
+    int slot = -1;
+    for (int i = 0; i < nscaled; i++)
+        if (scaled[i].id == id && scaled[i].size == size) { slot = i; break; }
+    if (slot < 0) {
+        const unsigned char *src = rgba_for(id, 32);
+        if (!src) return;
+        unsigned char *px = w2k_rgba_scale(src, 32, 32, size);
+        if (!px) return;
+        if (nscaled < 48) slot = nscaled++;
+        else {
+            slot = next_slot++ % 48;
+            w2k_free_pixmap(scaled[slot].c.pm);
+            w2k_free_pixmap(scaled[slot].c.mask);
+        }
+        scaled[slot].id = id;
+        scaled[slot].size = size;
+        memset(&scaled[slot].c, 0, sizeof scaled[slot].c);
+        build(&scaled[slot].c, px, size, 0);
+        free(px);
+    }
+    Cached *c = &scaled[slot].c;
+    XSetClipOrigin(w2k.dpy, w2k.gc_icon, x, y);
+    XSetClipMask(w2k.dpy, w2k.gc_icon, c->mask);
+    XCopyArea(w2k.dpy, c->pm, d, w2k.gc_icon, 0, 0, (unsigned)size, (unsigned)size, x, y);
+    XSetClipMask(w2k.dpy, w2k.gc_icon, None);
+}
+
 void w2k_icon_draw(Drawable d, int x, int y, int id)          { blit(d, x, y, id, 16, 0); }
 void w2k_icon_draw_disabled(Drawable d, int x, int y, int id) { blit(d, x, y, id, 16, 1); }
 void w2k_bigicon_draw(Drawable d, int x, int y, int id)       { blit(d, x, y, id, 32, 0); }

@@ -8,6 +8,9 @@ Basic looks are cropped pixel for pixel from the real thing.
 
 ![The desktop](docs/desktop.png)
 
+Questions, bug reports and screenshots are welcome on the project's
+Discord server: https://discord.gg/KPQBnSqcK
+
 ## Get it running
 
 **A fresh machine or VM with no desktop** (Debian, Ubuntu, Fedora, Arch,

@@ -517,6 +517,9 @@ void w2k_text_disabled(Drawable d, int font, int x, int y, const char *s);
 /* Handles '&' mnemonics: draws the underline, returns width. '&&' is a literal &. */
 int  w2k_text_mnemonic(Drawable d, int font, int x, int y, const char *s,
                        int color, int show_underline);
+/* The same in a colour that is not one of the scheme's. */
+int  w2k_text_mnemonic_rgb(Drawable d, int font, int x, int y, const char *s,
+                           int r, int g, int b, int show_underline);
 /* Width of a mnemonic string with the '&' markers removed. */
 int  w2k_mnemonic_width(int font, const char *s);
 /* Truncate with an ellipsis so the result fits in `maxw`. Writes to buf. */
@@ -648,6 +651,7 @@ void w2k_icon_draw(Drawable d, int x, int y, int id);
 /* 32x32 rendering of the same icon id. Ids with dedicated large art use it;
  * the rest are scaled 2x from the 16x16 original. */
 void w2k_bigicon_draw(Drawable d, int x, int y, int id);
+void w2k_icon_draw_scaled(Drawable d, int x, int y, int id, int size);  /* any size, from the 32px art */
 /* The same, with the shortcut arrow composited over the corner. */
 void w2k_icon_draw_link(Drawable d, int x, int y, int id);
 void w2k_bigicon_draw_link(Drawable d, int x, int y, int id);

@@ -186,17 +186,17 @@ static void build_rows(void)
          ICO_FILE_MEDIA, 0)->bold = 1;
     push(right_rows, &nright, R_ITEM, SM_MYCOMPUTER, "My Computer",
          ICO_MYCOMPUTER, 0)->bold = 1;
-    push(right_rows, &nright, R_SUB, SM_RECENTSUB, "My Recent Documents",
+    push(right_rows, &nright, R_SUB, SM_RECENTSUB, "My Recent &Documents",
          ICO_DOCUMENTS, 0);
     push(right_rows, &nright, R_SEP, 0, NULL, ICO_NONE, 0);
-    push(right_rows, &nright, R_ITEM, SM_CONTROLPANEL, "Control Panel",
+    push(right_rows, &nright, R_ITEM, SM_CONTROLPANEL, "&Control Panel",
          ICO_CONTROLPANEL, 0);
     push(right_rows, &nright, R_ITEM, SM_DEFAULTS,
-         "Set Program Access and Defaults", ICO_PROGRAMS, 0);
+         "Set Program &Access and Defaults", ICO_PROGRAMS, 0);
     push(right_rows, &nright, R_SEP, 0, NULL, ICO_NONE, 0);
-    push(right_rows, &nright, R_ITEM, SM_HELP, "Help and Support", ICO_HELP, 0);
-    push(right_rows, &nright, R_ITEM, SM_SEARCH, "Search", ICO_SEARCH, 0);
-    push(right_rows, &nright, R_ITEM, SM_RUN, "Run...", ICO_RUN, 0);
+    push(right_rows, &nright, R_ITEM, SM_HELP, "&Help and Support", ICO_HELP, 0);
+    push(right_rows, &nright, R_ITEM, SM_SEARCH, "&Search", ICO_SEARCH, 0);
+    push(right_rows, &nright, R_ITEM, SM_RUN, "&Run...", ICO_RUN, 0);
 }
 
 /* ------------------------------------------------------------------ *
@@ -285,14 +285,15 @@ static void draw_row(Drawable d, const Row *r, int x, int y, int w, int rh,
             /* Measured: (159,183,216) over (214,241,255) on the blue,
              * (213,213,213) over white on the white, 34 in from the left
              * and the width of the column. */
+            /* Measured off the panel: the white column's rule runs from
+             * 24 to 171, the blue column's from 220 to 352. */
+            int sx = left ? 24 : 220, sw = left ? 148 : 133;
             XSetForeground(w2k.dpy, w2k.gc, left ? w2k_rgb(213, 213, 213)
                                                  : w2k_rgb(159, 183, 216));
-            XFillRectangle(w2k.dpy, d, w2k.gc, x + (left ? 34 : 0), y + SEP_H / 2,
-                           (unsigned)(left ? w - 60 : w), 1);
+            XFillRectangle(w2k.dpy, d, w2k.gc, sx, y + SEP_H / 2, (unsigned)sw, 1);
             XSetForeground(w2k.dpy, w2k.gc, left ? w2k_rgb(255, 255, 255)
                                                  : w2k_rgb(214, 241, 255));
-            XFillRectangle(w2k.dpy, d, w2k.gc, x + (left ? 34 : 0), y + SEP_H / 2 + 1,
-                           (unsigned)(left ? w - 60 : w), 1);
+            XFillRectangle(w2k.dpy, d, w2k.gc, sx, y + SEP_H / 2 + 1, (unsigned)sw, 1);
             return;
         }
         XSetForeground(w2k.dpy, w2k.gc, rule);
@@ -304,17 +305,27 @@ static void draw_row(Drawable d, const Row *r, int x, int y, int w, int rh,
     int font = r->bold ? F_UI_BOLD : F_UI;
     int fh = w2k_font_height(font);
     fill(d, x, y, w, rh, hot ? w2k.col[C_HIGHLIGHT] : bg);
-    /* Measured: 32-pixel icons at 8 with text at 47; 16-pixel icons at
-     * the column's edge with text 36 past it. */
-    int ix = x + (r->big ? 8 : 0), tx = x + (r->big ? 47 : 36);
+    int luna = w2k_theme == THEME_XP;
+    /* Measured off Luna's panel: pinned items have their 32-pixel icon at
+     * 8 and their text at 46; the blue column's icons are 24 pixels at
+     * 198 with the text at 226 (icon 7 and text 35 past the column's
+     * edge), one pixel higher than the row's centre would put it. The
+     * classic rendition keeps 16-pixel icons at the edge. */
+    int ix = x + (r->big ? 8 : luna ? 7 : 0);
+    int tx = x + (r->big ? (luna ? 44 : 47) : luna ? 35 : 36);
     if (r->icon >= 0) {
-        if (r->big) w2k_bigicon_draw(d, ix, y + (rh - 32) / 2, r->icon);
-        else        w2k_icon_draw(d, ix, y + (rh - 16) / 2, r->icon);
+        if (r->big)      w2k_bigicon_draw(d, ix, y + (rh - 32) / 2, r->icon);
+        else if (luna)   w2k_icon_draw_scaled(d, ix, y + 3, r->icon, 24);
+        else             w2k_icon_draw(d, ix, y + (rh - 16) / 2, r->icon);
     }
     int col = hot ? C_HIGHLIGHTTEXT : C_TEXT;
     char buf[128];
     w2k_ellipsis(font, r->label, w - (tx - x) - 14, buf, sizeof buf);
-    w2k_text(d, font, tx, y + (rh - fh) / 2, buf, col);
+    int ty = y + (rh - fh) / 2 - (luna && !r->big ? 1 : 0);
+    if (luna && !hot && !r->big && bg != w2k_rgb(255, 255, 255))
+        w2k_text_mnemonic_rgb(d, font, tx, ty, buf, 8, 29, 67, 1); /* the blue column's navy */
+    else
+        w2k_text_mnemonic(d, font, tx, ty, buf, col, 1);
     if (r->kind == R_SUB) {
         /* The submenu arrow, drawn as the menu control draws it. */
         int ax = x + w - 12, ay = y + rh / 2 - 4;
@@ -619,7 +630,7 @@ static void panel_draw(Drawable d)
     int lx = skinned ? 2 : 0, lw = skinned ? LEFT_W - 2 : LEFT_W;
     int rx = LEFT_W + 1, rw = PANEL_W - LEFT_W - 1 - (skinned ? 7 : 0);
     unsigned long lbg = skinned ? w2k_rgb(255, 255, 255) : w2k.col[C_WINDOW];
-    unsigned long rbg = skinned ? w2k_rgb(208, 230, 250) : right_bg;
+    unsigned long rbg = skinned ? w2k_rgb(210, 229, 250) : right_bg;
     int y = body_y + 4;
     for (int i = 0; i < nleft; i++) {
         int rh = left_rows[i].kind == R_SEP ? SEP_H : ROW_H;
@@ -631,12 +642,45 @@ static void panel_draw(Drawable d)
     /* "All Programs" sits at the foot of the left column, above the
      * footer, a rule over it. */
     int ap_y = body_y + body_h - ALLPROG_H;
-    XSetForeground(w2k.dpy, w2k.gc, skinned ? w2k_rgb(210, 210, 210) : rule);
-    XFillRectangle(w2k.dpy, pm, w2k.gc, lx + 34, ap_y - 5, (unsigned)(lw - 60), 1);
-    Row ap = { .kind = R_SUB, .id = SM_ALLPROGRAMS, .icon = ICO_NONE, .bold = 1 };
-    snprintf(ap.label, sizeof ap.label, "All Programs");
-    draw_row(pm, &ap, lx, ap_y, lw, ALLPROG_H,
-             hot_col == 0 && hot_row == nleft, lbg);
+    if (skinned) {
+        /* Measured: the rule 35 above the footer from 24 to 171; the bold
+         * label at 46 with its top 21 above the footer; the green arrow,
+         * 16 by 22, at 129. */
+        int fb = panel_h - FOOTER_H;
+        int hot = hot_col == 0 && hot_row == nleft;
+        if (hot) fill(pm, lx, ap_y, lw, ALLPROG_H, w2k.col[C_HIGHLIGHT]);
+        XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(213, 213, 213));
+        XFillRectangle(w2k.dpy, pm, w2k.gc, 24, fb - 35, 148, 1);
+        w2k_text_mnemonic(pm, F_UI_BOLD, 46, fb - 23 - (w2k_font_height(F_UI_BOLD) - 13) / 2,
+                          "All &Programs", hot ? C_HIGHLIGHTTEXT : C_TEXT, 1);
+        /* The arrow: a green triangle 16 by 22 with a dark rim; its face
+         * is lit from the left, the columns sampled off the reference. */
+        static const unsigned char face[16][3] = {
+            { 97, 203, 99 }, { 128, 214, 128 }, { 158, 224, 156 }, { 153, 222, 154 },
+            { 148, 220, 153 }, { 136, 218, 137 }, { 123, 216, 121 }, { 103, 211, 101 },
+            { 83, 206, 82 }, { 70, 191, 68 }, { 56, 176, 53 }, { 55, 154, 53 },
+            { 54, 131, 53 }, { 52, 124, 50 }, { 48, 118, 46 }, { 41, 112, 42 },
+        };
+        int ax = 129, ay = fb - 27;
+        for (int i = 0; i < 16; i++) {
+            int half = (11 * (16 - i) + 15) / 16;   /* 22 tall at the base, to a point */
+            int top = ay + 11 - half, h = 2 * half;
+            if (h < 1) h = 1;
+            XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(41, 112, 42));
+            XFillRectangle(w2k.dpy, pm, w2k.gc, ax + i, top, 1, (unsigned)h);
+            if (h > 2) {
+                XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(face[i][0], face[i][1], face[i][2]));
+                XFillRectangle(w2k.dpy, pm, w2k.gc, ax + i, top + 1, 1, (unsigned)(h - 2));
+            }
+        }
+    } else {
+        XSetForeground(w2k.dpy, w2k.gc, rule);
+        XFillRectangle(w2k.dpy, pm, w2k.gc, lx + 34, ap_y - 5, (unsigned)(lw - 60), 1);
+        Row ap = { .kind = R_SUB, .id = SM_ALLPROGRAMS, .icon = ICO_NONE, .bold = 1 };
+        snprintf(ap.label, sizeof ap.label, "All Programs");
+        draw_row(pm, &ap, lx, ap_y, lw, ALLPROG_H,
+                 hot_col == 0 && hot_row == nleft, lbg);
+    }
 
     y = body_y + 4;
     for (int i = 0; i < nright; i++) {
@@ -650,19 +694,33 @@ static void panel_draw(Drawable d)
     int fy = panel_h - FOOTER_H;
     int fh = w2k_font_height(F_UI);
     struct { const char *label; int id, icon; } fb[2] = {
-        { "Log Off", SM_LOGOFF, ICO_LOGOFF },
-        { "Turn Off Computer", SM_SHUTDOWN, ICO_SHUTDOWN },
+        { "&Log Off", SM_LOGOFF, ICO_LOGOFF },
+        { "T&urn Off Computer", SM_SHUTDOWN, ICO_SHUTDOWN },
     };
-    int bx = PANEL_W - 8;
-    for (int i = 1; i >= 0; i--) {
-        int tw = w2k_text_width(F_UI, fb[i].label, -1);
-        int bw = 16 + 6 + tw + 12;
-        bx -= bw;
-        int hot = hot_col == 2 && hot_row == i;
-        if (hot) fill(pm, bx, fy + 6, bw, FOOTER_H - 12, w2k.col[C_HIGHLIGHT]);
-        w2k_icon_draw(pm, bx + 6, fy + (FOOTER_H - 16) / 2, fb[i].icon);
-        w2k_text_rgb(pm, F_UI, bx + 6 + 16 + 6, fy + (FOOTER_H - fh) / 2,
-                     fb[i].label, 255, 255, 255);
+    if (skinned) {
+        /* Measured: 24-pixel icons at 176 and 251, 8 below the footer's
+         * top; the labels at 204 and 279 with their tops 16 below it. */
+        static const int fx[2] = { 176, 251 };
+        for (int i = 0; i < 2; i++) {
+            int hot = hot_col == 2 && hot_row == i;
+            int tw = w2k_mnemonic_width(F_UI, fb[i].label);
+            if (hot) fill(pm, fx[i] - 4, fy + 5, 24 + 4 + tw + 8, FOOTER_H - 10, w2k.col[C_HIGHLIGHT]);
+            w2k_icon_draw_scaled(pm, fx[i], fy + 8, fb[i].icon, 24);
+            w2k_text_mnemonic_rgb(pm, F_UI, fx[i] + 28, fy + 14 - (fh - 13) / 2, fb[i].label,
+                                  255, 255, 255, 1);
+        }
+    } else {
+        int bx = PANEL_W - 8;
+        for (int i = 1; i >= 0; i--) {
+            int tw = w2k_mnemonic_width(F_UI, fb[i].label);
+            int bw = 16 + 6 + tw + 12;
+            bx -= bw;
+            int hot = hot_col == 2 && hot_row == i;
+            if (hot) fill(pm, bx, fy + 6, bw, FOOTER_H - 12, w2k.col[C_HIGHLIGHT]);
+            w2k_icon_draw(pm, bx + 6, fy + (FOOTER_H - 16) / 2, fb[i].icon);
+            w2k_text_mnemonic_rgb(pm, F_UI, bx + 6 + 16 + 6, fy + (FOOTER_H - fh) / 2,
+                                  fb[i].label, 255, 255, 255, 1);
+        }
     }
 
     if (!skinned) w2k_frame(pm, 0, 0, PANEL_W, panel_h, C_WINDOWFRAME);
@@ -730,7 +788,7 @@ static int footer_hit(int x, int y, int *idx)
                                             { "Turn Off Computer" } };
     int bx = PANEL_W - 8;
     for (int i = 1; i >= 0; i--) {
-        int bw = 16 + 6 + w2k_text_width(F_UI, fb[i].label, -1) + 12;
+        int bw = 16 + 6 + w2k_mnemonic_width(F_UI, fb[i].label) + 12;
         bx -= bw;
         if (x >= bx && x < bx + bw) { *idx = i; return 1; }
     }

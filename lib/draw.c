@@ -276,6 +276,24 @@ int w2k_text_mnemonic(Drawable d, int font, int x, int y, const char *s,
     return w2k_text_width(font, buf, n);
 }
 
+int w2k_text_mnemonic_rgb(Drawable d, int font, int x, int y, const char *s,
+                          int r, int g, int b, int show_underline)
+{
+    char buf[512];
+    int ul;
+    int n = strip_mnemonic(s, buf, sizeof buf, &ul);
+    buf[n] = '\0';
+    w2k_text_rgb(d, font, x, y, buf, r, g, b);
+    if (show_underline && ul >= 0 && w2k_accel_shown) {
+        int x0 = x + w2k_text_width(font, buf, ul);
+        int cw = w2k_text_width(font, buf + ul, 1);
+        XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r, g, b));
+        XFillRectangle(w2k.dpy, d, w2k.gc, x0, y + w2k_font_px_ascent(font) + 1,
+                       (unsigned)cw, 1);
+    }
+    return w2k_text_width(font, buf, n);
+}
+
 void w2k_ellipsis(int font, const char *s, int maxw, char *buf, int bufsz)
 {
     int n = s ? (int)strlen(s) : 0;
