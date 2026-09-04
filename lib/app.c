@@ -180,6 +180,7 @@ int           w2k_monitor_cfg_n;
 /* Underlines under menu mnemonics. With the effect on they stay hidden
  * until Alt is pressed, which is what Windows 2000 does. */
 int w2k_accel_shown = 1;
+char w2k_gtk_theme[64] = "Chicago95", w2k_icon_theme[64] = "Chicago95", w2k_qt_style[64] = "Windows";
 
 void w2k_accel_show(void)
 {
@@ -340,6 +341,9 @@ void w2k_theme_colours(int theme)
 void w2k_scheme_reset(void)
 {
     w2k_theme_colours(w2k_theme);
+    snprintf(w2k_gtk_theme, sizeof w2k_gtk_theme, "Chicago95");
+    snprintf(w2k_icon_theme, sizeof w2k_icon_theme, "Chicago95");
+    snprintf(w2k_qt_style, sizeof w2k_qt_style, "Windows");
     w2k_wallpaper[0] = 0;
     w2k_wallpaper_style = 0;
     w2k_force_decorations = 1;
@@ -637,6 +641,9 @@ int w2k_scheme_load(const char *path)
             snprintf(w2k_icon_set, sizeof w2k_icon_set, "%.31s", val);
             continue;
         }
+        if (!strcasecmp(line, "GtkTheme"))  { snprintf(w2k_gtk_theme, sizeof w2k_gtk_theme, "%.63s", val); continue; }
+        if (!strcasecmp(line, "IconTheme")) { snprintf(w2k_icon_theme, sizeof w2k_icon_theme, "%.63s", val); continue; }
+        if (!strcasecmp(line, "QtStyle"))   { snprintf(w2k_qt_style, sizeof w2k_qt_style, "%.63s", val); continue; }
         if (!strcasecmp(line, "StartIcon")) {
             w2k_start_icon = !strcasecmp(val, "tux") ? SI_TUX :
                              !strcasecmp(val, "distro") ? SI_DISTRO : SI_FLAG;
@@ -710,6 +717,9 @@ int w2k_scheme_save(const char *path)
     fprintf(f, "Theme=%s\n", w2k_theme == THEME_XP ? "xp" :
             w2k_theme == THEME_BASIC7 ? "basic7" : "classic");
     fprintf(f, "IconSet=%s\n", w2k_icon_set);
+    fprintf(f, "GtkTheme=%s\n", w2k_gtk_theme);
+    fprintf(f, "IconTheme=%s\n", w2k_icon_theme);
+    fprintf(f, "QtStyle=%s\n", w2k_qt_style);
     fprintf(f, "Cursors=%s\n", w2k_cursors_windows ? "windows" : "x11");
     fprintf(f, "DoubleClickTime=%d\n", w2k_dblclk_ms);
     fprintf(f, "MouseSwap=%d\n", w2k_mouse_swap);

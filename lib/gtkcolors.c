@@ -16,9 +16,11 @@
  * GTK and Qt read these when a program starts; the ones already running
  * keep their colours until they are restarted. */
 #include "w2k.h"
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -89,6 +91,152 @@ static void write_block(const char *path, const char *block)
         fputs(block, f);
     }
     fclose(f);
+}
+
+/* Set key=value in [section] of an ini file, keeping everything else. */
+static void ini_set(const char *path, const char *section, const char *key,
+                    const char *value)
+{
+    char *old = slurp(path);
+    FILE *f = fopen(path, "w");
+    if (!f) { free(old); return; }
+    char head[80];
+    snprintf(head, sizeof head, "[%s]", section);
+    int in_section = 0, done = 0, seen_section = 0;
+    size_t klen = strlen(key);
+    if (old) {
+        char *save = NULL;
+        for (char *line = strtok_r(old, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+            if (line[0] == '[') {
+                if (in_section && !done) { fprintf(f, "%s=%s\n", key, value); done = 1; }
+                in_section = !strncmp(line, head, strlen(head));
+                if (in_section) seen_section = 1;
+                fprintf(f, "%s\n", line);
+                continue;
+            }
+            if (in_section && !strncmp(line, key, klen) && line[klen] == '=') {
+                if (!done) { fprintf(f, "%s=%s\n", key, value); done = 1; }
+                continue;
+            }
+            fprintf(f, "%s\n", line);
+        }
+        if (in_section && !done) { fprintf(f, "%s=%s\n", key, value); done = 1; }
+        free(old);
+    }
+    if (!done) {
+        if (!seen_section) fprintf(f, "%s\n", head);
+        fprintf(f, "%s=%s\n", key, value);
+    }
+    fclose(f);
+}
+
+/* ---- What is installed to choose from ------------------------------ */
+static int name_cmp(const void *a, const void *b) { return strcasecmp(a, b); }
+
+static void add_name(char (*out)[64], int *n, int max, const char *name)
+{
+    for (int i = 0; i < *n; i++) if (!strcmp(out[i], name)) return;
+    if (*n < max) snprintf(out[(*n)++], 64, "%s", name);
+}
+
+static int dir_has(const char *dir, const char *sub)
+{
+    char p[1200];
+    snprintf(p, sizeof p, "%s/%s", dir, sub);
+    return access(p, F_OK) == 0;
+}
+
+int w2k_gtk_themes(char (*out)[64], int max)
+{
+    const char *home = getenv("HOME") ? getenv("HOME") : "/";
+    char dirs[3][1024];
+    snprintf(dirs[0], sizeof dirs[0], "%s/.themes", home);
+    snprintf(dirs[1], sizeof dirs[1], "%s/.local/share/themes", home);
+    snprintf(dirs[2], sizeof dirs[2], "/usr/share/themes");
+    int n = 0;
+    for (int d = 0; d < 3; d++) {
+        DIR *dp = opendir(dirs[d]);
+        if (!dp) continue;
+        struct dirent *e;
+        while ((e = readdir(dp))) {
+            if (e->d_name[0] == '.') continue;
+            char t[1100];
+            snprintf(t, sizeof t, "%s/%s", dirs[d], e->d_name);
+            if (dir_has(t, "gtk-3.0") || dir_has(t, "gtk-2.0") || dir_has(t, "gtk-4.0"))
+                add_name(out, &n, max, e->d_name);
+        }
+        closedir(dp);
+    }
+    qsort(out, (size_t)n, 64, name_cmp);
+    return n;
+}
+
+int w2k_icon_themes(char (*out)[64], int max)
+{
+    const char *home = getenv("HOME") ? getenv("HOME") : "/";
+    char dirs[3][1024];
+    snprintf(dirs[0], sizeof dirs[0], "%s/.icons", home);
+    snprintf(dirs[1], sizeof dirs[1], "%s/.local/share/icons", home);
+    snprintf(dirs[2], sizeof dirs[2], "/usr/share/icons");
+    int n = 0;
+    for (int d = 0; d < 3; d++) {
+        DIR *dp = opendir(dirs[d]);
+        if (!dp) continue;
+        struct dirent *e;
+        while ((e = readdir(dp))) {
+            if (e->d_name[0] == '.') continue;
+            if (!strcmp(e->d_name, "default") || !strcmp(e->d_name, "hicolor") ||
+                !strcmp(e->d_name, "locolor")) continue;
+            char t[1100];
+            snprintf(t, sizeof t, "%s/%s", dirs[d], e->d_name);
+            if (!dir_has(t, "index.theme")) continue;
+            /* A cursor theme has nothing but its cursors directory. */
+            DIR *q = opendir(t);
+            int icons = 0;
+            struct dirent *f;
+            while (q && (f = readdir(q)))
+                if (f->d_name[0] != '.' && strcmp(f->d_name, "cursors") &&
+                    strcmp(f->d_name, "index.theme") && strcmp(f->d_name, "cursor.theme"))
+                    icons = 1;
+            if (q) closedir(q);
+            if (icons) add_name(out, &n, max, e->d_name);
+        }
+        closedir(dp);
+    }
+    qsort(out, (size_t)n, 64, name_cmp);
+    return n;
+}
+
+int w2k_qt_styles(char (*out)[64], int max)
+{
+    int n = 0;
+    add_name(out, &n, max, "Windows");
+    add_name(out, &n, max, "Fusion");
+    const char *dirs[] = { "/usr/lib/x86_64-linux-gnu/qt5/plugins/styles",
+                           "/usr/lib/x86_64-linux-gnu/qt6/plugins/styles",
+                           "/usr/lib/qt5/plugins/styles", "/usr/lib/qt6/plugins/styles",
+                           "/usr/lib64/qt5/plugins/styles", "/usr/lib64/qt6/plugins/styles",
+                           "/usr/lib/qt/plugins/styles", NULL };
+    for (int d = 0; dirs[d]; d++) {
+        DIR *dp = opendir(dirs[d]);
+        if (!dp) continue;
+        struct dirent *e;
+        while ((e = readdir(dp))) {
+            /* libqcleanlooksstyle.so -> Cleanlooks; the ct plugins are not styles. */
+            const char *nm = e->d_name;
+            const char *end = strstr(nm, "style.so");
+            if (strncmp(nm, "libq", 4) || !end || strstr(nm, "ct-style")) continue;
+            int len = (int)(end - nm - 4);
+            if (len <= 0 || len > 60) continue;
+            char name[64];
+            snprintf(name, sizeof name, "%.*s", len, nm + 4);
+            if (name[0] >= 'a' && name[0] <= 'z') name[0] = (char)(name[0] - 'a' + 'A');
+            add_name(out, &n, max, name);
+        }
+        closedir(dp);
+    }
+    qsort(out, (size_t)n, 64, name_cmp);
+    return n;
 }
 
 /* ---- GTK 3 and 4 ---------------------------------------------------- */
@@ -235,6 +383,11 @@ static void gtk_css(const char *dir, int adwaita)
             win, wtext, sel, seltext, menu, mtext, tip, tiptext, gray, sel, seltext);
     fclose(f);
 
+    /* The theme and icons the desktop is set to. */
+    snprintf(path, sizeof path, "%s/settings.ini", dir);
+    ini_set(path, "Settings", "gtk-theme-name", w2k_gtk_theme);
+    ini_set(path, "Settings", "gtk-icon-theme-name", w2k_icon_theme);
+
     /* The user's gtk.css imports it; created when there is none. */
     snprintf(path, sizeof path, "%s/gtk.css", dir);
     char *css = slurp(path);
@@ -262,10 +415,13 @@ static void gtk2(const char *home)
      * the desktop's own colours reach a GTK 2 program. */
     snprintf(block, sizeof block,
              MARK_BEGIN
+             "gtk-theme-name=\"%s\"\n"
+             "gtk-icon-theme-name=\"%s\"\n"
              "gtk-color-scheme = \"bg_color:%s\\nfg_color:%s\\nbase_color:%s\\n"
              "text_color:%s\\nselected_bg_color:%s\\nselected_fg_color:%s\\n"
              "tooltip_bg_color:%s\\ntooltip_fg_color:%s\"\n"
              MARK_END,
+             w2k_gtk_theme, w2k_icon_theme,
              face, btext, win, wtext, sel, seltext, tip, tiptext);
     char path[1100];
     snprintf(path, sizeof path, "%s/.gtkrc-2.0", home);
@@ -306,6 +462,12 @@ static void qtct(const char *cfg, const char *which)
                 dk, sel, seltext, face, black, tip, tiptext);
     }
     fclose(f);
+
+    /* The style and the icon theme, in qt5ct.conf / qt6ct.conf. */
+    snprintf(path, sizeof path, "%s/%s/%s.conf", cfg, which, which);
+    ini_set(path, "Appearance", "style", w2k_qt_style);
+    ini_set(path, "Appearance", "icon_theme", w2k_icon_theme);
+    ini_set(path, "Appearance", "custom_palette", "true");
 }
 
 void w2k_scheme_export_gtk(void)

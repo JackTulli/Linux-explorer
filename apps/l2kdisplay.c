@@ -368,6 +368,11 @@ typedef struct {
     int       cur_col;                      /* 0: Color, 1: Color 2 */
     int       suppress;                     /* while filling edits */
 
+    /* Programs: what GTK and Qt programs wear */
+    W2kCombo *gtktheme, *icontheme, *qtstyle;
+    char      gtk_names[64][64], icon_names[64][64], qt_names[16][64];
+    int       ngtk, nicon, nqt;
+
     /* Settings */
     W2kCombo *mon, *mode, *rate, *scale;
     W2kRect   primary_box, enabled_box, layout_box;
@@ -1071,6 +1076,28 @@ static void paint(W2kWin *w, Drawable d)
         }
         break;
     }
+    case 3: {
+        int y = c.y + 14;
+        w2k_text(d, F_UI, c.x + 10, y, "Programs that are not part of Linux 2000 -- GTK and Qt", C_TEXT); y += fh;
+        w2k_text(d, F_UI, c.x + 10, y, "programs -- wear these. Chicago95 gives them the Windows", C_TEXT); y += fh;
+        w2k_text(d, F_UI, c.x + 10, y, "2000 look; the colours from the Appearance page apply too.", C_TEXT);
+        w2k_text_mnemonic(d, F_UI, c.x + 10, dl.gtktheme->r.y + (21 - fh) / 2, "&GTK theme:", C_TEXT, 1);
+        w2k_combo_draw(d, dl.gtktheme);
+        w2k_text_mnemonic(d, F_UI, c.x + 10, dl.icontheme->r.y + (21 - fh) / 2, "&Icon theme:", C_TEXT, 1);
+        w2k_combo_draw(d, dl.icontheme);
+        w2k_text_mnemonic(d, F_UI, c.x + 10, dl.qtstyle->r.y + (21 - fh) / 2, "&Qt style:", C_TEXT, 1);
+        w2k_combo_draw(d, dl.qtstyle);
+        /* A few icons from the chosen theme, so the choice can be seen. */
+        static const char *const sample[] = { "folder", "text-x-generic", "computer",
+                                              "user-trash", "preferences-system" };
+        int ix = dl.icontheme->r.x, iy = dl.icontheme->r.y + 30;
+        for (int k = 0; k < 5; k++)
+            w2k_icon_draw(d, ix + k * 22, iy, w2k_icon_by_name_in(sample[k], w2k_icon_theme));
+        y = c.y + c.h - fh * 3 - 10;
+        w2k_text(d, F_UI, c.x + 10, y, "Applied to GTK 2, 3 and 4 and to Qt through qt5ct/qt6ct.", C_GRAYTEXT); y += fh;
+        w2k_text(d, F_UI, c.x + 10, y, "Programs pick the theme up when they start.", C_GRAYTEXT);
+        break;
+    }
     }
     w2k_draw_pushbutton(d, &dl.ok, "OK", BS_DEFAULT | (dl.down == 1 ? BS_PRESSED : 0));
     w2k_draw_pushbutton(d, &dl.cancel, "Cancel", dl.down == 2 ? BS_PRESSED : 0);
@@ -1155,6 +1182,13 @@ static int event(W2kWin *w, XEvent *e)
                     w2k_win_dirty(w);
                     return 1;
                 }
+        } else if (tab == 3) {
+            if (w2k_combo_press(dl.gtktheme, &e->xbutton) ||
+                w2k_combo_press(dl.icontheme, &e->xbutton) ||
+                w2k_combo_press(dl.qtstyle, &e->xbutton)) {
+                w2k_win_dirty(w);
+                return 1;
+            }
         } else {
             if (w2k_combo_press(dl.mon, &e->xbutton) ||
                 w2k_combo_press(dl.mode, &e->xbutton) ||
@@ -1293,6 +1327,59 @@ static int event(W2kWin *w, XEvent *e)
     return 0;
 }
 
+static void on_gtktheme(void *u, int i)
+{
+    (void)u;
+    if (i < 0 || i >= dl.ngtk) return;
+    snprintf(w2k_gtk_theme, sizeof w2k_gtk_theme, "%s", dl.gtk_names[i]);
+    dl.dirty = 1;
+    w2k_win_dirty(dl.win);
+}
+
+static void on_icontheme(void *u, int i)
+{
+    (void)u;
+    if (i < 0 || i >= dl.nicon) return;
+    snprintf(w2k_icon_theme, sizeof w2k_icon_theme, "%s", dl.icon_names[i]);
+    dl.dirty = 1;
+    w2k_win_dirty(dl.win);
+}
+
+static void on_qtstyle(void *u, int i)
+{
+    (void)u;
+    if (i < 0 || i >= dl.nqt) return;
+    snprintf(w2k_qt_style, sizeof w2k_qt_style, "%s", dl.qt_names[i]);
+    dl.dirty = 1;
+    w2k_win_dirty(dl.win);
+}
+
+/* The Programs page's lists: what is installed, with the current choice
+ * selected -- or added, when it is set to something that is not there. */
+static void fill_program_combos(void)
+{
+    dl.ngtk = w2k_gtk_themes(dl.gtk_names, 64);
+    dl.nicon = w2k_icon_themes(dl.icon_names, 64);
+    dl.nqt = w2k_qt_styles(dl.qt_names, 16);
+    struct { W2kCombo *c; char (*names)[64]; int *n, max; const char *cur; } sets[] = {
+        { dl.gtktheme, dl.gtk_names, &dl.ngtk, 64, w2k_gtk_theme },
+        { dl.icontheme, dl.icon_names, &dl.nicon, 64, w2k_icon_theme },
+        { dl.qtstyle, dl.qt_names, &dl.nqt, 16, w2k_qt_style },
+    };
+    for (int k = 0; k < 3; k++) {
+        int found = -1;
+        for (int i = 0; i < *sets[k].n; i++)
+            if (!strcmp(sets[k].names[i], sets[k].cur)) found = i;
+        if (found < 0 && *sets[k].n < sets[k].max) {
+            snprintf(sets[k].names[*sets[k].n], 64, "%s", sets[k].cur);
+            found = (*sets[k].n)++;
+        }
+        w2k_combo_clear(sets[k].c);
+        for (int i = 0; i < *sets[k].n; i++) w2k_combo_add(sets[k].c, sets[k].names[i]);
+        sets[k].c->sel = found;
+    }
+}
+
 static void on_tab(void *u, int i) { (void)u; (void)i; w2k_win_dirty(dl.win); }
 
 int main(void)
@@ -1307,6 +1394,7 @@ int main(void)
     w2k_tabs_add(dl.tabs, "Background");
     w2k_tabs_add(dl.tabs, "Appearance");
     w2k_tabs_add(dl.tabs, "Settings");
+    w2k_tabs_add(dl.tabs, "Programs");
     dl.tabs->r = (W2kRect){ 6, 6, W - 12, H - 6 - 12 - 23 - 12 };
     W2kRect c = w2k_tabs_client(dl.tabs);
     int by = H - 12 - 23;
@@ -1393,6 +1481,15 @@ int main(void)
     dl.enabled_box = (W2kRect){ c.x + 10, c.y + 278, c.w - 20, 16 };
     dl.primary_box = (W2kRect){ c.x + 10, c.y + 300, c.w - 20, 16 };
     fill_monitor_combos();
+
+    /* Programs */
+    dl.gtktheme = w2k_combo_new(0);  dl.gtktheme->on_change = on_gtktheme;
+    dl.icontheme = w2k_combo_new(0); dl.icontheme->on_change = on_icontheme;
+    dl.qtstyle = w2k_combo_new(0);   dl.qtstyle->on_change = on_qtstyle;
+    dl.gtktheme->r  = (W2kRect){ c.x + 100, c.y + 70, c.w - 110, 21 };
+    dl.icontheme->r = (W2kRect){ c.x + 100, c.y + 100, c.w - 110, 21 };
+    dl.qtstyle->r   = (W2kRect){ c.x + 100, c.y + 160, c.w - 110, 21 };
+    fill_program_combos();
 
     w2k_win_center(dl.win, NULL);
     w2k_win_show(dl.win);

@@ -28,10 +28,15 @@ static const char *categories[] = { "apps", "categories", "devices", "places",
 static int readable(const char *p) { return access(p, R_OK) == 0; }
 
 /* The icon theme the desktop is set to, from the GTK settings we write. */
+static const char *override_theme;      /* w2k_icon_by_name_in() */
+
 static const char *user_theme(void)
 {
     static char theme[64];
     static int done;
+    if (override_theme && override_theme[0]) return override_theme;
+    /* The scheme's choice, which every process reloads on a change. */
+    if (w2k_icon_theme[0]) return w2k_icon_theme;
     if (done) return theme;
     done = 1;
 
@@ -169,11 +174,29 @@ unsigned char *w2k_rgba_scale(const unsigned char *src, int sw, int sh, int n)
     return dst;
 }
 
+static int lookup(const char *name, const char *key);
+
 int w2k_icon_by_name(const char *name)
+{
+    return lookup(name, name);
+}
+
+int w2k_icon_by_name_in(const char *name, const char *theme)
+{
+    if (!name || !*name) return ICO_APP;
+    char key[300];
+    snprintf(key, sizeof key, "%.63s|%.200s", theme ? theme : "", name);
+    override_theme = theme;
+    int id = lookup(name, key);
+    override_theme = NULL;
+    return id;
+}
+
+static int lookup(const char *name, const char *key)
 {
     if (!name || !*name) return ICO_APP;
     for (int i = 0; i < ncache; i++)
-        if (!strcmp(cache[i].name, name)) return cache[i].id;
+        if (!strcmp(cache[i].name, key)) return cache[i].id;
 
     int id = ICO_APP;
     /* A path is a file to read, in whatever format it is; only a bare
@@ -181,7 +204,7 @@ int w2k_icon_by_name(const char *name)
     if (strchr(name, '/')) {
         id = w2k_icon_from_file(name);
         if (ncache < MAX_CACHE) {
-            snprintf(cache[ncache].name, sizeof cache[ncache].name, "%s", name);
+            snprintf(cache[ncache].name, sizeof cache[ncache].name, "%s", key);
             cache[ncache].id = id;
             ncache++;
         }
@@ -203,7 +226,7 @@ int w2k_icon_by_name(const char *name)
     }
 
     if (ncache < MAX_CACHE) {
-        snprintf(cache[ncache].name, sizeof cache[ncache].name, "%s", name);
+        snprintf(cache[ncache].name, sizeof cache[ncache].name, "%s", key);
         cache[ncache].id = id;
         ncache++;
     }

@@ -119,7 +119,10 @@ any of that.
 Other programs match: GTK 2/3/4 get the Chicago95 theme and icons, Qt gets
 the Windows style through qt5ct/qt6ct, every program gets the Windows
 cursors through an Xcursor theme, and Explorer is the folder handler for
-`xdg-open` and "show in folder". The colours you pick in Display
+`xdg-open` and "show in folder". Display Properties > Programs lets you
+pick a different GTK theme, icon theme and Qt style from what is installed
+(Chicago95 and Windows are the defaults); the choice is kept in the scheme
+and written to the GTK and qt5ct/qt6ct settings with the colours. The colours you pick in Display
 Properties > Appearance reach those programs too: on every save, and at
 logon, the desktop writes the scheme out as `@define-color` overrides for
 Chicago95 (`~/.config/gtk-3.0/w2k-colors.css`, imported from your

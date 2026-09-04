@@ -640,6 +640,15 @@ int  w2k_icon_load_dir(const char *dir);
  * directory of <slug>.ico files under icons/sets (beside the binaries,
  * installed under PREFIX/share/w2k, or ~/.w2k/iconsets). */
 extern char w2k_icon_set[32];
+/* What programs built on other toolkits wear (Display Properties >
+ * Programs): the GTK theme, the icon theme and the Qt style, written out
+ * with the colours by w2k_scheme_export_gtk(). Chicago95 and Windows
+ * unless changed. */
+extern char w2k_gtk_theme[64], w2k_icon_theme[64], w2k_qt_style[64];
+/* The choices installed: sorted names into out, up to max. */
+int  w2k_gtk_themes(char (*out)[64], int max);
+int  w2k_icon_themes(char (*out)[64], int max);
+int  w2k_qt_styles(char (*out)[64], int max);
 /* 1: the Windows 2000 pointer set (the .cur files); 0: the X server's own
  * pointers, for a server that will not show ARGB cursors. Also forced by
  * W2K_CURSORS=x11 in the environment. */
@@ -666,6 +675,8 @@ int  w2k_icon_valid(int id);
  * and register it. Results are cached by name; ICO_APP if there is no such
  * icon. */
 int  w2k_icon_by_name(const char *name);
+/* The same, looked up in a named icon theme first. */
+int  w2k_icon_by_name_in(const char *name, const char *theme);
 /* Box-filter an RGBA image down (or up) to n x n; caller frees. */
 unsigned char *w2k_rgba_scale(const unsigned char *src, int sw, int sh, int n);
 
