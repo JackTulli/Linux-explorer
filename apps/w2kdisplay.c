@@ -306,6 +306,9 @@ typedef struct {
     W2kCombo *mon, *mode;
     W2kRect   primary_box, enabled_box, layout_box;
     W2kRect   decorate_box;                 /* Appearance page */
+    W2kCombo *iconset;                      /* which system's icons */
+    char      sets[16][32];
+    int       nsets;
     /* Drag state for the monitor arrangement. */
     int       drag_mon;                     /* -1 when not dragging   */
     int       drag_dx, drag_dy;             /* grab offset, screen px */
@@ -344,6 +347,18 @@ static void color_edited(void *u)
 }
 
 static void on_item(void *u, int i) { (void)u; dl.cur_elem = i; fill_color_edits(); w2k_win_dirty(dl.win); }
+
+/* The icon set changes at once in this window (the row of samples), and
+ * everywhere else when Apply writes the scheme. */
+static void on_iconset(void *u, int i)
+{
+    (void)u;
+    if (i < 0 || i >= dl.nsets) return;
+    snprintf(w2k_icon_set, sizeof w2k_icon_set, "%s", dl.sets[i]);
+    w2k_icon_load_default();
+    dl.dirty = 1;
+    w2k_win_dirty(dl.win);
+}
 
 static void on_scheme(void *u, int i)
 {
@@ -767,6 +782,12 @@ static void paint(W2kWin *w, Drawable d)
         w2k_combo_draw(d, dl.scheme);
         w2k_text_mnemonic(d, F_UI, c.x + 10, dl.item->r.y - fh - 3, "&Item:", C_TEXT, 1);
         w2k_combo_draw(d, dl.item);
+        w2k_text_mnemonic(d, F_UI, c.x + 10, dl.iconset->r.y - fh - 3, "Ic&ons:", C_TEXT, 1);
+        w2k_combo_draw(d, dl.iconset);
+        /* A few of the set's icons beside the box, so the choice can be seen. */
+        int ix = dl.iconset->r.x + dl.iconset->r.w + 10, iy = dl.iconset->r.y + 2;
+        static const int show[] = { ICO_MYCOMPUTER, ICO_FOLDER, ICO_RECYCLE, ICO_FILE_TEXT, ICO_CONTROLPANEL };
+        for (int k = 0; k < 5; k++) w2k_icon_draw(d, ix + k * 22, iy, show[k]);
         w2k_text(d, F_UI, dl.red->r.x, dl.red->r.y - fh - 3, "Red:", C_TEXT);
         w2k_text(d, F_UI, dl.green->r.x, dl.green->r.y - fh - 3, "Green:", C_TEXT);
         w2k_text(d, F_UI, dl.blue->r.x, dl.blue->r.y - fh - 3, "Blue:", C_TEXT);
@@ -878,7 +899,8 @@ static int event(W2kWin *w, XEvent *e)
             if (w2k_rect_hit(&dl.browse, x, y)) dl.down = 4;
         } else if (tab == 1) {
             if (w2k_combo_press(dl.scheme, &e->xbutton) ||
-                w2k_combo_press(dl.item, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+                w2k_combo_press(dl.item, &e->xbutton) ||
+                w2k_combo_press(dl.iconset, &e->xbutton)) { w2k_win_dirty(w); return 1; }
             if (w2k_rect_hit(&dl.decorate_box, x, y)) {
                 w2k_force_decorations = !w2k_force_decorations;
                 dl.dirty = 1;
@@ -1088,7 +1110,15 @@ int main(void)
         w2k_add_timer(w2k_caret_blink, blink_cb, eds[k]);
     }
     dl.swatch = (W2kRect){ ex, c.y + 206, 144, 21 };
-    dl.decorate_box = (W2kRect){ c.x + 10, c.y + 292, c.w - 20, 16 };
+    dl.iconset = w2k_combo_new(0);
+    dl.nsets = w2k_icon_sets(dl.sets, 16);
+    for (int i = 0; i < dl.nsets; i++) {
+        w2k_combo_add(dl.iconset, w2k_icon_set_label(dl.sets[i]));
+        if (!strcmp(dl.sets[i], w2k_icon_set)) dl.iconset->sel = i;
+    }
+    dl.iconset->on_change = on_iconset;
+    dl.iconset->r = (W2kRect){ c.x + 10, c.y + 298, 190, 21 };
+    dl.decorate_box = (W2kRect){ c.x + 10, c.y + 330, c.w - 20, 16 };
     fill_color_edits();
 
     /* Settings */

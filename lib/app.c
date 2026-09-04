@@ -611,6 +611,10 @@ int w2k_scheme_load(const char *path)
             w2k_start_personalized = atoi(val) != 0;
             continue;
         }
+        if (!strcasecmp(line, "IconSet")) {
+            snprintf(w2k_icon_set, sizeof w2k_icon_set, "%.31s", val);
+            continue;
+        }
         if (!strcasecmp(line, "StartIcon")) {
             w2k_start_icon = !strcasecmp(val, "tux") ? SI_TUX :
                              !strcasecmp(val, "distro") ? SI_DISTRO : SI_FLAG;
@@ -632,6 +636,14 @@ int w2k_scheme_load(const char *path)
         }
     }
     fclose(f);
+    /* The icon set is part of the scheme: when a reload brings a different
+     * one, the artwork follows (every process re-reads the files; the
+     * caches drop as each slot is replaced). */
+    static char icons_loaded[32] = "win2k";
+    if (strcmp(icons_loaded, w2k_icon_set)) {
+        snprintf(icons_loaded, sizeof icons_loaded, "%s", w2k_icon_set);
+        w2k_icon_load_default();
+    }
     return n;
 }
 
@@ -674,6 +686,7 @@ int w2k_scheme_save(const char *path)
     fprintf(f, "Effects=%s\n", fx);
     fprintf(f, "Theme=%s\n", w2k_theme == THEME_XP ? "xp" :
             w2k_theme == THEME_BASIC7 ? "basic7" : "classic");
+    fprintf(f, "IconSet=%s\n", w2k_icon_set);
     fprintf(f, "DoubleClickTime=%d\n", w2k_dblclk_ms);
     fprintf(f, "MouseSwap=%d\n", w2k_mouse_swap);
     fprintf(f, "MouseSpeed=%d\n", w2k_mouse_speed);

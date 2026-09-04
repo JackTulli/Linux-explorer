@@ -78,6 +78,11 @@ two-column Start menu), and Windows 7 Basic (with its Start menu, orb and
 taskbar). The XP and 7 chrome is cropped from screenshots and checked by
 diffing against them.
 
+Icons come in five sets, from Display Properties > Appearance > Icons:
+Windows 2000 (the built-in artwork), Windows 98, Windows XP, Windows 7 and
+ReactOS. Every window, the desktop, Explorer and the Start menu follow the
+choice at once.
+
 Other programs match: GTK 2/3/4 get the Chicago95 theme and icons, Qt gets
 the Windows style with a Windows 2000 palette (qt5ct/qt6ct), every program
 gets the Windows cursors through an Xcursor theme, and Explorer is the

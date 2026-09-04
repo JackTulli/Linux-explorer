@@ -67,6 +67,10 @@ install: all
 	install -m644 skins/*.png $(DESTDIR)$(PREFIX)/share/w2k/skins
 	install -d $(DESTDIR)$(PREFIX)/share/w2k/cursors
 	install -m644 cursors/* $(DESTDIR)$(PREFIX)/share/w2k/cursors
+	# The switchable icon sets (Display Properties > Appearance > Icons).
+	for s in icons/sets/*/; do n=$$(basename $$s); \
+	    install -d $(DESTDIR)$(PREFIX)/share/w2k/icons/sets/$$n; \
+	    install -m644 $$s*.ico $(DESTDIR)$(PREFIX)/share/w2k/icons/sets/$$n; done
 	# A session entry for any other display manager that may be around --
 	# where that directory can be written (a user prefix cannot).
 	@if install -d $(DESTDIR)/usr/share/xsessions 2>/dev/null; then \

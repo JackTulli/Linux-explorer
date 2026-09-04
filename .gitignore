@@ -3,3 +3,9 @@ bin/
 lib/libw2k.a
 w2k-session.bak
 *.ppm
+
+# Raw icon dumps the sets are cut from (tools/geniconsets.py); large,
+# and not needed at run time.
+icons/winxp/
+icons/win7/
+__MACOSX/

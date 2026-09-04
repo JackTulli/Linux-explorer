@@ -610,6 +610,13 @@ enum {
  *     <dir>/<slug>-16.ico   <dir>/<slug>.ico   <dir>/<slug>.xpm
  * Returns the number of icons that were replaced. */
 int  w2k_icon_load_dir(const char *dir);
+/* The icon set: "win2k" is the built-in artwork; any other name is a
+ * directory of <slug>.ico files under icons/sets (beside the binaries,
+ * installed under PREFIX/share/w2k, or ~/.w2k/iconsets). */
+extern char w2k_icon_set[32];
+int  w2k_icon_set_apply(void);              /* load the set named in w2k_icon_set */
+int  w2k_icon_sets(char names[][32], int max);  /* the sets available, win2k first */
+const char *w2k_icon_set_label(const char *name);  /* "Windows XP" for "winxp" */
 /* Override one icon from a file, or restore the built-in when path is NULL. */
 int  w2k_icon_load_file(int id, const char *path);
 /* Register an icon file (.ico, .png, .bmp, .jpg) as a new icon id. */

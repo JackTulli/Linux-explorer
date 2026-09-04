@@ -5,6 +5,9 @@
  * ICO container: 1/4/8/24/32-bit DIB images with an AND mask. PNG-encoded
  * entries (Vista and later) are skipped. */
 #include "w2k.h"
+#include <unistd.h>
+#include <sys/stat.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -253,9 +256,93 @@ int w2k_icon_load_dir(const char *dir)
     return loaded;
 }
 
+char w2k_icon_set[32] = "win2k";
+
+/* Where a set's directory may be: the user's own, the source tree beside
+ * the binaries, the installed copy. */
+static int set_dir(const char *set, int which, char *out, int n)
+{
+    const char *home = getenv("HOME");
+    switch (which) {
+    case 0:
+        if (!home) return 0;
+        snprintf(out, (size_t)n, "%s/.w2k/iconsets/%s", home, set);
+        return 1;
+    case 1: {
+        char exe[768];
+        ssize_t len = readlink("/proc/self/exe", exe, sizeof exe - 1);
+        if (len <= 0) return 0;
+        exe[len] = 0;
+        char *slash = strrchr(exe, '/');
+        if (!slash) return 0;
+        *slash = 0;
+        snprintf(out, (size_t)n, "%.700s/../icons/sets/%.40s", exe, set);
+        return 1;
+    }
+    case 2:
+        snprintf(out, (size_t)n, W2K_PREFIX "/share/w2k/icons/sets/%s", set);
+        return 1;
+    }
+    return 0;
+}
+
+int w2k_icon_set_apply(void)
+{
+    /* Back to the built-in artwork first: a set need not cover every slot,
+     * and the previous set's leftovers must not show through. */
+    for (int id = 0; id < N_ICONS; id++)
+        if (w2k_icon_user16[id] || w2k_icon_user32[id]) w2k_icon_load_file(id, NULL);
+    if (!w2k_icon_set[0] || !strcmp(w2k_icon_set, "win2k")) return 0;
+    for (int k = 0; k < 3; k++) {
+        char dir[1024];
+        if (!set_dir(w2k_icon_set, k, dir, sizeof dir)) continue;
+        int n = w2k_icon_load_dir(dir);
+        if (n) return n;
+    }
+    return 0;
+}
+
+int w2k_icon_sets(char names[][32], int max)
+{
+    int n = 0;
+    if (max > 0) { snprintf(names[n++], 32, "win2k"); }
+    for (int k = 0; k < 3 && n < max; k++) {
+        char dir[1024];
+        if (!set_dir("", k, dir, sizeof dir)) continue;
+        dir[strlen(dir) - 1] = 0;                /* drop the trailing slash */
+        DIR *dp = opendir(dir);
+        if (!dp) continue;
+        struct dirent *de;
+        while ((de = readdir(dp)) && n < max) {
+            if (de->d_name[0] == '.' || strlen(de->d_name) >= 32) continue;
+            char sub[1100];
+            snprintf(sub, sizeof sub, "%s/%s/folder.ico", dir, de->d_name);
+            struct stat st;
+            if (stat(sub, &st) != 0) continue;    /* a set at least has a folder */
+            int dup = 0;
+            for (int i = 0; i < n; i++) if (!strcmp(names[i], de->d_name)) dup = 1;
+            if (!dup) snprintf(names[n++], 32, "%s", de->d_name);
+        }
+        closedir(dp);
+    }
+    return n;
+}
+
+const char *w2k_icon_set_label(const char *name)
+{
+    static const struct { const char *set, *label; } known[] = {
+        { "win2k", "Windows 2000" }, { "win98", "Windows 98" }, { "winxp", "Windows XP" },
+        { "win7", "Windows 7" }, { "reactos", "ReactOS" },
+    };
+    for (size_t i = 0; i < sizeof known / sizeof *known; i++)
+        if (!strcmp(known[i].set, name)) return known[i].label;
+    return name;
+}
+
 int w2k_icon_load_default(void)
 {
-    int n = w2k_icon_load_dir(W2K_PREFIX "/share/w2k/icons");
+    int n = w2k_icon_set_apply();
+    n += w2k_icon_load_dir(W2K_PREFIX "/share/w2k/icons");
     const char *home = getenv("HOME");
     if (home) {
         char path[1024];

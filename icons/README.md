@@ -26,3 +26,25 @@ bitmaps, unchanged from Windows 95 through 2000; Back, Forward and Up are the
 Windows 98 / IE4 shell arrows, used until the Windows 2000 (IE5) strips are
 extracted from an install CD. `view-list-details.png` is shell32's
 list-window icon standing in for the Views button.
+
+## Switchable icon sets (`sets/`)
+
+Display Properties > Appearance > Icons lets the user pick whose icons the
+desktop draws. Each directory under `sets/` holds `<slug>.ico` files (16 and
+32 pixel images) for the slots `w2kwm --icons` lists; a slot a set lacks
+falls back to the built-in Windows 2000 artwork. The sets are produced by
+`tools/geniconsets.py`, which records where each icon comes from:
+
+- `winxp/` -- Windows XP's shell32, user32, shimgvw and the applications'
+  own icons, from a resource dump of an XP installation (not in the
+  repository: `icons/winxp/` is ignored).
+- `win7/` -- Windows 7's imageres and shell32 icons and the applications'
+  own, likewise from a dump (`icons/win7/`, ignored).
+- `reactos/` -- ReactOS's shell32, user32 and application icons from
+  https://github.com/reactos/reactos (GPL-2.0-or-later); the pixel-art
+  reimplementation of the same slots.
+- `win98/` -- Windows 98 icons from https://github.com/alexh/vintage-icons.
+
+The XP and 7 artwork is Microsoft's, used as the Windows 2000 set above is.
+A set of your own goes in `~/.w2k/iconsets/<name>/` and appears in the
+list; it needs at least `folder.ico`.
