@@ -278,6 +278,8 @@ void startmenu_open(void)
 
     W2kMenu *settings = w2k_menu_new();
     w2k_menu_item(settings, SM_CONTROLPANEL, "&Control Panel", NULL, ICO_CONTROLPANEL);
+    w2k_menu_item(settings, SM_NETWORK, "&Network and Dial-up Connections", NULL,
+                  ICO_CP_NETWORK);
     w2k_menu_item(settings, SM_DISPLAY, "&Display Properties...", NULL, ICO_SETTINGS);
     w2k_menu_item(settings, SM_DEFAULTS, "De&fault Programs...", NULL, ICO_PROGRAMS);
     w2k_menu_item(settings, SM_TASKBARPROPS, "&Taskbar and Start Menu...",
@@ -383,6 +385,7 @@ void startmenu_dispatch(int id)
     case SM_MYDOCS:       wm_spawn("w2kexplorer ~"); break;
     case SM_MYCOMPUTER:   wm_spawn("w2kexplorer /"); break;
     case SM_CONTROLPANEL: wm_spawn("w2kcontrol"); break;
+    case SM_NETWORK:      wm_spawn("w2knetwork"); break;
     case SM_DEFAULTS:     wm_spawn("w2kcontrol defaults"); break;
     case SM_TASKBARPROPS: wm_startmenu_dialog(); break;
     case SM_IMAGING:      wm_spawn("w2kimage"); break;

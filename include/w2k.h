@@ -182,6 +182,12 @@ int   w2k_scheme_load(const char *path);        /* NULL = default file   */
 int   w2k_scheme_save(const char *path);
 void  w2k_scheme_broadcast(void);               /* tell other processes  */
 void  w2k_scheme_reset(void);                   /* back to Windows Standard */
+/* A scheme colour's RGB. */
+const unsigned char *w2k_scheme_rgb(int color);
+/* Write the scheme's colours where GTK 2/3/4 and Qt (qt5ct/qt6ct) read
+ * theirs, so Chicago95 and the Windows style wear the same colours as the
+ * desktop. Done on every save of the user's scheme and at logon. */
+void  w2k_scheme_export_gtk(void);
 /* Wallpaper settings live in the same file: Wallpaper=<path>, WallpaperStyle=center|tile|stretch */
 extern char w2k_wallpaper[1024];
 extern int  w2k_wallpaper_style;
@@ -531,6 +537,8 @@ void w2k_ellipsis(int font, const char *s, int maxw, char *buf, int bufsz);
  * merely use them. NULL when Xft is unavailable. */
 typedef struct W2kFace W2kFace;
 W2kFace *w2k_face_open(const char *family, int pixel);
+/* The same, asking for the bold weight. */
+W2kFace *w2k_face_open_bold(const char *family, int pixel);
 void     w2k_face_close(W2kFace *f);
 int      w2k_face_height(W2kFace *f);
 int      w2k_face_ascent(W2kFace *f);
@@ -603,6 +611,16 @@ enum {
     ICO_LINK_OVERLAY, ICO_RECYCLE_FULL, ICO_SPEAKER, ICO_CURSORFILE,
     ICO_FAVORITES, ICO_FONTS_FOLDER,
     ICO_SNIP,               /* the Snipping Tool */
+    /* Control Panel applets, cut from a Windows 2000 screenshot. */
+    ICO_CP_DATETIME, ICO_CP_DISPLAY, ICO_CP_FOLDEROPTS, ICO_CP_KEYBOARD,
+    ICO_CP_MOUSE, ICO_CP_NETWORK, ICO_CP_SOUNDS, ICO_CP_USERS, ICO_CP_SYSTEM,
+    ICO_CP_PRINTERS, ICO_CP_SCHEDULED, ICO_TASKBAR,
+    /* Network and Dial-up Connections. */
+    ICO_NET_LAN, ICO_NET_WIRELESS, ICO_NET_NEW,
+    /* The Explorer toolbar's own glyphs. */
+    ICO_TB_BACK, ICO_TB_FORWARD, ICO_TB_UP, ICO_TB_SEARCH, ICO_TB_FOLDERS,
+    ICO_TB_HISTORY, ICO_TB_MOVETO, ICO_TB_COPYTO, ICO_TB_DELETE, ICO_TB_UNDO,
+    ICO_TB_VIEWS, ICO_TB_GO,
     N_ICONS
 };
 /* ---- Optional icon skinning -------------------------------------- *

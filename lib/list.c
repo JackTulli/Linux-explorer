@@ -7,8 +7,8 @@
 
 #define HDR_H      17
 #define ROW_H      17
-#define ICON_CW    76      /* icon-view cell */
-#define ICON_CH    62
+#define ICON_CW    75      /* icon-view cell: the shell's 75 x 75 spacing */
+#define ICON_CH    75
 #define LIST_CW   150      /* list-view column */
 #define TREE_INDENT 19
 #define BOX        9       /* the [+] / [-] box */
@@ -237,7 +237,9 @@ static void icon_label(Drawable d, int cx, int y, const char *text, int sel,
         snprintf(l1, sizeof l1, "%s", text);
     }
     const char *lines[2] = { l1, l2 };
+    /* Icon labels are set 13 pixels apart, as the shell sets Tahoma 8. */
     int fh = w2k_font_height(F_UI);
+    if (fh > 13) fh = 13;
     for (int i = 0; i < n; i++) {
         int tw = w2k_text_width(F_UI, lines[i], -1);
         int tx = cx - tw / 2, ty = y + i * fh;
@@ -347,6 +349,8 @@ void w2k_list_draw(Drawable d, W2kList *l)
             if (y + ICON_CH < v.y || y > v.y + v.h) continue;
             int cx = v.x + (i % per) * ICON_CW + ICON_CW / 2;
             int sel = l->items[i].selected || i == l->sel;
+            /* Measured off Windows 2000: the icon four pixels below the
+             * cell's top, the label's first line 40 below it. */
             if (l->items[i].icon >= 0) {
                 if (l->items[i].link)
                     w2k_bigicon_draw_link(d, cx - 16, y + 4, l->items[i].icon);

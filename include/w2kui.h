@@ -325,7 +325,7 @@ void        w2k_menubar_free(W2kMenubar *mb);
 
 typedef struct {
     W2kRect r;
-    struct { int id, icon; char *text; int x, w, disabled, checked; } b[24];
+    struct { int id, icon; char *text; int x, w, disabled, checked, drop; } b[24];
     int     n, hot, pressed;
     int     show_text;
     void   *user;
@@ -335,6 +335,9 @@ typedef struct {
 W2kToolbar *w2k_toolbar_new(void *user, void (*on_command)(void *, int));
 void        w2k_toolbar_add(W2kToolbar *tb, int id, int icon, const char *text);
 void        w2k_toolbar_sep(W2kToolbar *tb);
+/* The last button added gets a drop-down arrow beside it (Back, Views), in
+ * a bay `bay` pixels wide, or the shell's usual width when `bay` is 1. */
+void        w2k_toolbar_drop(W2kToolbar *tb, int bay);
 void        w2k_toolbar_enable(W2kToolbar *tb, int id, int on);
 void        w2k_toolbar_draw(Drawable d, W2kToolbar *tb);
 int         w2k_toolbar_press(W2kToolbar *tb, XButtonEvent *b);
@@ -354,6 +357,8 @@ typedef struct {
 W2kStatus *w2k_status_new(void);
 void       w2k_status_add(W2kStatus *s, int w);
 void       w2k_status_set(W2kStatus *s, int i, const char *text);
+/* A 16-pixel icon in front of a pane's text ("My Computer"). */
+void       w2k_status_icon(W2kStatus *s, int i, int icon);
 void       w2k_status_draw(Drawable d, W2kStatus *s);
 void       w2k_status_free(W2kStatus *s);
 
@@ -409,6 +414,7 @@ typedef struct {
     int     pressed, focused;
     int     editable;
     W2kEdit *edit;
+    int     icon;                   /* drawn before the text; ICO_NONE for none */
     void  *user;
     void (*on_change)(void *user, int idx);
 } W2kCombo;
@@ -455,5 +461,69 @@ int  w2k_file_dialog(W2kWin *over, int save, char *path, int pathsz);
  * one pattern are separated by semicolons. */
 int  w2k_file_dialog_filter(W2kWin *over, int save, char *path, int pathsz,
                             const char *filters);
+
+
+/* ------------------------------------------------------------------ *
+ * Folder window: the Windows 2000 shell's chrome around a list of items
+ * -- menu bar, the standard toolbar, the Address bar, a web-view pane on
+ * the left with the banner, the folder's name and some text, and the
+ * status bar. Control Panel and Network and Dial-up Connections are
+ * built on it. (lib/folderwin.c)
+ * ------------------------------------------------------------------ */
+enum { FW_BACK = 9001, FW_FORWARD, FW_UP, FW_SEARCH, FW_FOLDERS, FW_HISTORY,
+       FW_MOVETO, FW_COPYTO, FW_DELETE, FW_UNDO, FW_VIEWS, FW_GO,
+       FW_CLOSE, FW_TB_STANDARD, FW_TB_ADDRESS, FW_STATUSBAR, FW_V_LARGE,
+       FW_V_LIST, FW_REFRESH, FW_SELECTALL, FW_FOLDEROPTS, FW_ABOUT,
+       FW_HELPTOPICS, FW_PROPERTIES, FW_OPEN, FW_LAST };
+
+#define FW_PANE_LINES 24
+enum { FW_PLAIN = 0, FW_BOLD, FW_LINK, FW_BLANK };
+
+typedef struct W2kFolderWin W2kFolderWin;
+struct W2kFolderWin {
+    W2kWin     *win;
+    W2kMenubar *mb;
+    W2kToolbar *tb;
+    W2kCombo   *addr;
+    W2kStatus  *sb;
+    W2kList    *list;
+    W2kRect     addr_label, go_r, pane_r, list_r;
+    int         pane_w;             /* the web-view pane; 0 hides it */
+    int         icon;               /* the folder's icon */
+    char        title[96];          /* the pane's heading */
+    struct { char *text; int style; W2kRect r; } line[FW_PANE_LINES];
+    int         nlines;
+    int         hot_link, go_down;
+    int         show_toolbar, show_address, show_status;
+    W2kFace    *title_face;
+    W2kSkin    *banner;
+    void       *user;
+    void      (*on_command)(void *user, int id);   /* ids the app handles */
+    W2kMenu  *(*build_file)(void *user);           /* extra File items, or NULL */
+    W2kMenu  *(*build_help)(void *user);
+    W2kMenu  *(*build_extra)(void *user);          /* a menu between Tools and Help */
+    char        extra_title[32];
+};
+
+W2kFolderWin *w2k_folderwin_new(const char *title, const char *cls, int icon,
+                                int w, int h, void *user,
+                                void (*on_command)(void *, int));
+void w2k_folderwin_free(W2kFolderWin *f);
+/* Add a menu of the app's own between Tools and Help ("Advanced"). */
+void w2k_folderwin_extra_menu(W2kFolderWin *f, const char *title,
+                              W2kMenu *(*build)(void *user));
+/* Call from the window's resized hook, and after changing the bars. */
+void w2k_folderwin_layout(W2kFolderWin *f);
+void w2k_folderwin_paint(W2kFolderWin *f, Drawable d);
+/* Bars, list, links and the Go button. Returns 1 when the event was used;
+ * link clicks and toolbar buttons arrive through on_command. */
+int  w2k_folderwin_event(W2kFolderWin *f, XEvent *e);
+/* The pane's text under the heading, one line at a time. Long plain and
+ * bold lines wrap; FW_LINK lines are clickable and reported to
+ * on_command as FW_LAST + their index. */
+void w2k_folderwin_pane_clear(W2kFolderWin *f);
+void w2k_folderwin_pane_add(W2kFolderWin *f, int style, const char *text);
+/* The status bar's first pane, as the shell fills it. */
+void w2k_folderwin_status(W2kFolderWin *f, const char *text);
 
 #endif /* W2KUI_H */

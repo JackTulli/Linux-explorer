@@ -684,6 +684,8 @@ int main(int argc, char **argv)
         }
     }
     if (w2k_init("w2kwm") < 0) return 1;
+    /* Other toolkits' programs pick the scheme's colours up at logon. */
+    w2k_scheme_export_gtk();
 
     /* The Start menu's folder tree exists from the first run, so there is
      * somewhere to put shortcuts before anyone opens the menu. */

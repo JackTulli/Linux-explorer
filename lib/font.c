@@ -368,12 +368,14 @@ void w2k_free_pixmap(Pixmap p)
  * name. Nothing else should. */
 struct W2kFace { XftFont *f; };
 
-W2kFace *w2k_face_open(const char *family, int pixel)
+static W2kFace *face_open(const char *family, int pixel, int bold)
 {
     if (!use_xft || !family || pixel <= 0) return NULL;
     XftFont *f = XftFontOpen(w2k.dpy, w2k.screen,
                              XFT_FAMILY, XftTypeString, family,
                              XFT_PIXEL_SIZE, XftTypeDouble, (double)pixel,
+                             XFT_WEIGHT, XftTypeInteger,
+                                 bold ? XFT_WEIGHT_BOLD : XFT_WEIGHT_MEDIUM,
                              XFT_ANTIALIAS, XftTypeBool,
                                  w2k_effects[FX_SMOOTH_FONTS] ? 1 : 0,
                              FC_HINTING, XftTypeBool, 1,
@@ -383,6 +385,16 @@ W2kFace *w2k_face_open(const char *family, int pixel)
     if (!fa) { XftFontClose(w2k.dpy, f); return NULL; }
     fa->f = f;
     return fa;
+}
+
+W2kFace *w2k_face_open(const char *family, int pixel)
+{
+    return face_open(family, pixel, 0);
+}
+
+W2kFace *w2k_face_open_bold(const char *family, int pixel)
+{
+    return face_open(family, pixel, 1);
 }
 
 void w2k_face_close(W2kFace *fa)

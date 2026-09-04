@@ -14,6 +14,7 @@
 W2kCombo *w2k_combo_new(int editable)
 {
     W2kCombo *c = w2k_alloc(sizeof *c);
+    c->icon = ICO_NONE;
     c->editable = editable;
     c->sel = -1;
     if (editable) c->edit = w2k_edit_new(0);
@@ -79,15 +80,22 @@ void w2k_combo_draw(Drawable d, W2kCombo *c)
     const char *txt = (c->sel >= 0 && c->sel < c->n) ? c->items[c->sel] : "";
     int fh = w2k_font_height(F_UI);
     char buf[200];
-    w2k_ellipsis(F_UI, txt, c->r.w - bw - 10, buf, sizeof buf);
+    /* The Address bar's combo carries the folder's icon before its name:
+     * 16 pixels at 4, the text at 24 (measured off the shell). */
+    int tx = c->r.x + 4;
+    if (c->icon >= 0) {
+        w2k_icon_draw(d, c->r.x + 4, c->r.y + (c->r.h - 16) / 2, c->icon);
+        tx = c->r.x + 24;
+    }
+    w2k_ellipsis(F_UI, txt, c->r.x + c->r.w - bw - 6 - tx, buf, sizeof buf);
 
     if (c->focused) {
         int tw = w2k_text_width(F_UI, buf, -1);
-        w2k_fill(d, c->r.x + 3, c->r.y + 3, tw + 2, c->r.h - 6, C_HIGHLIGHT);
-        w2k_text(d, F_UI, c->r.x + 4, c->r.y + (c->r.h - fh) / 2, buf,
+        w2k_fill(d, tx - 1, c->r.y + 3, tw + 2, c->r.h - 6, C_HIGHLIGHT);
+        w2k_text(d, F_UI, tx, c->r.y + (c->r.h - fh) / 2, buf,
                  C_HIGHLIGHTTEXT);
     } else {
-        w2k_text(d, F_UI, c->r.x + 4, c->r.y + (c->r.h - fh) / 2, buf, C_WINDOWTEXT);
+        w2k_text(d, F_UI, tx, c->r.y + (c->r.h - fh) / 2, buf, C_WINDOWTEXT);
     }
 
     int bx = c->r.x + c->r.w - 2 - bw, by = c->r.y + 2;

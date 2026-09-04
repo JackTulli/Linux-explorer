@@ -71,9 +71,16 @@ Try it nested first, without logging out of anything:
                    undo, drag and drop (XDND, with any other program), Recycle
                    Bin, Add to Archive / Extract with progress, Send To,
                    Open With, Properties, Search, drives in My Computer
-    w2kcontrol     Control Panel: Display, Date/Time, Default Programs, Mouse,
-                   Keyboard, Sounds, Fonts, Folder Options, Performance
-                   Options, Taskbar and Start Menu
+    w2kcontrol     Control Panel, the Windows 2000 folder with its web-view
+                   pane: Date/Time, Default Programs, Device Manager, Display,
+                   Folder Options, Fonts, Keyboard, Mouse, Network and Dial-up
+                   Connections, Sounds and Multimedia, System, Task Manager,
+                   Taskbar and Start Menu
+    w2knetwork     Network and Dial-up Connections: one icon per adapter, the
+                   Local Area Connection Status dialog (Connection and
+                   Activity), and a Wireless Network Connection in the same
+                   style with signal strength and a Wireless Networks page
+                   (scan, connect, disconnect through NetworkManager)
     w2kdisplay     Display Properties: wallpaper (centre, tile, stretch, fit,
                    fill, span), appearance schemes, themes, monitors
     w2kdevmgmt     Device Manager: the machine's hardware from sysfs, drivers,
@@ -104,9 +111,15 @@ act on it. `w2knotify "Title" "Text"` sends one from a script without
 any of that.
 
 Other programs match: GTK 2/3/4 get the Chicago95 theme and icons, Qt gets
-the Windows style with a Windows 2000 palette (qt5ct/qt6ct), every program
-gets the Windows cursors through an Xcursor theme, and Explorer is the
-folder handler for `xdg-open` and "show in folder".
+the Windows style through qt5ct/qt6ct, every program gets the Windows
+cursors through an Xcursor theme, and Explorer is the folder handler for
+`xdg-open` and "show in folder". The colours you pick in Display
+Properties > Appearance reach those programs too: on every save, and at
+logon, the desktop writes the scheme out as `@define-color` overrides for
+Chicago95 (`~/.config/gtk-3.0/w2k-colors.css`, imported from your
+`gtk.css`, and the same for GTK 4), a `gtk-color-scheme` line in
+`~/.gtkrc-2.0`, and the qt5ct/qt6ct palette. Programs pick the colours up
+when they start.
 
 Keys: **Ctrl+Esc** / **Win** Start menu · **Alt+Tab** switch windows ·
 **Alt+F4** close · **Alt+Space** system menu · **Ctrl+Alt+Del** Task Manager ·

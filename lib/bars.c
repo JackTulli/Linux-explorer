@@ -1,5 +1,6 @@
 /* bars.c -- menu bar, toolbar, status bar and tab control. */
 #include "w2kui.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -50,7 +51,9 @@ static void menubar_layout(W2kMenubar *mb)
 {
     int x = mb->r.x + 1;
     for (int i = 0; i < mb->n; i++) {
-        int w = w2k_mnemonic_width(F_UI, mb->item[i].text) + 12;
+        /* Measured off the shell: the titles sit eight pixels in and
+         * sixteen apart beyond their text. */
+        int w = w2k_mnemonic_width(F_UI, mb->item[i].text) + 16;
         mb->item[i].x = x;
         mb->item[i].w = w;
         x += w;
@@ -66,7 +69,7 @@ void w2k_menubar_draw(Drawable d, W2kMenubar *mb)
         int x = mb->item[i].x, w = mb->item[i].w;
         int hot = (i == mb->open);
         if (hot) w2k_fill(d, x, mb->r.y + 1, w, MENUBAR_H - 2, C_HIGHLIGHT);
-        w2k_text_mnemonic(d, F_UI, x + 6, mb->r.y + (MENUBAR_H - fh) / 2,
+        w2k_text_mnemonic(d, F_UI, x + 8, mb->r.y + (MENUBAR_H - fh) / 2,
                           mb->item[i].text,
                           hot ? C_HIGHLIGHTTEXT : C_MENUTEXT, 1);
     }
@@ -182,6 +185,11 @@ void w2k_toolbar_sep(W2kToolbar *tb)
     tb->n++;
 }
 
+void w2k_toolbar_drop(W2kToolbar *tb, int bay)
+{
+    if (tb->n > 0) tb->b[tb->n - 1].drop = bay > 1 ? bay : 1;
+}
+
 void w2k_toolbar_enable(W2kToolbar *tb, int id, int on)
 {
     for (int i = 0; i < tb->n; i++)
@@ -200,10 +208,15 @@ static void toolbar_layout(W2kToolbar *tb)
     int x = tb->r.x + 2;
     for (int i = 0; i < tb->n; i++) {
         int w;
+        /* Measured off the shell's toolbar: an icon-only button is 24
+         * wide; one with text is 31 plus the text; a drop-down arrow
+         * adds a 12-pixel bay. */
         if (tb->b[i].id == TBB_SEP) w = 8;
         else if (tb->show_text && tb->b[i].text)
-            w = 24 + w2k_text_width(F_UI, tb->b[i].text, -1);
+            w = 31 + w2k_text_width(F_UI, tb->b[i].text, -1);
         else w = 24;
+        if (tb->b[i].id != TBB_SEP && tb->b[i].drop)
+            w += tb->b[i].drop > 1 ? tb->b[i].drop : tb->b[i].text ? 8 : 13;
         tb->b[i].x = x;
         tb->b[i].w = w;
         x += w;
@@ -232,20 +245,40 @@ void w2k_toolbar_draw(Drawable d, W2kToolbar *tb)
         else if (i == tb->hot && !tb->b[i].disabled)
                                  w2k_edge(d, x, by, w, bh, EDGE_RAISED_THIN, BF_RECT);
 
-        int ix = x + (tb->show_text && tb->b[i].text ? 4 : (w - 16) / 2) + down;
+        /* An icon-only button centres its icon in the part before the
+         * drop-down bay. */
+        int bay = !tb->b[i].drop ? 0 : tb->b[i].drop > 1 ? tb->b[i].drop
+                : tb->b[i].text ? 8 : 13;
+        int body = w - bay;
+        int ix = x + (tb->show_text && tb->b[i].text ? 4 : (body - 16) / 2) + down;
         int iy = by + (bh - 16) / 2 + down;
         if (tb->b[i].disabled) w2k_icon_draw_disabled(d, ix, iy, tb->b[i].icon);
         else                   w2k_icon_draw(d, ix, iy, tb->b[i].icon);
 
         if (tb->show_text && tb->b[i].text) {
             int fh = w2k_font_height(F_UI);
-            int tx = ix + 20, ty = by + (bh - fh) / 2 + down;
+            int tx = ix + 18, ty = by + (bh - fh) / 2 + down;
             if (tb->b[i].disabled) {
                 w2k_text(d, F_UI, tx + 1, ty + 1, tb->b[i].text, C_HILIGHT);
                 w2k_text(d, F_UI, tx, ty, tb->b[i].text, C_GRAYTEXT);
             } else {
                 w2k_text(d, F_UI, tx, ty, tb->b[i].text, C_TEXT);
             }
+        }
+        if (tb->b[i].drop) {
+            /* A 7-wide, 4-tall triangle, three pixels into the bay. */
+            int ax = x + w - 8 + down, ay = by + bh / 2 - 2 + down;
+            int col = tb->b[i].disabled ? C_GRAYTEXT : C_TEXT;
+            if (tb->b[i].disabled) {
+                w2k_hline(d, ax + 1, ay + 1, 7, C_HILIGHT);
+                w2k_hline(d, ax + 2, ay + 2, 5, C_HILIGHT);
+                w2k_hline(d, ax + 3, ay + 3, 3, C_HILIGHT);
+                w2k_hline(d, ax + 4, ay + 4, 1, C_HILIGHT);
+            }
+            w2k_hline(d, ax, ay, 7, col);
+            w2k_hline(d, ax + 1, ay + 1, 5, col);
+            w2k_hline(d, ax + 2, ay + 2, 3, col);
+            w2k_hline(d, ax + 3, ay + 3, 1, col);
         }
     }
 }
@@ -300,7 +333,14 @@ void w2k_status_add(W2kStatus *s, int w)
     if (s->n >= 6) return;
     s->pane[s->n].w = w;
     s->pane[s->n].text = w2k_strdup("");
+    s->pane[s->n].icon = ICO_NONE;
     s->n++;
+}
+
+void w2k_status_icon(W2kStatus *s, int i, int icon)
+{
+    if (i < 0 || i >= s->n) return;
+    s->pane[i].icon = icon;
 }
 
 void w2k_status_set(W2kStatus *s, int i, const char *text)
@@ -359,10 +399,18 @@ void w2k_status_draw(Drawable d, W2kStatus *s)
         if (i == s->n - 1) w = s->r.x + s->r.w - grip - 2 - x;
         if (w < 4) w = 4;
         w2k_edge(d, x, s->r.y + 2, w, s->r.h - 4, EDGE_SUNKEN_THIN, BF_RECT);
+        /* Text two pixels in from the pane's edge, an icon (16 pixels
+         * and a gap) before it -- measured off the shell's own bar. */
+        int tx = x + 3;
+        if (s->pane[i].icon >= 0) {
+            w2k_icon_draw(d, x + 4, s->r.y + 2 + (s->r.h - 4 - 16) / 2,
+                          s->pane[i].icon);
+            tx = x + 22;
+        }
         char buf[160];
-        int room = w - 8 - (s->sizegrip && i == s->n - 1 ? 14 : 0);
+        int room = x + w - 4 - tx - (s->sizegrip && i == s->n - 1 ? 14 : 0);
         w2k_ellipsis(F_UI, s->pane[i].text, room, buf, sizeof buf);
-        w2k_text(d, F_UI, x + 4, s->r.y + 2 + (s->r.h - 4 - fh) / 2, buf, C_TEXT);
+        w2k_text(d, F_UI, tx, s->r.y + 2 + (s->r.h - 4 - fh) / 2, buf, C_TEXT);
         x += w + 2;
     }
     if (s->sizegrip)

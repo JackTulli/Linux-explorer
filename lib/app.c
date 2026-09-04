@@ -733,7 +733,15 @@ int w2k_scheme_save(const char *path)
                 m->enabled);
     }
     fclose(f);
+    /* The user's own scheme also reaches GTK and Qt programs. */
+    if (path == def) w2k_scheme_export_gtk();
     return 0;
+}
+
+const unsigned char *w2k_scheme_rgb(int color)
+{
+    static const unsigned char black[3];
+    return (color >= 0 && color < N_COLORS) ? scheme[color] : black;
 }
 
 void w2k_scheme_broadcast(void)

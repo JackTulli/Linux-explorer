@@ -87,6 +87,36 @@ MAP = {
     "ICO_DELETE":       ["edit-delete.png"],
     "ICO_PROPERTIES":   ["document-properties.png"],
     "ICO_VIEWS":        ["view-list-details.png"],
+    # Control Panel applets, cut from a Windows 2000 screenshot (16px is
+    # the 32px art box-filtered).
+    "ICO_CP_DATETIME":   ("cp_date_time_16.png", "cp_date_time_32.png"),
+    "ICO_CP_DISPLAY":    ("cp_display_16.png", "cp_display_32.png"),
+    "ICO_CP_FOLDEROPTS": ("cp_folder_options_16.png", "cp_folder_options_32.png"),
+    "ICO_CP_KEYBOARD":   ("cp_keyboard_16.png", "cp_keyboard_32.png"),
+    "ICO_CP_MOUSE":      ("cp_mouse_16.png", "cp_mouse_32.png"),
+    "ICO_CP_NETWORK":    ("cp_network_16.png", "cp_network_32.png"),
+    "ICO_CP_SOUNDS":     ("cp_sounds_16.png", "cp_sounds_32.png"),
+    "ICO_CP_USERS":      ("cp_users_16.png", "cp_users_32.png"),
+    "ICO_CP_SYSTEM":     ("cp_system_16.png", "cp_system_32.png"),
+    "ICO_CP_PRINTERS":   "w2k_printers",
+    "ICO_CP_SCHEDULED":  "w2k_scheduled_tasks",
+    "ICO_TASKBAR":       "w2k_taskbar",
+    "ICO_NET_LAN":       "w2k_network_2",
+    "ICO_NET_WIRELESS":  ("net_wireless_16.png", "net_wireless_32.png"),
+    "ICO_NET_NEW":       "w2k_network_computer",
+    # The Explorer toolbar, cut from the same screenshot (16px only).
+    "ICO_TB_BACK":       ["tb_back.png"],
+    "ICO_TB_FORWARD":    ["tb_forward.png"],
+    "ICO_TB_UP":         ["tb_up.png"],
+    "ICO_TB_SEARCH":     ["tb_search.png"],
+    "ICO_TB_FOLDERS":    ["tb_folders.png"],
+    "ICO_TB_HISTORY":    ["tb_history.png"],
+    "ICO_TB_MOVETO":     ["tb_moveto.png"],
+    "ICO_TB_COPYTO":     ["tb_copyto.png"],
+    "ICO_TB_DELETE":     ["tb_delete.png"],
+    "ICO_TB_UNDO":       ["tb_undo.png"],
+    "ICO_TB_VIEWS":      ["tb_views.png"],
+    "ICO_TB_GO":         ["tb_go.png"],
 }
 
 def best(im, size):

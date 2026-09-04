@@ -31,26 +31,40 @@ typedef struct {
 } Applet;
 
 static const Applet applets[] = {
-    { "Display", "Wallpaper, colours, monitors", ICO_SETTINGS, "w2kdisplay" },
-    { "Default Programs", "What opens which files", ICO_PROGRAMS, NULL },
-    { "Taskbar and Start Menu", "Banner, Start button, search",
-      ICO_STARTFLAG, "@startmenu" },      /* @ = ask the shell, not a program */
-    { "System", "Visual effects and performance", ICO_MYCOMPUTER, NULL },
-    { "Task Manager", "Running programs and load", ICO_TASKMGR, "w2ktaskmgr" },
-    { "Device Manager", "The hardware in this computer", ICO_MYCOMPUTER, "w2kdevmgmt" },
-    { "Folder Options", "How folders look and open", ICO_FOLDER_OPEN, NULL },
-    { "Mouse", "Buttons, double-click and pointer speed", ICO_CURSORFILE, NULL },
-    { "Keyboard", "Repeat delay, rate and cursor blink", ICO_APP, NULL },
-    { "Sounds and Multimedia", "The system beep", ICO_SPEAKER, NULL },
-    { "Fonts", "The fonts installed on this computer", ICO_FONTS_FOLDER, NULL },
-    { "Date/Time", "Set the date, time and time zone", ICO_SETTINGS, NULL },
+    /* Alphabetical, as the shell lists them; the descriptions are the
+     * ones Windows 2000 shows in the web-view pane. */
+    { "Date/Time", "Set the date, time and time zone for your computer.",
+      ICO_CP_DATETIME, NULL },
+    { "Default Programs", "Choose which programs open which kinds of files.",
+      ICO_PROGRAMS, NULL },
+    { "Device Manager", "Shows the hardware installed in this computer and lets you change its drivers.",
+      ICO_MYCOMPUTER, "w2kdevmgmt" },
+    { "Display", "Customize your desktop display and screen saver.",
+      ICO_CP_DISPLAY, "w2kdisplay" },
+    { "Folder Options", "Customizes the display of files and folders, changes file associations, and makes network files available offline.",
+      ICO_CP_FOLDEROPTS, NULL },
+    { "Fonts", "Displays and manages fonts on your computer.",
+      ICO_FONTS_FOLDER, NULL },
+    { "Keyboard", "Customizes your keyboard settings.",
+      ICO_CP_KEYBOARD, NULL },
+    { "Mouse", "Customizes your mouse settings.",
+      ICO_CP_MOUSE, NULL },
+    { "Network and Dial-up Connections", "Connects to other computers, networks, and the Internet.",
+      ICO_CP_NETWORK, "w2knetwork" },
+    { "Sounds and Multimedia", "Assigns sounds to events and configures sound devices.",
+      ICO_CP_SOUNDS, NULL },
+    { "System", "Provides system information and changes environment settings.",
+      ICO_CP_SYSTEM, NULL },
+    { "Task Manager", "Shows the programs and processes running on your computer.",
+      ICO_TASKMGR, "w2ktaskmgr" },
+    { "Taskbar and Start Menu", "Customizes the Start Menu and the taskbar.",
+      ICO_TASKBAR, "@startmenu" },      /* @ = ask the shell, not a program */
 };
 #define NAPPLETS ((int)(sizeof applets / sizeof *applets))
 
 static struct {
-    W2kWin    *win;
-    W2kList   *list;
-    W2kStatus *sb;
+    W2kWin       *win;
+    W2kFolderWin *fw;
 } cp;
 
 /* ------------------------------------------------------------------ *
@@ -394,8 +408,9 @@ static void open_performance(void)
  * trackbars and check boxes over the input settings, applied to the X
  * server on OK (see lib/input.c) and remembered in ~/.w2k/scheme.
  * ------------------------------------------------------------------ */
-enum { AP_DISPLAY = 0, AP_DEFAULTS, AP_STARTMENU, AP_SYSTEM, AP_TASKMGR,
-       AP_FOLDER, AP_MOUSE, AP_KEYBOARD, AP_SOUNDS, AP_FONTS, AP_DATETIME };
+enum { AP_DATETIME = 0, AP_DEFAULTS, AP_DEVMGR, AP_DISPLAY, AP_FOLDER,
+       AP_FONTS, AP_KEYBOARD, AP_MOUSE, AP_NETWORK, AP_SOUNDS, AP_SYSTEM,
+       AP_TASKMGR, AP_STARTMENU };
 
 #define MAX_SLIDERS 4
 
@@ -1354,53 +1369,92 @@ static void open_applet(int i)
     }
 }
 
+/* The web-view pane: the folder's own words until an item is picked,
+ * then that item's name and description, as the shell does. */
+static void pane_fill(int idx)
+{
+    W2kFolderWin *f = cp.fw;
+    w2k_folderwin_pane_clear(f);
+    if (idx >= 0 && idx < NAPPLETS) {
+        w2k_folderwin_pane_add(f, FW_BOLD, applets[idx].name);
+        w2k_folderwin_pane_add(f, FW_BLANK, NULL);
+        w2k_folderwin_pane_add(f, FW_PLAIN, applets[idx].desc);
+        w2k_folderwin_status(f, applets[idx].desc);
+    } else {
+        w2k_folderwin_pane_add(f, FW_PLAIN,
+            "Use the settings in Control Panel to personalize your computer.");
+        w2k_folderwin_pane_add(f, FW_BLANK, NULL);
+        w2k_folderwin_pane_add(f, FW_PLAIN, "Select an item to view its description.");
+        w2k_folderwin_pane_add(f, FW_BLANK, NULL);
+        w2k_folderwin_pane_add(f, FW_LINK, "Windows Update");
+        w2k_folderwin_pane_add(f, FW_LINK, "Windows 2000 Support");
+        char buf[40];
+        snprintf(buf, sizeof buf, "%d object(s)", NAPPLETS);
+        w2k_folderwin_status(f, buf);
+    }
+}
+
 static void on_activate(void *u, int idx) { (void)u; open_applet(idx); }
 
 static void on_select(void *u, int idx)
 {
     (void)u;
-    w2k_status_set(cp.sb, 0, idx >= 0 && idx < NAPPLETS ? applets[idx].desc
-                                                        : "");
+    pane_fill(idx);
     w2k_win_dirty(cp.win);
+}
+
+static void command(void *u, int id)
+{
+    (void)u;
+    switch (id) {
+    case FW_LAST + 0:   /* Windows Update: the project's releases */
+        spawn("xdg-open https://github.com/JackTulli/Linux-explorer/releases");
+        break;
+    case FW_LAST + 1:   /* Windows 2000 Support */
+        spawn("xdg-open https://discord.gg/KPQBnSqcK");
+        break;
+    case FW_OPEN:
+        open_applet(cp.fw->list->sel);
+        break;
+    case FW_REFRESH:
+        pane_fill(cp.fw->list->sel);
+        break;
+    }
+}
+
+static W2kMenu *build_file(void *u)
+{
+    (void)u;
+    W2kMenu *m = w2k_menu_new();
+    w2k_menu_item(m, FW_OPEN, "&Open", NULL, ICO_NONE);
+    w2k_menu_default(m);
+    return m;
 }
 
 static void paint(W2kWin *w, Drawable d)
 {
-    w2k_list_draw(d, cp.list);
-    w2k_status_draw(d, cp.sb);
     (void)w;
+    w2k_folderwin_paint(cp.fw, d);
 }
 
 static int event(W2kWin *w, XEvent *e)
 {
-    switch (e->type) {
-    case ButtonPress:
-        if (w2k_list_press(cp.list, &e->xbutton)) { w2k_win_dirty(w); return 1; }
-        return 1;
-    case ButtonRelease:
-        w2k_list_release(cp.list, &e->xbutton);
-        return 1;
-    case MotionNotify:
-        if (w2k_list_motion(cp.list, &e->xmotion)) { w2k_win_dirty(w); return 1; }
-        return 0;
-    case KeyPress: {
+    if (e->type == KeyPress) {
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         if (ks == XK_Escape) { w2k_win_close(w, 0); return 1; }
         if (ks == XK_Return || ks == XK_KP_Enter) {
-            open_applet(cp.list->sel);
+            open_applet(cp.fw->list->sel);
             return 1;
         }
-        if (w2k_list_key(cp.list, &e->xkey)) { w2k_win_dirty(w); return 1; }
-        return 1;
     }
-    }
-    return 0;
+    if (w2k_folderwin_event(cp.fw, e)) return 1;
+    return e->type == ButtonPress || e->type == ButtonRelease || e->type == KeyPress;
 }
 
 static void resized(W2kWin *w)
 {
-    cp.list->r = (W2kRect){ 2, 2, w->w - 4, w->h - STATUS_H - 4 };
-    cp.sb->r = (W2kRect){ 0, w->h - STATUS_H, w->w, STATUS_H };
+    (void)w;
+    w2k_folderwin_layout(cp.fw);
 }
 
 int main(int argc, char **argv)
@@ -1433,30 +1487,29 @@ int main(int argc, char **argv)
         }
     }
 
-    cp.win = w2k_win_new("Control Panel", "w2kcontrol", 520, 380, 1);
+    /* The folder window at the size of the reference screenshot. */
+    cp.fw = w2k_folderwin_new("Control Panel", "w2kcontrol", ICO_CONTROLPANEL,
+                              870, 682, NULL, command);
+    cp.win = cp.fw->win;
     cp.win->paint = paint;
     cp.win->event = event;
     cp.win->resized = resized;
+    cp.fw->build_file = build_file;
 
-    cp.list = w2k_list_new(LV_ICON);
-    cp.list->on_activate = on_activate;
-    cp.list->on_select = on_select;
-    cp.list->focused = 1;
-    w2k_scroll_bind(&cp.list->vsb, cp.win);
+    W2kList *l = cp.fw->list;
+    l->on_activate = on_activate;
+    l->on_select = on_select;
     for (int i = 0; i < NAPPLETS; i++) {
-        int r = w2k_list_add(cp.list, applets[i].icon, NULL);
-        w2k_list_set(cp.list, r, 0, applets[i].name);
+        int r = w2k_list_add(l, applets[i].icon, NULL);
+        w2k_list_set(l, r, 0, applets[i].name);
     }
+    pane_fill(-1);
 
-    cp.sb = w2k_status_new();
-    w2k_status_add(cp.sb, 0);
-    cp.sb->sizegrip = 1;
-    w2k_status_set(cp.sb, 0, "Select an item to see its description.");
-
-    resized(cp.win);
+    w2k_folderwin_layout(cp.fw);
     w2k_win_center(cp.win, NULL);
     w2k_win_show(cp.win);
     w2k_run();
+    w2k_folderwin_free(cp.fw);
     w2k_fini();
     return 0;
 }
