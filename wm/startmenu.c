@@ -199,6 +199,7 @@ static int on_context(int id, int x, int y)
     case SM_CHARMAP:  own = "l2kcharmap";  own_label = "Character Map"; break;
     case SM_DEVMGMT:  own = "l2kdevmgmt";  own_label = "Device Manager"; break;
     case SM_LINVER:   own = "linver";      own_label = "About Linux 2000"; break;
+    case SM_UPDATE:   own = "l2kupdate";   own_label = "Windows Update"; break;
     case SM_IMAGING:  own = "l2kimage";    own_label = "Imaging"; break;
     case SM_CONTROLPANEL: own = "l2kcontrol"; own_label = "Control Panel"; break;
     }
@@ -307,6 +308,9 @@ void startmenu_open(void)
         w2k_menu_item(m, SM_PIN_BASE + i, pinned[i].label, NULL,
                       pin_icon(&pinned[i]));
     if (npinned) w2k_menu_sep(m);
+    /* Windows Update sat above Programs on Windows 2000's menu. */
+    prog_item(m, SM_UPDATE, "Windows &Update", "l2kupdate", ICO_WINUPDATE);
+    w2k_menu_sep(m);
     w2k_menu_sub(m, "&Programs",  ICO_PROGRAMS,  progs);
     w2k_menu_sub(m, "&Documents", ICO_DOCUMENTS, docs);
     w2k_menu_sub(m, "&Settings",  ICO_SETTINGS,  settings);
@@ -381,6 +385,7 @@ void startmenu_dispatch(int id)
     case SM_CHARMAP:      wm_spawn("l2kcharmap"); break;
     case SM_DEVMGMT:      wm_spawn("l2kdevmgmt"); break;
     case SM_LINVER:       wm_spawn("linver"); break;
+    case SM_UPDATE:       wm_spawn("l2kupdate"); break;
     case SM_FOLDEROPTS:   wm_spawn("l2kcontrol folders"); break;
     case SM_PAINT:        wm_spawn("w2kpaint"); break;
     case SM_SNIP:         wm_spawn("l2ksnip"); break;

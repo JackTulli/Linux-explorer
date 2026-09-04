@@ -28,9 +28,34 @@ on and you are on the desktop above.
 If `curl` is missing on a bare Debian: `apt install curl` first. If the
 first run is interrupted, run the same command again; it carries on.
 
-**Updating** is the same command: it pulls the latest source, rebuilds,
-installs over the old copy and restarts a running desktop in place, with
-every window kept. `l2kwm --version` says what is installed.
+## Updating
+
+Nothing updates on its own. There are three ways to update, and they all
+end the same way: the new version is installed over the old one and a
+running desktop restarts in place with every window kept.
+
+**From the desktop:** Start > Windows Update (or `l2kupdate`, or the
+Windows Update link in Control Panel). It looks the way Windows Update
+did. "Check for updates" asks the project's release list what the latest
+version is and compares it with yours; "Install" runs the update in a
+terminal window in front of you, asking for your password there. The
+Product Updates page does the same for the rest of the computer: the
+distribution's packages (apt, dnf, pacman, zypper, apk, xbps or emerge,
+whichever the machine has), Flatpak applications and Snaps, with a count
+of what is waiting and one button to install it all.
+
+**From a shell, as root** -- the same command that installed it:
+
+    curl -sL jacktulli.github.io/w2k | sh
+
+**From a source checkout:**
+
+    git pull
+    make
+    sudo make install      # then: l2kwm --restart
+
+`l2kwm --version` says what is installed, and Start > Programs >
+Accessories > System Tools > About Linux 2000 shows it with the build.
 
 **A machine that already has a desktop:**
 
@@ -87,6 +112,9 @@ Try it nested first, without logging out of anything:
                    enable/disable, DKMS driver install (contributed)
     l2knotepad, l2kcalc, l2kcharmap, l2kimage (Imaging), l2ktaskmgr,
     l2ksnip        Snipping Tool
+    l2kupdate      Windows Update: checks for and installs a newer Linux 2000
+                   on request, and the distribution's own updates (apt, dnf,
+                   pacman, zypper, apk, xbps, emerge, Flatpak, Snap)
     linver         About Linux 2000, in the manner of winver: the distribution's
                    logo, the version and build, the distribution, the kernel,
                    who it is licensed to and the memory (Start > Programs >

@@ -1765,8 +1765,8 @@ static void command(void *u, int id)
 {
     (void)u;
     switch (id) {
-    case FW_LAST + 0:   /* Windows Update: the project's releases */
-        spawn("xdg-open https://github.com/JackTulli/Linux-explorer/releases");
+    case FW_LAST + 0:   /* Windows Update */
+        spawn("l2kupdate");
         break;
     case FW_LAST + 1:   /* Windows 2000 Support */
         spawn("xdg-open https://discord.gg/KPQBnSqcK");
