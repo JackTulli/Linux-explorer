@@ -704,8 +704,12 @@ void client_manage(Window w, int initial_map)
     place_new(c, had_pos);
 
     int b = client_border(c), cap = client_caption_h(c);
+    /* No server-side background on the frame either: a resize would
+     * otherwise flash the border and caption grey before frame_paint
+     * runs. The old pixels stay put (bit gravity) until it does. */
     XSetWindowAttributes fa = {
-        .background_pixel  = w2k.col[C_FACE],
+        .background_pixmap = None,
+        .bit_gravity       = NorthWestGravity,
         .border_pixel      = w2k.col[C_BLACK],
         .override_redirect = False,
         .event_mask = SubstructureRedirectMask | SubstructureNotifyMask |
@@ -716,8 +720,8 @@ void client_manage(Window w, int initial_map)
                              c->x - b, c->y - b - cap,
                              client_frame_w(c), client_frame_h(c), 0,
                              CopyFromParent, InputOutput, CopyFromParent,
-                             CWBackPixel | CWBorderPixel | CWOverrideRedirect |
-                             CWEventMask, &fa);
+                             CWBackPixmap | CWBitGravity | CWBorderPixel |
+                             CWOverrideRedirect | CWEventMask, &fa);
 
     /* Add to whatever this client already selected rather than replacing it.
      * Event masks are per client, so for another application's window the

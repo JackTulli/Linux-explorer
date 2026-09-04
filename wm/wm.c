@@ -533,7 +533,6 @@ void wm_handle_event(XEvent *e)
                 XDefineCursor(w2k.dpy, w2k.root, w2k.cur_arrow);
                 desktop_reload();
                 for (Client *k = clients; k; k = k->next) {
-                    XSetWindowBackground(w2k.dpy, k->frame, w2k.col[C_FACE]);
                     /* ForceDecorations lives in the scheme file too, so a
                      * window may have just gained or lost its frame. */
                     int was = k->decorate;

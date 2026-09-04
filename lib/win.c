@@ -71,8 +71,13 @@ W2kWin *w2k_win_new(const char *title, const char *cls, int w, int h,
     o->min_w = resizable ? 160 : w;
     o->min_h = resizable ? 100 : h;
 
+    /* No server-side background: with one, every resize had the server
+     * wipe the window to grey before the repaint at the next turn of the
+     * loop, a flash on each step of a drag. The old picture is kept where
+     * it was (bit gravity) and the repaint is done on the spot instead. */
     XSetWindowAttributes a = {
-        .background_pixel = w2k.col[C_FACE],
+        .background_pixmap = None,
+        .bit_gravity = NorthWestGravity,
         .event_mask = ExposureMask | KeyPressMask | KeyReleaseMask |
                       ButtonPressMask | ButtonReleaseMask |
                       PointerMotionMask | StructureNotifyMask |
@@ -80,7 +85,7 @@ W2kWin *w2k_win_new(const char *title, const char *cls, int w, int h,
     };
     o->win = XCreateWindow(w2k.dpy, w2k.root, 0, 0, w, h, 0, CopyFromParent,
                            InputOutput, CopyFromParent,
-                           CWBackPixel | CWEventMask, &a);
+                           CWBackPixmap | CWBitGravity | CWEventMask, &a);
     /* Our own cursor, so the window never shows what the frame around it
      * last had -- a sizing arrow, after the pointer crossed the border. */
     if (w2k.cur_arrow) XDefineCursor(w2k.dpy, o->win, w2k.cur_arrow);
@@ -274,7 +279,7 @@ static void dispatch(XEvent *e)
         w2k_accel_reset();
         for (W2kWin *w = win_list; w; w = w->next) {
             w->dirty = 1;
-            XSetWindowBackground(w2k.dpy, w->win, w2k.col[C_FACE]);
+            w->dirty = 1;                 /* new colours: repaint from the buffer */
         }
         return;
     }
@@ -313,15 +318,22 @@ static void dispatch(XEvent *e)
         if (e->xexpose.count == 0) w->dirty = 1;
         return;
 
-    case ConfigureNotify:
+    case ConfigureNotify: {
+        /* A drag delivers a burst of these: only the newest size matters. */
+        XEvent next;
+        while (XCheckTypedWindowEvent(w2k.dpy, w->win, ConfigureNotify, &next))
+            *e = next;
         if (e->xconfigure.width != w->w || e->xconfigure.height != w->h) {
             w->w = e->xconfigure.width;
             w->h = e->xconfigure.height;
             if (w->buf) { w2k_free_pixmap(w->buf); w->buf = 0; }
             if (w->resized) w->resized(w);
-            w->dirty = 1;
+            /* Painted now, not at the next turn: nothing is shown between
+             * the server's resize and the new picture. */
+            repaint(w);
         }
         return;
+    }
 
     case ClientMessage:
         if (e->xclient.message_type == w2k.a_wm_protocols) {
