@@ -107,7 +107,11 @@ static const PackMap map7 = { {
     [SND_NAVIGATING] = "Windows Navigation Start.wav", [SND_EMPTYRECYCLE] = "Windows Recycle.wav",
 } };
 
+/* "No Sounds": the scheme Windows offered for silence. */
+static const PackMap mapnone = { { 0 } };
+
 static const struct { const char *id, *label; const PackMap *map; const char *base; } packs[] = {
+    { "none",    "No Sounds",    &mapnone, NULL },
     { "win98",   "Windows 98",   &map98,   NULL },
     { "win2000", "Windows 2000", &map2000, NULL },
     { "winxp",   "Windows XP",   &mapxp,   NULL },
@@ -163,7 +167,8 @@ int w2k_sound_packs(char (*ids)[32], char (*labels)[48], int max)
     int n = 0;
     for (int i = 0; i < NPACKS && n < max; i++) {
         char dir[1024];
-        if (!w2k_sound_pack_dir(packs[i].id, dir, sizeof dir)) continue;
+        /* No Sounds needs no files; the rest must be installed. */
+        if (packs[i].map != &mapnone && !w2k_sound_pack_dir(packs[i].id, dir, sizeof dir)) continue;
         snprintf(ids[n], 32, "%s", packs[i].id);
         snprintf(labels[n], 48, "%s", packs[i].label);
         n++;

@@ -113,8 +113,8 @@ Sounds: Control Panel > Sounds and Multimedia is the Windows 2000 applet,
 with the event list (Start Windows, Exit Windows, Asterisk, Critical Stop,
 Menu Popup, Minimize, System Notification, Empty Recycle Bin and the
 rest), a Name box with a play button and Browse, and a Scheme box that
-picks the sound pack: Windows 98, Windows 2000, Windows XP, Windows 7 and
-the thirteen Windows 7 themes, shipped under `sounds/`. The desktop plays
+picks the sound pack: No Sounds, Windows 98, Windows 2000, Windows XP,
+Windows 7 and the thirteen Windows 7 themes, shipped under `sounds/`. The desktop plays
 them at logon and logoff, on menus, message boxes, balloons, minimizing
 and restoring windows, and as Explorer navigates and empties the Recycle
 Bin, through paplay, pw-play, aplay, ffplay or mpv, whichever is there.
