@@ -328,13 +328,24 @@ static void draw_row(Drawable d, const Row *r, int x, int y, int w, int rh,
 /* ------------------------------------------------------------------ *
  * The Windows 7 panel
  * ------------------------------------------------------------------ */
+static struct { const char *name; W2kSkin *s; int tried; } panel_skins[5] = {
+    { "w7-usertile.png", NULL, 0 }, { "xp-panel-header.png", NULL, 0 },
+    { "xp-panel-footer.png", NULL, 0 }, { "xp-panel-body.png", NULL, 0 },
+    { "w7-panel.png", NULL, 0 }
+};
+
+void startpanel_skins_reload(void)
+{
+    for (int i = 0; i < 5; i++) {
+        w2k_skin_free(panel_skins[i].s);
+        panel_skins[i].s = NULL;
+        panel_skins[i].tried = 0;
+    }
+}
+
 static W2kSkin *skin7(const char *name)
 {
-    static struct { const char *name; W2kSkin *s; int tried; } cache[5] = {
-        { "w7-usertile.png", NULL, 0 }, { "xp-panel-header.png", NULL, 0 },
-        { "xp-panel-footer.png", NULL, 0 }, { "xp-panel-body.png", NULL, 0 },
-        { "w7-panel.png", NULL, 0 }
-    };
+#define cache panel_skins
     for (int i = 0; i < 5; i++) {
         if (strcmp(cache[i].name, name)) continue;
         if (!cache[i].tried) {
@@ -346,6 +357,7 @@ static W2kSkin *skin7(const char *name)
         return cache[i].s;
     }
     return NULL;
+#undef cache
 }
 
 /* The pointer's row: a pale box on the white pane, a lighter patch of

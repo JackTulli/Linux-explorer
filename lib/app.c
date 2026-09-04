@@ -639,11 +639,12 @@ int w2k_scheme_load(const char *path)
     /* The icon set is part of the scheme: when a reload brings a different
      * one, the artwork follows (every process re-reads the files; the
      * caches drop as each slot is replaced). */
-    static char icons_loaded[32] = "win2k";
-    if (strcmp(icons_loaded, w2k_icon_set)) {
-        snprintf(icons_loaded, sizeof icons_loaded, "%s", w2k_icon_set);
-        w2k_icon_load_default();
-    }
+    /* Artwork is re-read on every reload, not only when the set's name
+     * changed: the files behind the same name may be new (a rebuilt set,
+     * a skin dropped into ~/.w2k/skins), and a broadcast is how a running
+     * desktop is told. A few dozen small files: cheap. */
+    w2k_skin_cache_flush();
+    w2k_icon_load_default();
     return n;
 }
 

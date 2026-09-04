@@ -314,6 +314,7 @@ W2kSkin *w2k_skin_load_scaled(const char *path, int scale);
  * the buffer. */
 W2kSkin *w2k_skin_from_rgba(const unsigned char *rgba, int w, int h);
 void     w2k_skin_free(W2kSkin *s);
+void     w2k_skin_cache_flush(void);   /* re-read the artwork on the next paint */
 GC       w2k_copy_gc(void);   /* a GC that copies and nothing else: no clip, no tile */
 int      w2k_skin_w(const W2kSkin *s);
 int      w2k_skin_h(const W2kSkin *s);

@@ -54,10 +54,22 @@ int w2k_skin_path(const char *name, char *out, int n)
 /* `scale` is applied to every colour channel (256 = as is): the hot and
  * pressed states of a button are not in any screenshot to hand, so they
  * are the measured button lightened or darkened. */
+static struct { char name[64]; int scale; W2kSkin *s; int tried; } skin_cache[16];
+static int nskin_cache;
+
+/* Forget every skin read so far: the files may have changed (a new set of
+ * artwork, a theme edited under ~/.w2k/skins); they are read again on the
+ * next paint. */
+void w2k_skin_cache_flush(void)
+{
+    for (int i = 0; i < nskin_cache; i++) w2k_skin_free(skin_cache[i].s);
+    nskin_cache = 0;
+}
+
 static W2kSkin *skin(const char *name, int scale)
 {
-    static struct { char name[64]; int scale; W2kSkin *s; int tried; } cache[16];
-    static int n;
+#define cache skin_cache
+#define n nskin_cache
     for (int i = 0; i < n; i++)
         if (cache[i].scale == scale && !strcmp(cache[i].name, name))
             return cache[i].s;
@@ -71,6 +83,8 @@ static W2kSkin *skin(const char *name, int scale)
     cache[n].tried = 1;
     n++;
     return s;
+#undef cache
+#undef n
 }
 
 /* ------------------------------------------------------------------ *

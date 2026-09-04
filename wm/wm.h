@@ -126,6 +126,9 @@ void    do_resize(Client *c, XButtonEvent *e, int ht);
 void    grab_keys(void);
 void    handle_key(XKeyEvent *e);
 void    handle_key_release(XKeyEvent *e);
+void    taskbar_skins_reload(void);
+void    startpanel_skins_reload(void);
+extern volatile sig_atomic_t restarting;   /* w2kwm --restart / SIGHUP */
 void    sysmenu_popup(Client *c, int x, int y);
 void    alt_tab(int backwards);
 /* Zoom a wire frame between two rectangles (the minimise animation). */

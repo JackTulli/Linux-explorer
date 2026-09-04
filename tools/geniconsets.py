@@ -149,12 +149,25 @@ def frames_16_32(path):
     when one is missing (Windows 7's carry 256-pixel PNGs; only these two
     are drawn, and the loader reads DIB entries)."""
     im = Image.open(path)
-    sizes = sorted(im.ico.sizes(), key=lambda s: s[0])
+    ico = im.ico
+    def field(e, name):
+        return getattr(e, name) if hasattr(e, name) else e[name]
+    entries = [(i, field(e, "dim"), field(e, "color_depth")) for i, e in enumerate(ico.entry)]
+    def deepest(n):
+        """The entry of that size with the most colours: an ICO carries a
+        16-colour, a 256-colour and a true-colour image of each size, and
+        PIL's getimage() would hand back the 16-colour one."""
+        cands = [t for t in entries if t[1] == (n, n)]
+        if not cands: return None
+        best = max(cands, key=lambda t: t[2])
+        return ico.frame(best[0]).convert("RGBA")
     def pick(n):
-        exact = [s for s in sizes if s == (n, n)]
-        if exact: return im.ico.getimage(exact[0]).convert("RGBA")
-        bigger = [s for s in sizes if s[0] > n] or sizes
-        src = im.ico.getimage(bigger[0] if bigger[0][0] > n else bigger[-1]).convert("RGBA")
+        got = deepest(n)
+        if got is not None: return got
+        larger = sorted([t for t in entries if t[1][0] > n], key=lambda t: t[1][0])
+        pool = larger or sorted(entries, key=lambda t: -t[1][0])
+        size = pool[0][1][0]
+        src = deepest(size)
         return src.resize((n, n), Image.LANCZOS)
     return pick(16), pick(32)
 

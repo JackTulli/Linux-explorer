@@ -18,6 +18,8 @@ Window wm_check;
 int    wa_x, wa_y, wa_w, wa_h;
 volatile sig_atomic_t running = 1;
 Time wm_last_time;
+volatile sig_atomic_t restarting;
+static char **saved_argv;
 
 static int other_wm;
 
@@ -397,6 +399,7 @@ static void handle_clientmessage(XClientMessageEvent *e)
         case 2: wm_logout(0); break;
         case 3: wm_startmenu_dialog(); break;    /* Control Panel applet */
         case 5: wm_search_dialog(""); break;     /* Explorer's Search button */
+        case 6: restarting = 1; break;           /* w2kwm --restart */
         case 4: {
             /* A balloon: title and text sit in _W2K_NOTIFY on the root,
              * NUL-separated, so the message itself stays 32 bytes. */
@@ -517,6 +520,8 @@ void wm_handle_event(XEvent *e)
         if (e->xproperty.window == w2k.root) {
             if (e->xproperty.atom == w2k.a_w2k_scheme) {
                 w2k_scheme_load(NULL);
+                taskbar_skins_reload();
+                startpanel_skins_reload();
                 /* Effects can change with the scheme: the pointer shadow
                  * is baked into the cursor images, so they are rebuilt. */
                 w2k_font_reload();
@@ -600,6 +605,26 @@ static void manage_own_window(Window w)
 }
 
 /* Adopt whatever is already on screen when we start. */
+/* Start over with the same windows: every client goes back to the root,
+ * mapped, and the new process finds them there and frames them again. The
+ * process keeps its pid, so w2k-session is none the wiser. */
+static void wm_restart(void)
+{
+    for (Client *c = clients; c; c = c->next)
+        if (c->minimized) { c->minimized = 0; XMapWindow(w2k.dpy, c->frame); }
+    XSetInputFocus(w2k.dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
+    tray_fini();
+    while (clients) client_unmanage(clients, 0);
+    XDestroyWindow(w2k.dpy, wm_check);
+    XSync(w2k.dpy, False);
+    w2k_fini();
+    execv("/proc/self/exe", saved_argv);
+    fprintf(stderr, "w2kwm: cannot restart: %s\n", strerror(errno));
+    exit(1);
+}
+
+static void on_sighup(int s) { (void)s; restarting = 1; }
+
 static void scan_existing(void)
 {
     Window root_ret, parent_ret, *kids = NULL;
@@ -617,9 +642,24 @@ static void scan_existing(void)
 
 int main(int argc, char **argv)
 {
+    saved_argv = argv;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--version")) {
             puts("w2kwm 1.0 -- Windows 2000 window manager for X11");
+            return 0;
+        }
+        if (!strcmp(argv[i], "--restart")) {
+            /* Ask the running shell to start itself again, keeping every
+             * window: the way to pick up a new build without logging off. */
+            if (w2k_init("w2kwm") < 0) return 1;
+            XEvent ev = { 0 };
+            ev.xclient.type = ClientMessage;
+            ev.xclient.window = w2k.root;
+            ev.xclient.message_type = w2k.a_w2k_command;
+            ev.xclient.format = 32;
+            ev.xclient.data.l[0] = 6;
+            XSendEvent(w2k.dpy, w2k.root, False, SubstructureNotifyMask, &ev);
+            XSync(w2k.dpy, False);
             return 0;
         }
         if (!strcmp(argv[i], "--icons")) {
@@ -703,6 +743,8 @@ int main(int argc, char **argv)
     sa.sa_flags = 0;
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
+    sa.sa_handler = on_sighup;              /* kill -HUP: restart in place */
+    sigaction(SIGHUP, &sa, NULL);
 
     XDefineCursor(w2k.dpy, w2k.root, w2k.cur_arrow);
     ewmh_init();
@@ -742,6 +784,7 @@ int main(int argc, char **argv)
             wm_handle_event(&e);
         }
         if (!running) break;
+        if (restarting) wm_restart();
 
         /* Sleep until either X has something to say or something on the
          * shell is due: the clock at the next minute, a tooltip half a

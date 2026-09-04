@@ -139,10 +139,20 @@ static void start_hot_changed(void)
     if (w2k_theme != THEME_CLASSIC) taskbar_paint();
 }
 
+static W2kSkin *start_skin_cached;
+static int start_skin_theme = -1, start_skin_small = -1;
+
+/* The scheme was reloaded: read the Start button's artwork afresh. */
+void taskbar_skins_reload(void)
+{
+    start_skin_theme = -1;
+}
+
 static W2kSkin *theme_start_skin(void)
 {
-    static W2kSkin *skin;
-    static int tried_theme = -1, tried_small = -1;
+#define skin start_skin_cached
+#define tried_theme start_skin_theme
+#define tried_small start_skin_small
     if (tried_theme == w2k_theme && tried_small == w2k_taskbar_small) return skin;
     tried_theme = w2k_theme;
     tried_small = w2k_taskbar_small;
@@ -161,6 +171,9 @@ static W2kSkin *theme_start_skin(void)
         if (skin && w2k_theme == THEME_BASIC7) orb_frames_build(path);
     }
     return skin;
+#undef skin
+#undef tried_theme
+#undef tried_small
 }
 
 static void ql_build(void)
