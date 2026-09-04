@@ -93,8 +93,8 @@ Try it nested first, without logging out of anything:
                    Accessories > System Tools, or Run > linver)
 
 Three looks, from Display Properties > Appearance: the Windows 2000
-classic scheme (and its colour variants: Brick, Desert, Eggplant and the
-rest), Windows XP (Luna, with the two-column Start menu), and Windows 7
+classic scheme (and its colour variants: Brick, Desert, Eggplant, a
+Windows Classic Dark and the rest), Windows XP (Luna, with the two-column Start menu), and Windows 7
 Basic (with its Start menu, orb and taskbar). Every element's colour can
 be set from the basic-colours palette or by its red, green and blue
 values, and title bars have a Color 2 for the far end of their gradient. The XP and 7 chrome is cropped from screenshots and checked by

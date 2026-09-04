@@ -480,9 +480,14 @@ static void draw_pane(W2kFolderWin *f, Drawable d)
             continue;
         }
         if (st == FW_LINK) {
+            /* The shell's blue links, lightened on a dark window colour
+             * (the Windows Classic Dark scheme) so they still read. */
+            const unsigned char *wc = w2k_scheme_rgb(C_WINDOW);
+            int dark = (wc[0] * 299 + wc[1] * 587 + wc[2] * 114) / 1000 < 128;
+            int lr = dark ? 120 : 0, lg = dark ? 170 : 0, lb = 255;
             int tw = w2k_text_width(F_UI, s, -1);
-            w2k_text_rgb(d, F_UI, tx, y, s, 0, 0, 255);
-            XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(0, 0, 255));
+            w2k_text_rgb(d, F_UI, tx, y, s, lr, lg, lb);
+            XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(lr, lg, lb));
             XFillRectangle(w2k.dpy, d, w2k.gc, tx, y + w2k_font_px_ascent(F_UI) + 1,
                            (unsigned)tw, 1);
             f->line[i].r = (W2kRect){ tx, y, tw, fh };
