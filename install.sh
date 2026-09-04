@@ -220,6 +220,15 @@ if [ "$DO_BUILD" = 1 ]; then
         elif [ -f /etc/pam.d/base-auth ]; then pamsrc=w2kdm.pam.alpine
         else pamsrc=w2kdm.pam.generic; fi
         as_root install -m644 "$HERE/config/$pamsrc" /etc/pam.d/w2kdm
+        # Inside a virtual machine the X server's hardware cursor is often
+        # never drawn by the hypervisor (virtio-gpu, QXL, VirtualBox and
+        # VMware with the modesetting driver): an invisible pointer. A
+        # software cursor is drawn into the framebuffer and always shows.
+        if command -v systemd-detect-virt >/dev/null 2>&1 && systemd-detect-virt --vm -q 2>/dev/null; then
+            say "Virtual machine: software cursor for the X server"
+            as_root install -d /etc/X11/xorg.conf.d
+            as_root install -m644 "$HERE/config/20-w2k-vm-cursor.conf" /etc/X11/xorg.conf.d/20-w2k-vm-cursor.conf
+        fi
         if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
             as_root sh -c "sed 's|^ExecStart=.*|ExecStart=$PREFIX/bin/w2kdm|' '$HERE/config/w2kdm.service' > /etc/systemd/system/w2kdm.service"
             # Another display manager stands down at the next boot; it is
