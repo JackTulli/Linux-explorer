@@ -542,7 +542,7 @@ static void command(void *user, int id)
     case ID_ABOUT:
         w2k_msgbox(pad.win, "About Notepad",
                    "Notepad\n"
-                   "Linux 2000\n"
+                   "Linux 2000\nA Windows 2000-style desktop for X11\n"
                    "\n"
                    "A faithful rebuild of the classic text editor.\n\nLinux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
                    MB_OK | MB_ICONINFO);

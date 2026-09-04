@@ -87,6 +87,10 @@ Try it nested first, without logging out of anything:
                    enable/disable, DKMS driver install (contributed)
     l2knotepad, l2kcalc, l2kcharmap, l2kimage (Imaging), l2ktaskmgr,
     l2ksnip        Snipping Tool
+    linver         About Linux 2000, in the manner of winver: the distribution's
+                   logo, the version and build, the distribution, the kernel,
+                   who it is licensed to and the memory (Start > Programs >
+                   Accessories > System Tools, or Run > linver)
 
 Three looks, from Display Properties > Appearance: the Windows 2000
 classic scheme (and its colour variants: Brick, Desert, Eggplant and the

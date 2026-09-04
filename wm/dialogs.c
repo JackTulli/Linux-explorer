@@ -871,9 +871,10 @@ void wm_help_dialog(void)
 {
     w2k_msgbox(NULL, "About Windows",
                "Linux 2000\n"
+               "A Windows 2000-style desktop for X11\n"
                "\n"
                "A window manager and desktop environment in the style of the\n"
-               "Windows 2000 shell, on X11, using Xlib and nothing else.\n"
+               "Windows 2000 shell, using Xlib and nothing else.\n"
                "\n"
                "Press Ctrl+Esc for the Start menu, Alt+Tab to switch windows,\n"
                "and Ctrl+Alt+Del for Task Manager.\n"

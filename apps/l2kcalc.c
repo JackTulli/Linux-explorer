@@ -331,7 +331,7 @@ static void command(void *u, int id)
     case ID_SCIENTIFIC: cal.scientific = 1; resize_window(); break;
     case ID_ABOUT:
         w2k_msgbox(cal.win, "About Calculator",
-                   "Calculator\nLinux 2000\n\nLinux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.", MB_OK | MB_ICONINFO);
+                   "Calculator\nLinux 2000\nA Windows 2000-style desktop for X11\n\nLinux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.", MB_OK | MB_ICONINFO);
         break;
     case ID_EXIT: w2k_win_close(cal.win, 0); break;
     }

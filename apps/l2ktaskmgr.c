@@ -876,7 +876,7 @@ static void command(void *user, int id)
     case ID_CPU_PER_CORE: tm.per_core = 1; break;
     case ID_ABOUT:
         w2k_msgbox(tm.win, "About Task Manager",
-                   "Windows Task Manager\nLinux 2000\n\n"
+                   "Windows Task Manager\nLinux 2000\nA Windows 2000-style desktop for X11\n\n"
                    "Applications from the window manager, processes and\n"
                    "performance figures from /proc.\n\nLinux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
                    MB_OK | MB_ICONINFO);

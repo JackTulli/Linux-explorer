@@ -176,8 +176,8 @@ static void command(void *u, int id)
     case FW_HELPTOPICS:
     case FW_ABOUT:
         w2k_msgbox(f->win, "About Windows",
-                   "Linux 2000\n\n"
-                   "A Windows 2000-like shell, written from scratch against Xlib.\n\n"
+                   "Linux 2000\nA Windows 2000-style desktop for X11\n\n"
+                   "The shell's folder windows, written from scratch against Xlib.\n\n"
                    "Linux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
                    MB_OK | MB_ICONINFO);
         return;

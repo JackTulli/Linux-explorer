@@ -2453,7 +2453,7 @@ static void command(void *user, int id)
         break;
     case ID_ABOUT:
         w2k_msgbox(ex.win, "About Windows",
-                   "Windows Explorer\nLinux 2000\n\n"
+                   "Windows Explorer\nLinux 2000\nA Windows 2000-style desktop for X11\n\n"
                    "Browsing the filesystem the way the shell used to.\n\n"
                    "Linux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
                    MB_OK | MB_ICONINFO);

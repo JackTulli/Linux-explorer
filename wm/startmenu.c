@@ -198,6 +198,7 @@ static int on_context(int id, int x, int y)
     case SM_CALC:     own = "l2kcalc";     own_label = "Calculator"; break;
     case SM_CHARMAP:  own = "l2kcharmap";  own_label = "Character Map"; break;
     case SM_DEVMGMT:  own = "l2kdevmgmt";  own_label = "Device Manager"; break;
+    case SM_LINVER:   own = "linver";      own_label = "About Linux 2000"; break;
     case SM_IMAGING:  own = "l2kimage";    own_label = "Imaging"; break;
     case SM_CONTROLPANEL: own = "l2kcontrol"; own_label = "Control Panel"; break;
     }
@@ -240,6 +241,7 @@ void startmenu_open(void)
     W2kMenu *systools = w2k_menu_new();
     prog_item(systools, SM_CHARMAP, "&Character Map", "l2kcharmap", ICO_CHARMAP);
     prog_item(systools, SM_DEVMGMT, "&Device Manager", "l2kdevmgmt", ICO_MYCOMPUTER);
+    prog_item(systools, SM_LINVER, "&About Linux 2000", "linver", ICO_STARTFLAG);
 
     W2kMenu *acc = w2k_menu_new();
     w2k_menu_sub(acc, "S&ystem Tools", ICO_ACCESSORIES, systools);
@@ -378,6 +380,7 @@ void startmenu_dispatch(int id)
     case SM_CALC:         wm_spawn("l2kcalc"); break;
     case SM_CHARMAP:      wm_spawn("l2kcharmap"); break;
     case SM_DEVMGMT:      wm_spawn("l2kdevmgmt"); break;
+    case SM_LINVER:       wm_spawn("linver"); break;
     case SM_FOLDEROPTS:   wm_spawn("l2kcontrol folders"); break;
     case SM_PAINT:        wm_spawn("w2kpaint"); break;
     case SM_SNIP:         wm_spawn("l2ksnip"); break;

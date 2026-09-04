@@ -659,7 +659,7 @@ int main(int argc, char **argv)
     saved_argv = argv;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--version")) {
-            puts("l2kwm " W2K_VERSION " -- Linux 2000, a Windows 2000-like desktop for X11");
+            puts("l2kwm " W2K_VERSION " -- Linux 2000, a Windows 2000-style desktop for X11");
             return 0;
         }
         if (!strcmp(argv[i], "--restart")) {
