@@ -211,9 +211,13 @@ static void toolbar_layout(W2kToolbar *tb)
         /* Measured off the shell's toolbar: an icon-only button is 24
          * wide; one with text is 31 plus the text; a drop-down arrow
          * adds a 12-pixel bay. */
+        int has_text = tb->show_text && tb->b[i].text && tb->b[i].text[0];
+        int has_icon = tb->b[i].icon >= 0;
         if (tb->b[i].id == TBB_SEP) w = 8;
-        else if (tb->show_text && tb->b[i].text)
+        else if (has_text && has_icon)
             w = 31 + w2k_text_width(F_UI, tb->b[i].text, -1);
+        else if (has_text)                       /* words alone: 6 in, 6 out */
+            w = 12 + w2k_text_width(F_UI, tb->b[i].text, -1);
         else w = 24;
         if (tb->b[i].id != TBB_SEP && tb->b[i].drop)
             w += tb->b[i].drop > 1 ? tb->b[i].drop : tb->b[i].text ? 8 : 13;
@@ -247,17 +251,21 @@ void w2k_toolbar_draw(Drawable d, W2kToolbar *tb)
 
         /* An icon-only button centres its icon in the part before the
          * drop-down bay. */
+        int has_text = tb->show_text && tb->b[i].text && tb->b[i].text[0];
+        int has_icon = tb->b[i].icon >= 0;
         int bay = !tb->b[i].drop ? 0 : tb->b[i].drop > 1 ? tb->b[i].drop
-                : tb->b[i].text ? 8 : 13;
+                : has_text ? 8 : 13;
         int body = w - bay;
-        int ix = x + (tb->show_text && tb->b[i].text ? 4 : (body - 16) / 2) + down;
+        int ix = x + (has_text && has_icon ? 4 : (body - 16) / 2) + down;
         int iy = by + (bh - 16) / 2 + down;
-        if (tb->b[i].disabled) w2k_icon_draw_disabled(d, ix, iy, tb->b[i].icon);
-        else                   w2k_icon_draw(d, ix, iy, tb->b[i].icon);
+        if (has_icon) {
+            if (tb->b[i].disabled) w2k_icon_draw_disabled(d, ix, iy, tb->b[i].icon);
+            else                   w2k_icon_draw(d, ix, iy, tb->b[i].icon);
+        }
 
-        if (tb->show_text && tb->b[i].text) {
+        if (has_text) {
             int fh = w2k_font_height(F_UI);
-            int tx = ix + 18, ty = by + (bh - fh) / 2 + down;
+            int tx = (has_icon ? ix + 18 : x + 6 + down), ty = by + (bh - fh) / 2 + down;
             if (tb->b[i].disabled) {
                 w2k_text(d, F_UI, tx + 1, ty + 1, tb->b[i].text, C_HILIGHT);
                 w2k_text(d, F_UI, tx, ty, tb->b[i].text, C_GRAYTEXT);

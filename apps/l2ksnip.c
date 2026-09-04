@@ -91,7 +91,7 @@ static void options_load(void)
     st.delay = 0;
     st.ink_r = 255; st.ink_g = 0; st.ink_b = 0;
     st.pen_r = 0; st.pen_g = 0; st.pen_b = 255;
-    st.opt_copy = 1; st.opt_prompt_save = 1; st.opt_overlay = 1; st.opt_show_ink = 1;
+    st.opt_copy = 1; st.opt_prompt_save = 1; st.opt_overlay = 1; st.opt_show_ink = 0;
     char path[1024];
     options_path(path, sizeof path);
     FILE *f = fopen(path, "r");
@@ -108,7 +108,7 @@ static void options_load(void)
         else if (!strcmp(line, "Copy")) st.opt_copy = v;
         else if (!strcmp(line, "PromptSave")) st.opt_prompt_save = v;
         else if (!strcmp(line, "Overlay")) st.opt_overlay = v;
-        else if (!strcmp(line, "ShowInk")) st.opt_show_ink = v;
+        else if (!strcmp(line, "SelectionInk")) st.opt_show_ink = v;
         else if (!strcmp(line, "Ink")) { st.ink_r = (v >> 16) & 255; st.ink_g = (v >> 8) & 255; st.ink_b = v & 255; }
         else if (!strcmp(line, "Pen")) { st.pen_r = (v >> 16) & 255; st.pen_g = (v >> 8) & 255; st.pen_b = v & 255; }
     }
@@ -124,7 +124,7 @@ static void options_save(void)
     options_path(path, sizeof path);
     FILE *f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "Type=%d\nDelay=%d\nHideText=%d\nCopy=%d\nPromptSave=%d\nOverlay=%d\nShowInk=%d\n"
+    fprintf(f, "Type=%d\nDelay=%d\nHideText=%d\nCopy=%d\nPromptSave=%d\nOverlay=%d\nSelectionInk=%d\n"
                "Ink=%d\nPen=%d\n", st.type, st.delay, st.opt_hide_text, st.opt_copy,
             st.opt_prompt_save, st.opt_overlay, st.opt_show_ink,
             (st.ink_r << 16) | (st.ink_g << 8) | st.ink_b,
@@ -685,16 +685,14 @@ static void draw_arrow(Drawable d, int x, int y, int disabled)
         XFillRectangle(w2k.dpy, d, w2k.gc, x - 2 + i, y + i, (unsigned)(5 - 2 * i), 1);
 }
 
-/* The drop-down arrows: at the right of Mode and Delay, which carry text,
- * and in the middle of the narrow button beside the pen. */
+/* The drop-down arrow in the middle of the narrow button beside the pen
+ * (Mode and Delay get theirs from the toolbar itself). */
 static void paint_arrows(Drawable d)
 {
     for (int i = 0; i < st.tb->n; i++) {
         int id = st.tb->b[i].id;
         int down = (i == st.tb->pressed && i == st.tb->hot);
-        if (id == ID_MODE || id == ID_DELAY)
-            draw_arrow(d, st.tb->b[i].x + st.tb->b[i].w - 9 + down, st.tb->r.y + 11 + down, st.tb->b[i].disabled);
-        else if (id == ID_PENMENU)
+        if (id == ID_PENMENU)
             draw_arrow(d, st.tb->b[i].x + st.tb->b[i].w / 2 + down, st.tb->r.y + 11 + down, st.tb->b[i].disabled);
     }
 }
@@ -1008,8 +1006,10 @@ static void build_toolbar(void)
     st.tb = w2k_toolbar_new(NULL, NULL);
     st.tb->show_text = 1;
     w2k_toolbar_add(st.tb, ID_NEW, ICO_SNIP, "New");
-    w2k_toolbar_add(st.tb, ID_MODE, ICO_NONE, "Mode   ");     /* room for the arrow */
-    w2k_toolbar_add(st.tb, ID_DELAY, ICO_NONE, "Delay   ");
+    w2k_toolbar_add(st.tb, ID_MODE, ICO_NONE, "Mode");
+    w2k_toolbar_drop(st.tb, 1);
+    w2k_toolbar_add(st.tb, ID_DELAY, ICO_NONE, "Delay");
+    w2k_toolbar_drop(st.tb, 1);
     if (!st.editing) {
         w2k_toolbar_add(st.tb, ID_CANCELSNIP, ICO_NONE, "Cancel");
         w2k_toolbar_add(st.tb, ID_OPTIONS, ICO_NONE, "Options");
@@ -1416,6 +1416,7 @@ int main(int argc, char **argv)
     st.win->resized = resized;
     st.win->closing = closing;
     st.mb = w2k_menubar_new(NULL, command);
+    st.mb->win_ref = st.win->win;          /* the drop-downs open under the bar */
     w2k_menubar_add(st.mb, "&File", build_file);
     w2k_menubar_add(st.mb, "&Edit", build_edit);
     w2k_menubar_add(st.mb, "&Tools", build_tools);
@@ -1424,6 +1425,7 @@ int main(int argc, char **argv)
     w2k_scroll_bind(&st.vsb, st.win);
     w2k_scroll_bind(&st.hsb, st.win);
     /* Development aid: W2K_SNIP_DEMO=<picture> opens the editor on it. */
+    if (getenv("W2K_SNIP_OPTIONS")) { open_options(); w2k_fini(); return 0; }
     const char *demo = getenv("W2K_SNIP_DEMO");
     if (demo) {
         st.rgba = w2k_image_load(demo, &st.iw, &st.ih);
