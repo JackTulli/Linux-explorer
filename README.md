@@ -1,4 +1,4 @@
-# Windows 2000 for X11
+# Linux 2000
 
 A window manager and desktop environment that recreates the Windows 2000
 shell on X11: the classic 3D look, the gradient title bars, the taskbar
@@ -22,7 +22,7 @@ That is the whole install. It fetches this repository into
 `/usr/local/src`, installs the X server, sound, VM guest tools and Firefox,
 builds and installs the shell, and sets up the first ordinary user (or
 `W2K_USER=name`). Reboot and the machine comes up in **Log On to Windows**,
-served by `w2kdm`, the shell's own display manager: no LightDM, no GDM. Log
+served by `l2kdm`, the shell's own display manager: no LightDM, no GDM. Log
 on and you are on the desktop above.
 
 If `curl` is missing on a bare Debian: `apt install curl` first. If the
@@ -30,20 +30,20 @@ first run is interrupted, run the same command again; it carries on.
 
 **Updating** is the same command: it pulls the latest source, rebuilds,
 installs over the old copy and restarts a running desktop in place, with
-every window kept. `w2kwm --version` says what is installed.
+every window kept. `l2kwm --version` says what is installed.
 
 **A machine that already has a desktop:**
 
     git clone https://github.com/JackTulli/Linux-explorer
     cd Linux-explorer
     ./install.sh --xinitrc    # packages, build, install, cursors, Chicago95,
-                              # Qt, and w2k-session as your startx session
+                              # Qt, and l2k-session as your startx session
 
-Then `startx /usr/local/bin/w2k-session`, or pick "Windows 2000" in your
+Then `startx /usr/local/bin/l2k-session`, or pick "Windows 2000" in your
 display manager. `./install.sh --help` lists the options: `--tahoma`
 fetches the shell's typeface, `--user-only` touches only your own
 configuration (run it again as another user), `--dry-run` shows what would
-happen. `--full` adds the X server and w2kdm and *disables your current
+happen. `--full` adds the X server and l2kdm and *disables your current
 display manager for the next boot*, so the machine then logs on through
 Log On to Windows; leave it out to keep GDM, LightDM or SDDM and just pick
 the session there.
@@ -60,33 +60,33 @@ libjpeg-dev`; add `libpam0g-dev` for the display manager). Then
 Try it nested first, without logging out of anything:
 
     Xephyr :2 -screen 1024x768 &
-    DISPLAY=:2 ./w2k-session
+    DISPLAY=:2 ./l2k-session
 
 ## What is in the box
 
-    w2kdm          the display manager: Log On to Windows, PAM, the session
-    w2k-session    starts the desktop as an X session
-    w2kwm          window manager, desktop, taskbar, Start menu, dialogs
-    w2kexplorer    Windows Explorer: Folders pane, four views, cut/copy/paste,
+    l2kdm          the display manager: Log On to Windows, PAM, the session
+    l2k-session    starts the desktop as an X session
+    l2kwm          window manager, desktop, taskbar, Start menu, dialogs
+    l2kexplorer    Windows Explorer: Folders pane, four views, cut/copy/paste,
                    undo, drag and drop (XDND, with any other program), Recycle
                    Bin, Add to Archive / Extract with progress, Send To,
                    Open With, Properties, Search, drives in My Computer
-    w2kcontrol     Control Panel, the Windows 2000 folder with its web-view
+    l2kcontrol     Control Panel, the Windows 2000 folder with its web-view
                    pane: Date/Time, Default Programs, Device Manager, Display,
                    Folder Options, Fonts, Keyboard, Mouse, Network and Dial-up
                    Connections, Sounds and Multimedia, System, Task Manager,
                    Taskbar and Start Menu
-    w2knetwork     Network and Dial-up Connections: one icon per adapter, the
+    l2knetwork     Network and Dial-up Connections: one icon per adapter, the
                    Local Area Connection Status dialog (Connection and
                    Activity), and a Wireless Network Connection in the same
                    style with signal strength and a Wireless Networks page
                    (scan, connect, disconnect through NetworkManager)
-    w2kdisplay     Display Properties: wallpaper (centre, tile, stretch, fit,
+    l2kdisplay     Display Properties: wallpaper (centre, tile, stretch, fit,
                    fill, span), appearance schemes, themes, monitors
-    w2kdevmgmt     Device Manager: the machine's hardware from sysfs, drivers,
+    l2kdevmgmt     Device Manager: the machine's hardware from sysfs, drivers,
                    enable/disable, DKMS driver install (contributed)
-    w2knotepad, w2kcalc, w2kcharmap, w2kimage (Imaging), w2ktaskmgr,
-    w2ksnip        Snipping Tool
+    l2knotepad, l2kcalc, l2kcharmap, l2kimage (Imaging), l2ktaskmgr,
+    l2ksnip        Snipping Tool
 
 Three looks, from Display Properties > Appearance: the Windows 2000
 classic scheme (and its colour variants: Brick, Desert, Eggplant and the
@@ -109,7 +109,7 @@ Notifications from every program appear as the yellow balloon over the
 notification area: the desktop provides the `org.freedesktop.Notifications`
 service, so Firefox, mail, `notify-send` and anything using libnotify all
 show the same balloon, one after another, with a close box and a click to
-act on it. `w2knotify "Title" "Text"` sends one from a script without
+act on it. `l2knotify "Title" "Text"` sends one from a script without
 any of that.
 
 Other programs match: GTK 2/3/4 get the Chicago95 theme and icons, Qt gets
@@ -138,7 +138,7 @@ favorites and the Recycle Bin are under `~/.w2k` too.
 
 The icons are the genuine Windows 2000 artwork (see `icons/README.md`),
 baked into the binaries by `tools/genicons.py`; any of them can be replaced
-by dropping `<slug>.ico` into `~/.w2k/icons` (`w2kwm --icons` lists the
+by dropping `<slug>.ico` into `~/.w2k/icons` (`l2kwm --icons` lists the
 slugs). The cursor set in `cursors/` is installed to `~/.w2k/cursors` and
 turned into the `Windows2000` Xcursor theme by `tools/gencursortheme.py`.
 
@@ -151,6 +151,21 @@ turned into the `Windows2000` Xcursor theme by `tools/gencursortheme.py`.
     wm/              the window manager, taskbar, desktop, Start menus, dialogs
     apps/            the applications and the display manager
     skins/           the XP and Windows 7 chrome, cropped from screenshots
-    config/          GTK/Qt settings, the w2kdm service and PAM stacks
+    config/          GTK/Qt settings, the l2kdm service and PAM stacks
     tools/           icon and cursor-theme baking, development helpers
     install.sh       the installer; bootstrap.sh the one-command form
+
+## Trademarks and copyright
+
+Linux 2000 is not affiliated with, endorsed by or sponsored by Microsoft
+Corporation. Windows, Windows 2000, Windows XP and Windows 7 are trademarks
+of Microsoft Corporation, used here only to describe what this desktop
+resembles. The code in this repository is the project's own work. The
+icons, cursors and the pieces of window chrome cut from Windows screenshots
+remain the copyright of their owner; they are included so that the desktop
+looks the way it does, and no ownership of them is claimed. If you are the
+rights holder and want any of it removed, open an issue.
+
+The programs were called `w2k*` up to version 1.6; since 1.7 they are
+`l2k*` (`l2kwm`, `l2kexplorer`, `l2kcontrol`, ...) and the old names are
+installed as links to them, so nothing you saved stops working.

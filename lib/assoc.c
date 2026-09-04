@@ -18,11 +18,11 @@
 
 static const struct { const char *cls; const char *label; const char *def; }
 defaults[] = {
-    { "folder","Folders",         "w2kexplorer" },
-    { "image", "Pictures",        "w2kimage" },
+    { "folder","Folders",         "l2kexplorer" },
+    { "image", "Pictures",        "l2kimage" },
     { "video", "Video",           "vlc" },
     { "audio", "Music",           "vlc" },
-    { "text",  "Text documents",  "w2knotepad" },
+    { "text",  "Text documents",  "l2knotepad" },
     { "web",   "Web pages",       "xdg-open" },
     { "other", "Everything else", "xdg-open" },
 };
@@ -105,7 +105,7 @@ void w2k_assoc_set(const char *cls, const char *cmd)
 
     f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "# Windows 2000 for X11 -- file associations\n"
+    fprintf(f, "# Linux 2000 -- file associations\n"
                "# class=command   (%%s is where the file name goes)\n");
     for (int i = 0; i < NCLASS; i++)
         if (kept[i][0]) fprintf(f, "%s=%s\n", defaults[i].cls, kept[i]);
@@ -182,23 +182,23 @@ int w2k_assoc_apply_folder_default(void)
     if (!home) return 0;
 
     char desktop[300];
-    if (!strcmp(base, "w2kexplorer")) {
+    if (!strcmp(base, "l2kexplorer")) {
         /* Our own: written fresh, pointing at the binary that is running. */
-        char dir[1200], path[1500], exe[1024] = "w2kexplorer";
+        char dir[1200], path[1500], exe[1024] = "l2kexplorer";
         char self[1024];
         ssize_t len = readlink("/proc/self/exe", self, sizeof self - 1);
         if (len > 0) {
             self[len] = 0;
             char *slash = strrchr(self, '/');
-            if (slash) { *slash = 0; snprintf(exe, sizeof exe, "%.900s/w2kexplorer", self); }
+            if (slash) { *slash = 0; snprintf(exe, sizeof exe, "%.900s/l2kexplorer", self); }
         }
-        if (access(exe, X_OK) != 0) snprintf(exe, sizeof exe, "w2kexplorer");
+        if (access(exe, X_OK) != 0) snprintf(exe, sizeof exe, "l2kexplorer");
         snprintf(dir, sizeof dir, "%s/.local/share/applications", home);
         char parent[1200];
         snprintf(parent, sizeof parent, "%s/.local/share", home);
         mkdir(parent, 0755);
         mkdir(dir, 0755);
-        snprintf(path, sizeof path, "%s/w2kexplorer.desktop", dir);
+        snprintf(path, sizeof path, "%s/l2kexplorer.desktop", dir);
         FILE *f = fopen(path, "w");
         if (!f) return 0;
         fprintf(f, "[Desktop Entry]\nType=Application\nName=Windows Explorer\n"
@@ -206,7 +206,7 @@ int w2k_assoc_apply_folder_default(void)
                    "Terminal=false\nCategories=System;FileTools;FileManager;\n"
                    "MimeType=inode/directory;x-directory/normal;\nNoDisplay=false\n", exe);
         fclose(f);
-        snprintf(desktop, sizeof desktop, "w2kexplorer.desktop");
+        snprintf(desktop, sizeof desktop, "l2kexplorer.desktop");
     } else {
         snprintf(desktop, sizeof desktop, "%.200s.desktop", base);
     }

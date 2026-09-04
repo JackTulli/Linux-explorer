@@ -591,10 +591,10 @@ void handle_key(XKeyEvent *e)
         return;
     }
     if ((mod & ControlMask) && (mod & Mod1Mask) && ks == XK_Delete) {
-        wm_spawn("w2ktaskmgr");
+        wm_spawn("l2ktaskmgr");
         return;
     }
-    if ((mod & Mod4Mask) && ks == XK_e) { wm_spawn("w2kexplorer"); return; }
+    if ((mod & Mod4Mask) && ks == XK_e) { wm_spawn("l2kexplorer"); return; }
     if ((mod & Mod4Mask) && ks == XK_r) { wm_run_dialog(); return; }
     if ((mod & Mod4Mask) && ks == XK_d) { show_desktop(); return; }
 }

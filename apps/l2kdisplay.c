@@ -1,4 +1,4 @@
-/* w2kdisplay -- Display Properties: Background, Appearance, Settings.
+/* l2kdisplay -- Display Properties: Background, Appearance, Settings.
  *
  * Appearance edits the shared colour scheme (~/.w2k/scheme) and broadcasts
  * it, so every running w2k program recolours at once. Settings drives
@@ -6,6 +6,7 @@
 #include "w2kui.h"
 #include <dirent.h>
 #include <stdio.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -117,10 +118,18 @@ typedef struct {
     int  primary, connected, enabled;
     char modes[64][16];
     int  nmodes, cur_mode;
+    char rates[64][8][8];           /* per mode, as xrandr lists them */
+    int  nrates[64];
+    int  cur_rate;                  /* index into rates[cur_mode] */
+    int  scale;                     /* per cent, as last applied */
     /* pending edits, applied on OK / Apply */
-    int  mode_sel, want_primary, want_enabled;
+    int  mode_sel, rate_sel, want_primary, want_enabled, want_scale;
     int  px, py;                    /* pending position, dragged by hand */
 } Monitor;
+
+/* The scales offered, per cent. */
+static const int scales[] = { 100, 125, 150, 175, 200 };
+#define NSCALES ((int)(sizeof scales / sizeof *scales))
 
 static Monitor mons[8];
 static int nmons;
@@ -154,9 +163,28 @@ static void read_monitors(void)
             m->cur_mode = -1;
         } else if (m && m->nmodes < 64) {
             char mode[16];
-            if (sscanf(line, " %15s", mode) != 1 || !strchr(mode, 'x')) continue;
-            snprintf(m->modes[m->nmodes], 16, "%s", mode);
-            if (strchr(line, '*')) m->cur_mode = m->nmodes;
+            int used = 0;
+            if (sscanf(line, " %15s%n", mode, &used) != 1 || !strchr(mode, 'x')) continue;
+            int k = m->nmodes;
+            snprintf(m->modes[k], 16, "%s", mode);
+            /* The rates follow: "59.95*+  74.94" -- '*' marks the one in
+             * use, '+' the panel's preferred. */
+            const char *q = line + used;
+            while (*q && m->nrates[k] < 8) {
+                while (*q == ' ' || *q == '\t') q++;
+                if (!*q || *q == '\n') break;
+                char rate[8];
+                int rn = 0;
+                while (*q && (isdigit((unsigned char)*q) || *q == '.') && rn < 7)
+                    rate[rn++] = *q++;
+                rate[rn] = 0;
+                int current = 0;
+                while (*q == '*' || *q == '+') { if (*q == '*') current = 1; q++; }
+                if (!rn) { while (*q && *q != ' ') q++; continue; }
+                snprintf(m->rates[k][m->nrates[k]], 8, "%s", rate);
+                if (current) { m->cur_mode = k; m->cur_rate = m->nrates[k]; }
+                m->nrates[k]++;
+            }
             m->nmodes++;
         }
     }
@@ -177,6 +205,20 @@ static void read_monitors(void)
         /* A connected output with no geometry is switched off. */
         if (!m->w || !m->h) m->enabled = 0;
         m->mode_sel = m->cur_mode < 0 ? 0 : m->cur_mode;
+        m->rate_sel = m->cur_mode < 0 ? 0 : m->cur_rate;
+        /* The scale in force: the mode's size against the area xrandr
+         * reports (a 1920-wide mode shown as 1536 is 125 per cent). */
+        m->scale = 100;
+        if (m->cur_mode >= 0 && m->w > 0) {
+            int mw = 0, mh = 0;
+            sscanf(m->modes[m->cur_mode], "%dx%d", &mw, &mh);
+            if (mw > 0) {
+                int pct = (int)(100.0 * mw / m->w + 0.5);
+                for (int k = 0; k < NSCALES; k++)
+                    if (abs(pct - scales[k]) <= 2) m->scale = scales[k];
+            }
+        }
+        m->want_scale = m->scale;
         m->want_primary = m->primary;
         m->want_enabled = m->enabled;
         m->px = m->x;
@@ -194,8 +236,27 @@ static void pending_size(const Monitor *m, int *w, int *h)
         sscanf(m->modes[m->mode_sel], "%dx%d", &mw, &mh);
     if (mw <= 0 || mh <= 0) { mw = m->w; mh = m->h; }
     if (mw <= 0 || mh <= 0) { mw = 1024; mh = 768; }
-    *w = mw;
-    *h = mh;
+    /* Scaled, the output covers a smaller virtual area. */
+    int sc = m->want_scale > 0 ? m->want_scale : 100;
+    *w = (mw * 100 + sc / 2) / sc;
+    *h = (mh * 100 + sc / 2) / sc;
+}
+
+/* The xrandr words for a monitor's pending rate and scale. */
+static void rate_scale_args(const Monitor *m, char *out, int n)
+{
+    out[0] = 0;
+    if (m->nmodes && m->nrates[m->mode_sel] && m->rate_sel >= 0 &&
+        m->rate_sel < m->nrates[m->mode_sel]) {
+        snprintf(out, (size_t)n, " --rate %s", m->rates[m->mode_sel][m->rate_sel]);
+    }
+    char sc[48];
+    if (m->want_scale && m->want_scale != 100)
+        snprintf(sc, sizeof sc, " --scale %.4fx%.4f", 100.0 / m->want_scale,
+                 100.0 / m->want_scale);
+    else
+        snprintf(sc, sizeof sc, " --scale 1x1");
+    strncat(out, sc, (size_t)n - strlen(out) - 1);
 }
 
 /* xrandr will not take negative positions, so slide the whole arrangement
@@ -263,11 +324,14 @@ static void apply_monitors(void)
             strncat(cmd, part, sizeof cmd - strlen(cmd) - 1);
             continue;
         }
-        snprintf(part, sizeof part, " --output %.63s --mode %.15s --pos %dx%d%s",
-                 m->name, m->nmodes ? m->modes[m->mode_sel] : "auto",
+        char extra[96];
+        rate_scale_args(m, extra, sizeof extra);
+        snprintf(part, sizeof part, " --output %.63s --mode %.15s%s --pos %dx%d%s",
+                 m->name, m->nmodes ? m->modes[m->mode_sel] : "auto", extra,
                  m->px, m->py, m->want_primary ? " --primary" : "");
         strncat(cmd, part, sizeof cmd - strlen(cmd) - 1);
     }
+    if (getenv("W2K_XRANDR_DRY")) { fprintf(stderr, "%s\n", cmd); return; }
     strncat(cmd, " 2>&1", sizeof cmd - strlen(cmd) - 1);
     FILE *p = popen(cmd, "r");
     char out[1024] = "";
@@ -305,7 +369,7 @@ typedef struct {
     int       suppress;                     /* while filling edits */
 
     /* Settings */
-    W2kCombo *mon, *mode;
+    W2kCombo *mon, *mode, *rate, *scale;
     W2kRect   primary_box, enabled_box, layout_box;
     W2kRect   decorate_box;                 /* Appearance page */
     W2kCombo *iconset;                      /* which system's icons */
@@ -632,6 +696,24 @@ static void fill_walls(void)
 }
 
 /* The list of modes belongs to whichever monitor is selected. */
+static void fill_rate_combo(void)
+{
+    w2k_combo_clear(dl.rate);
+    int cur = dl.mon->sel;
+    if (cur < 0 || cur >= nmons) return;
+    Monitor *m = &mons[cur];
+    int k = m->mode_sel;
+    if (k < 0 || k >= m->nmodes) return;
+    for (int i = 0; i < m->nrates[k]; i++) {
+        char t[24];
+        snprintf(t, sizeof t, "%s Hz", m->rates[k][i]);
+        w2k_combo_add(dl.rate, t);
+    }
+    if (!m->nrates[k]) w2k_combo_add(dl.rate, "Default");
+    if (m->rate_sel < 0 || m->rate_sel >= m->nrates[k]) m->rate_sel = 0;
+    dl.rate->sel = m->rate_sel;
+}
+
 static void fill_mode_combo(void)
 {
     w2k_combo_clear(dl.mode);
@@ -640,6 +722,9 @@ static void fill_mode_combo(void)
     for (int k = 0; k < mons[cur].nmodes; k++)
         w2k_combo_add(dl.mode, mons[cur].modes[k]);
     dl.mode->sel = mons[cur].mode_sel;
+    fill_rate_combo();
+    for (int k = 0; k < NSCALES; k++)
+        if (scales[k] == mons[cur].want_scale) dl.scale->sel = k;
 }
 
 /* Rebuilding a combo clears its selection, so the caller's choice has to be
@@ -673,10 +758,41 @@ static void on_mode(void *u, int i)
 {
     (void)u;
     if (dl.mon->sel < 0 || dl.mon->sel >= nmons) return;
-    mons[dl.mon->sel].mode_sel = i;
+    Monitor *m = &mons[dl.mon->sel];
+    m->mode_sel = i;
+    /* Another mode has its own rates: keep the same one if it is
+     * offered, else the first (the highest, as xrandr lists them). */
+    if (m->cur_mode >= 0 && m->cur_rate < m->nrates[m->cur_mode]) {
+        const char *want = m->rates[m->cur_mode][m->cur_rate];
+        m->rate_sel = 0;
+        for (int k = 0; k < m->nrates[i]; k++)
+            if (!strcmp(m->rates[i][k], want)) m->rate_sel = k;
+    } else {
+        m->rate_sel = 0;
+    }
+    fill_rate_combo();
     /* The box in the layout changes size with the mode; keep the screens
      * touching rather than leaving a hole where the old size was. */
     snap_monitor(dl.mon->sel);
+    dl.dirty = 1;
+    w2k_win_dirty(dl.win);
+}
+
+static void on_rate(void *u, int i)
+{
+    (void)u;
+    if (dl.mon->sel < 0 || dl.mon->sel >= nmons) return;
+    mons[dl.mon->sel].rate_sel = i;
+    dl.dirty = 1;
+    w2k_win_dirty(dl.win);
+}
+
+static void on_scale(void *u, int i)
+{
+    (void)u;
+    if (dl.mon->sel < 0 || dl.mon->sel >= nmons || i < 0 || i >= NSCALES) return;
+    mons[dl.mon->sel].want_scale = scales[i];
+    snap_monitor(dl.mon->sel);      /* the virtual size changed with it */
     dl.dirty = 1;
     w2k_win_dirty(dl.win);
 }
@@ -928,6 +1044,10 @@ static void paint(W2kWin *w, Drawable d)
         w2k_combo_draw(d, dl.mon);
         w2k_text_mnemonic(d, F_UI, c.x + 10, dl.mode->r.y + (21 - fh) / 2, "Screen &area:", C_TEXT, 1);
         w2k_combo_draw(d, dl.mode);
+        w2k_text_mnemonic(d, F_UI, c.x + 10, dl.rate->r.y + (21 - fh) / 2, "&Refresh rate:", C_TEXT, 1);
+        w2k_combo_draw(d, dl.rate);
+        w2k_text_mnemonic(d, F_UI, dl.scale->r.x - 44, dl.scale->r.y + (21 - fh) / 2, "S&cale:", C_TEXT, 1);
+        w2k_combo_draw(d, dl.scale);
 
         int cur = dl.mon->sel;
         int valid = cur >= 0 && cur < nmons;
@@ -944,8 +1064,9 @@ static void paint(W2kWin *w, Drawable d)
             char info[160];
             int mw, mh;
             pending_size(&mons[cur], &mw, &mh);
-            snprintf(info, sizeof info, "%s -- %d x %d at %d, %d",
-                     mons[cur].name, mw, mh, mons[cur].px, mons[cur].py);
+            snprintf(info, sizeof info, "%s -- %d x %d at %d, %d%s",
+                     mons[cur].name, mw, mh, mons[cur].px, mons[cur].py,
+                     mons[cur].want_scale > 100 ? " (scaled)" : "");
             w2k_text(d, F_UI, c.x + 10, c.y + c.h - fh - 6, info, C_GRAYTEXT);
         }
         break;
@@ -976,6 +1097,9 @@ static void record_monitors(void)
         c->y = m->py;
         c->primary = m->want_primary;
         c->enabled = m->want_enabled;
+        if (m->nmodes && m->rate_sel >= 0 && m->rate_sel < m->nrates[m->mode_sel])
+            snprintf(c->rate, sizeof c->rate, "%s", m->rates[m->mode_sel][m->rate_sel]);
+        c->scale = m->want_scale;
     }
 }
 
@@ -1033,7 +1157,9 @@ static int event(W2kWin *w, XEvent *e)
                 }
         } else {
             if (w2k_combo_press(dl.mon, &e->xbutton) ||
-                w2k_combo_press(dl.mode, &e->xbutton)) {
+                w2k_combo_press(dl.mode, &e->xbutton) ||
+                w2k_combo_press(dl.rate, &e->xbutton) ||
+                w2k_combo_press(dl.scale, &e->xbutton)) {
                 w2k_win_dirty(w);
                 return 1;
             }
@@ -1171,9 +1297,9 @@ static void on_tab(void *u, int i) { (void)u; (void)i; w2k_win_dirty(dl.win); }
 
 int main(void)
 {
-    if (w2k_init("w2kdisplay") < 0) return 1;
+    if (w2k_init("l2kdisplay") < 0) return 1;
     int W = 420, H = 486;
-    dl.win = w2k_win_new("Display Properties", "w2kdisplay", W, H, 0);
+    dl.win = w2k_win_new("Display Properties", "l2kdisplay", W, H, 0);
     dl.win->paint = paint;
     dl.win->event = event;
 
@@ -1252,10 +1378,20 @@ int main(void)
     dl.drag_mon = -1;
     dl.mon = w2k_combo_new(0);  dl.mon->on_change = on_mon;
     dl.mode = w2k_combo_new(0); dl.mode->on_change = on_mode;
-    dl.mon->r  = (W2kRect){ c.x + 100, c.y + 186, c.w - 110, 21 };
-    dl.mode->r = (W2kRect){ c.x + 100, c.y + 216, c.w - 110, 21 };
-    dl.enabled_box = (W2kRect){ c.x + 10, c.y + 250, c.w - 20, 16 };
-    dl.primary_box = (W2kRect){ c.x + 10, c.y + 272, c.w - 20, 16 };
+    dl.rate = w2k_combo_new(0); dl.rate->on_change = on_rate;
+    dl.scale = w2k_combo_new(0); dl.scale->on_change = on_scale;
+    for (int k = 0; k < NSCALES; k++) {
+        char t[16];
+        snprintf(t, sizeof t, "%d%%", scales[k]);
+        w2k_combo_add(dl.scale, t);
+    }
+    dl.scale->sel = 0;
+    dl.mon->r   = (W2kRect){ c.x + 100, c.y + 186, c.w - 110, 21 };
+    dl.mode->r  = (W2kRect){ c.x + 100, c.y + 216, c.w - 110, 21 };
+    dl.rate->r  = (W2kRect){ c.x + 100, c.y + 246, 110, 21 };
+    dl.scale->r = (W2kRect){ c.x + c.w - 10 - 80, c.y + 246, 80, 21 };
+    dl.enabled_box = (W2kRect){ c.x + 10, c.y + 278, c.w - 20, 16 };
+    dl.primary_box = (W2kRect){ c.x + 10, c.y + 300, c.w - 20, 16 };
     fill_monitor_combos();
 
     w2k_win_center(dl.win, NULL);

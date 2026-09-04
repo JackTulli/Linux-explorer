@@ -52,9 +52,9 @@ static char picked[MAX_ICONS];      /* which icons are selected */
 
 static const struct { const char *label; int icon; const char *cmd; }
 system_icons[] = {
-    { "My Computer",       ICO_MYCOMPUTER, "w2kexplorer /" },
-    { "My Documents",      ICO_MYDOCS,     "w2kexplorer ~" },
-    { "My Network Places", ICO_NETWORK,    "w2kexplorer /net" },
+    { "My Computer",       ICO_MYCOMPUTER, "l2kexplorer /" },
+    { "My Documents",      ICO_MYDOCS,     "l2kexplorer ~" },
+    { "My Network Places", ICO_NETWORK,    "l2kexplorer /net" },
     { "Recycle Bin",       ICO_RECYCLE,    NULL },
 };
 #define N_SYSTEM ((int)(sizeof system_icons / sizeof *system_icons))
@@ -125,7 +125,7 @@ static void layout_save(void)
 
     FILE *f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "# Windows 2000 for X11 -- desktop icon positions\n");
+    fprintf(f, "# Linux 2000 -- desktop icon positions\n");
     for (int i = 0; i < nicons; i++)
         fprintf(f, "%s\t%d %d\n", layout_key(&icons[i]), icons[i].col,
                 icons[i].row);
@@ -218,7 +218,7 @@ void desktop_scan(void)
                 if (isdir) {
                     char q[2200];
                     w2k_shell_quote(full, q, sizeof q);
-                    snprintf(d->cmd, sizeof d->cmd, "w2kexplorer %s", q);
+                    snprintf(d->cmd, sizeof d->cmd, "l2kexplorer %s", q);
                 } else w2k_assoc_command(full, d->cmd, sizeof d->cmd);
                 d->icon = w2k_file_icon_stat(full, de->d_name, isdir);
             }
@@ -581,7 +581,7 @@ static void desktop_open(int i)
     if (icons[i].cmd[0]) { wm_spawn(icons[i].cmd); return; }
     char cmd[2400], q[2200];
     w2k_shell_quote(w2k_trash_files_dir(), q, sizeof q);
-    snprintf(cmd, sizeof cmd, "w2kexplorer %s", q);
+    snprintf(cmd, sizeof cmd, "l2kexplorer %s", q);
     wm_spawn(cmd);
 }
 
@@ -908,10 +908,10 @@ static void context_menu(int x, int y, int over)
         if (over >= 0 && !icons[over].system && icons[over].path[0]) {
             if (w2k_file_properties(NULL, icons[over].path)) desktop_reload();
         } else {
-            wm_spawn("w2kdisplay");
+            wm_spawn("l2kdisplay");
         }
         break;
-    case DM_TASKMGR:   wm_spawn("w2ktaskmgr"); break;
+    case DM_TASKMGR:   wm_spawn("l2ktaskmgr"); break;
     case DM_OPEN:
     case DM_EXPLORE:   if (over >= 0) desktop_open(over); break;
     case DM_EMPTYBIN:  empty_recycle_bin(); break;

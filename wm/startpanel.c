@@ -143,12 +143,12 @@ static void build_rows(void)
              pin_icon(&pins[i]), 1);
 
     static const struct { const char *label, *cmd; int id, icon; } own[] = {
-        { "Windows Explorer", "w2kexplorer", SM_EXPLORER, ICO_EXPLORER },
-        { "Notepad",          "w2knotepad",  SM_NOTEPAD,  ICO_NOTEPAD  },
-        { "Calculator",       "w2kcalc",     SM_CALC,     ICO_CALC     },
-        { "Task Manager",     "w2ktaskmgr",  SM_TASKMGR,  ICO_TASKMGR  },
+        { "Windows Explorer", "l2kexplorer", SM_EXPLORER, ICO_EXPLORER },
+        { "Notepad",          "l2knotepad",  SM_NOTEPAD,  ICO_NOTEPAD  },
+        { "Calculator",       "l2kcalc",     SM_CALC,     ICO_CALC     },
+        { "Task Manager",     "l2ktaskmgr",  SM_TASKMGR,  ICO_TASKMGR  },
         { "Command Prompt",   NULL,          SM_TERMINAL, ICO_TERMINAL },
-        { "Snipping Tool",    "w2ksnip",     SM_SNIP,     ICO_SNIP     },
+        { "Snipping Tool",    "l2ksnip",     SM_SNIP,     ICO_SNIP     },
     };
     if (npins) push(left_rows, &nleft, R_SEP, 0, NULL, ICO_NONE, 0);
     for (int i = 0; i < (int)(sizeof own / sizeof *own); i++)

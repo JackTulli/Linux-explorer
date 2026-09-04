@@ -192,14 +192,14 @@ static int on_context(int id, int x, int y)
     /* The shell's own accessories can be pinned too. */
     const char *own = NULL, *own_label = NULL;
     switch (id) {
-    case SM_EXPLORER: own = "w2kexplorer"; own_label = "Windows Explorer"; break;
-    case SM_NOTEPAD:  own = "w2knotepad";  own_label = "Notepad"; break;
-    case SM_TASKMGR:  own = "w2ktaskmgr";  own_label = "Task Manager"; break;
-    case SM_CALC:     own = "w2kcalc";     own_label = "Calculator"; break;
-    case SM_CHARMAP:  own = "w2kcharmap";  own_label = "Character Map"; break;
-    case SM_DEVMGMT:  own = "w2kdevmgmt";  own_label = "Device Manager"; break;
-    case SM_IMAGING:  own = "w2kimage";    own_label = "Imaging"; break;
-    case SM_CONTROLPANEL: own = "w2kcontrol"; own_label = "Control Panel"; break;
+    case SM_EXPLORER: own = "l2kexplorer"; own_label = "Windows Explorer"; break;
+    case SM_NOTEPAD:  own = "l2knotepad";  own_label = "Notepad"; break;
+    case SM_TASKMGR:  own = "l2ktaskmgr";  own_label = "Task Manager"; break;
+    case SM_CALC:     own = "l2kcalc";     own_label = "Calculator"; break;
+    case SM_CHARMAP:  own = "l2kcharmap";  own_label = "Character Map"; break;
+    case SM_DEVMGMT:  own = "l2kdevmgmt";  own_label = "Device Manager"; break;
+    case SM_IMAGING:  own = "l2kimage";    own_label = "Imaging"; break;
+    case SM_CONTROLPANEL: own = "l2kcontrol"; own_label = "Control Panel"; break;
     }
     if (own) return program_ctx(own, own_label, NULL, x, y);
 
@@ -238,17 +238,17 @@ void startmenu_open(void)
     /* Accessories, with the System Tools group Windows 2000 keeps inside
      * it -- Character Map lives there, not at the top level. */
     W2kMenu *systools = w2k_menu_new();
-    prog_item(systools, SM_CHARMAP, "&Character Map", "w2kcharmap", ICO_CHARMAP);
-    prog_item(systools, SM_DEVMGMT, "&Device Manager", "w2kdevmgmt", ICO_MYCOMPUTER);
+    prog_item(systools, SM_CHARMAP, "&Character Map", "l2kcharmap", ICO_CHARMAP);
+    prog_item(systools, SM_DEVMGMT, "&Device Manager", "l2kdevmgmt", ICO_MYCOMPUTER);
 
     W2kMenu *acc = w2k_menu_new();
     w2k_menu_sub(acc, "S&ystem Tools", ICO_ACCESSORIES, systools);
     w2k_menu_sep(acc);
-    prog_item(acc, SM_CALC,     "&Calculator", "w2kcalc", ICO_CALC);
-    prog_item(acc, SM_NOTEPAD,  "&Notepad",    "w2knotepad", ICO_NOTEPAD);
+    prog_item(acc, SM_CALC,     "&Calculator", "l2kcalc", ICO_CALC);
+    prog_item(acc, SM_NOTEPAD,  "&Notepad",    "l2knotepad", ICO_NOTEPAD);
     prog_item(acc, SM_PAINT,    "&Paint",      "w2kpaint", ICO_PAINT);
-    prog_item(acc, SM_SNIP,     "&Snipping Tool", "w2ksnip", ICO_SNIP);
-    prog_item(acc, SM_IMAGING,  "&Imaging",    "w2kimage", ICO_PAINT);
+    prog_item(acc, SM_SNIP,     "&Snipping Tool", "l2ksnip", ICO_SNIP);
+    prog_item(acc, SM_IMAGING,  "&Imaging",    "l2kimage", ICO_PAINT);
     w2k_menu_item(acc, SM_TERMINAL, "Command &Prompt", NULL, ICO_TERMINAL);
     if (!terminal_cmd()) w2k_menu_disable(acc);
 
@@ -256,8 +256,8 @@ void startmenu_open(void)
      * application grouped by category, then Flatpak. */
     W2kMenu *progs = w2k_menu_new();
     w2k_menu_sub(progs, "&Accessories", ICO_ACCESSORIES, acc);
-    prog_item(progs, SM_EXPLORER, "&Windows Explorer", "w2kexplorer", ICO_EXPLORER);
-    prog_item(progs, SM_TASKMGR,  "&Task Manager", "w2ktaskmgr", ICO_TASKMGR);
+    prog_item(progs, SM_EXPLORER, "&Windows Explorer", "l2kexplorer", ICO_EXPLORER);
+    prog_item(progs, SM_TASKMGR,  "&Task Manager", "l2ktaskmgr", ICO_TASKMGR);
     w2k_menu_sep(progs);
     /* The user's own Start Menu tree comes first -- it is the part they
      * can rearrange -- then everything the system has installed. */
@@ -372,32 +372,32 @@ void startmenu_dispatch(int id)
     }
     if (programs_run(id, terminal_cmd())) return;
     switch (id) {
-    case SM_EXPLORER:     wm_spawn("w2kexplorer"); break;
-    case SM_NOTEPAD:      wm_spawn("w2knotepad"); break;
-    case SM_TASKMGR:      wm_spawn("w2ktaskmgr"); break;
-    case SM_CALC:         wm_spawn("w2kcalc"); break;
-    case SM_CHARMAP:      wm_spawn("w2kcharmap"); break;
-    case SM_DEVMGMT:      wm_spawn("w2kdevmgmt"); break;
-    case SM_FOLDEROPTS:   wm_spawn("w2kcontrol folders"); break;
+    case SM_EXPLORER:     wm_spawn("l2kexplorer"); break;
+    case SM_NOTEPAD:      wm_spawn("l2knotepad"); break;
+    case SM_TASKMGR:      wm_spawn("l2ktaskmgr"); break;
+    case SM_CALC:         wm_spawn("l2kcalc"); break;
+    case SM_CHARMAP:      wm_spawn("l2kcharmap"); break;
+    case SM_DEVMGMT:      wm_spawn("l2kdevmgmt"); break;
+    case SM_FOLDEROPTS:   wm_spawn("l2kcontrol folders"); break;
     case SM_PAINT:        wm_spawn("w2kpaint"); break;
-    case SM_SNIP:         wm_spawn("w2ksnip"); break;
+    case SM_SNIP:         wm_spawn("l2ksnip"); break;
     case SM_TERMINAL:     wm_spawn(terminal_cmd()); break;
-    case SM_MYDOCS:       wm_spawn("w2kexplorer ~"); break;
-    case SM_MYCOMPUTER:   wm_spawn("w2kexplorer /"); break;
-    case SM_CONTROLPANEL: wm_spawn("w2kcontrol"); break;
-    case SM_NETWORK:      wm_spawn("w2knetwork"); break;
-    case SM_DEFAULTS:     wm_spawn("w2kcontrol defaults"); break;
+    case SM_MYDOCS:       wm_spawn("l2kexplorer ~"); break;
+    case SM_MYCOMPUTER:   wm_spawn("l2kexplorer /"); break;
+    case SM_CONTROLPANEL: wm_spawn("l2kcontrol"); break;
+    case SM_NETWORK:      wm_spawn("l2knetwork"); break;
+    case SM_DEFAULTS:     wm_spawn("l2kcontrol defaults"); break;
     case SM_TASKBARPROPS: wm_startmenu_dialog(); break;
-    case SM_IMAGING:      wm_spawn("w2kimage"); break;
-    case SM_SEARCH:       wm_spawn("w2kexplorer ~"); break;
+    case SM_IMAGING:      wm_spawn("l2kimage"); break;
+    case SM_SEARCH:       wm_spawn("l2kexplorer ~"); break;
     case SM_HELP:         wm_help_dialog(); break;
-    case SM_DISPLAY:      wm_spawn("w2kdisplay"); break;
+    case SM_DISPLAY:      wm_spawn("l2kdisplay"); break;
     case SM_RUN:          wm_run_dialog(); break;
     case SM_LOGOFF:       wm_logoff_dialog(); break;
     case SM_SHUTDOWN:     wm_shutdown_dialog(); break;
     case SM_CLEARDOCS:    recent_clear(); break;
-    case SM_MYPICS:       wm_spawn("w2kexplorer ~/Pictures"); break;
-    case SM_MYMUSIC:      wm_spawn("w2kexplorer ~/Music"); break;
+    case SM_MYPICS:       wm_spawn("l2kexplorer ~/Pictures"); break;
+    case SM_MYMUSIC:      wm_spawn("l2kexplorer ~/Music"); break;
     }
 }
 

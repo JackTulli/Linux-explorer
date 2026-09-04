@@ -142,6 +142,8 @@ typedef struct {
     char mode[16];      /* "1920x1080", or "" for the output's preferred mode */
     int  x, y;
     int  primary, enabled;
+    char rate[16];      /* "59.95", or "" for the mode's default */
+    int  scale;         /* per cent: 125 draws everything a quarter larger; 0 = 100 */
 } W2kMonitorCfg;
 extern W2kMonitorCfg w2k_monitor_cfg[8];
 extern int           w2k_monitor_cfg_n;

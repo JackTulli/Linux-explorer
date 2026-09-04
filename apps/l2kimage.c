@@ -1,4 +1,4 @@
-/* w2kimage.c -- Imaging: a picture viewer.
+/* l2kimage.c -- Imaging: a picture viewer.
  *
  * Opens PNG, JPEG and BMP, fits the picture to the window (or shows it at
  * its own size), and steps through the rest of the folder with the arrow
@@ -342,8 +342,8 @@ static void command(void *u, int id)
         break;
     case ID_ABOUT:
         w2k_msgbox(im.win, "About Imaging",
-                   "Imaging\nWindows 2000 for X11\n\n"
-                   "Opens PNG, JPEG and BMP pictures.",
+                   "Imaging\nLinux 2000\n\n"
+                   "Opens PNG, JPEG and BMP pictures.\n\nLinux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
                    MB_OK | MB_ICONINFO);
         break;
     }
@@ -388,13 +388,13 @@ static void resized(W2kWin *w)
 
 int main(int argc, char **argv)
 {
-    if (w2k_init("w2kimage") < 0) return 1;
+    if (w2k_init("l2kimage") < 0) return 1;
 
     im.fit = 1;
     im.zoom = 1.0;
     snprintf(im.dir, sizeof im.dir, "%s", getenv("HOME") ? getenv("HOME") : ".");
 
-    im.win = w2k_win_new("Imaging", "w2kimage", 640, 480, 1);
+    im.win = w2k_win_new("Imaging", "l2kimage", 640, 480, 1);
     im.win->paint = paint;
     im.win->event = event;
     im.win->resized = resized;

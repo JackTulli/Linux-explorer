@@ -1,5 +1,5 @@
 #%PAM-1.0
-# w2kdm -- the Windows 2000 logon screen (Debian/Ubuntu stacks)
+# l2kdm -- the Windows 2000 logon screen (Debian/Ubuntu stacks)
 auth      requisite  pam_nologin.so
 auth      required   pam_env.so readenv=1 user_readenv=0
 auth      required   pam_env.so readenv=1 envfile=/etc/default/locale user_readenv=0

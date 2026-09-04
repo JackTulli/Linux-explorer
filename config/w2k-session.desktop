@@ -1,7 +1,0 @@
-[Desktop Entry]
-Name=Windows 2000
-Comment=The Windows 2000 desktop for X11
-Exec=w2k-session
-TryExec=w2k-session
-Type=Application
-DesktopNames=W2K

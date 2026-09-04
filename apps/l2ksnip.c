@@ -1,4 +1,4 @@
-/* w2ksnip.c -- Snipping Tool.
+/* l2ksnip.c -- Snipping Tool.
  *
  * The Windows accessory as it stood by Windows 10: a small window with
  * New, Mode, Delay, Cancel and Options; a dimmed screen to drag a snip out
@@ -953,7 +953,7 @@ static void open_options(void)
     o.chk[3] = (OptChk){ "&Prompt to save snips before exiting", &prompt, 0, { 28, 98, 340, 18 } };
     o.chk[4] = (OptChk){ "&Show screen overlay when Snipping Tool is active", &overlay, 0, { 28, 184, 340, 18 } };
     o.chk[5] = (OptChk){ "Show selection &ink after snips are captured", &ink, 0, { 28, 206, 340, 18 } };
-    W2kWin *w = w2k_win_new("Snipping Tool Options", "w2ksnip", 380, 270, 0);
+    W2kWin *w = w2k_win_new("Snipping Tool Options", "l2ksnip", 380, 270, 0);
     o.ink = w2k_combo_new(0);
     w2k_combo_add(o.ink, "Red");
     w2k_combo_add(o.ink, "Blue");
@@ -1170,7 +1170,7 @@ static void capture_now(void)
     hide_tool();
     int ok = take_snip();
     /* Development aid: W2K_SNIP_DEBUG reports what was taken. */
-    if (ok && getenv("W2K_SNIP_DEBUG")) fprintf(stderr, "w2ksnip: snip %dx%d\n", st.iw, st.ih);
+    if (ok && getenv("W2K_SNIP_DEBUG")) fprintf(stderr, "l2ksnip: snip %dx%d\n", st.iw, st.ih);
     show_tool();
     if (!ok) { w2k_win_dirty(st.win); return; }
     strokes_free();
@@ -1406,11 +1406,11 @@ static int closing(W2kWin *w)
 
 int main(int argc, char **argv)
 {
-    if (w2k_init("w2ksnip") < 0) return 1;
+    if (w2k_init("l2ksnip") < 0) return 1;
     options_load();
     snprintf(st.last_dir, sizeof st.last_dir, "%s", getenv("HOME") ? getenv("HOME") : ".");
 
-    st.win = w2k_win_new("Snipping Tool", "w2ksnip", STRIP_W, STRIP_H, 0);
+    st.win = w2k_win_new("Snipping Tool", "l2ksnip", STRIP_W, STRIP_H, 0);
     st.win->paint = paint;
     st.win->event = event;
     st.win->resized = resized;
@@ -1436,7 +1436,7 @@ int main(int argc, char **argv)
         }
     }
     w2k_win_center(st.win, NULL);
-    /* "w2ksnip new" starts straight into a snip, as a shortcut may want:
+    /* "l2ksnip new" starts straight into a snip, as a shortcut may want:
      * the strip is not shown first, so it cannot be in the picture. */
     if (argc > 1 && !strcmp(argv[1], "new")) request_snip();
     if (!st.shown) { w2k_win_show(st.win); st.shown = 1; }

@@ -22,8 +22,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-#define MARK_BEGIN "# --- Windows 2000 for X11 colours (managed; edit ~/.w2k/scheme) ---\n"
-#define MARK_END   "# --- end of Windows 2000 for X11 colours ---\n"
+#define MARK_BEGIN "# --- Linux 2000 colours (managed; edit ~/.w2k/scheme) ---\n"
+#define MARK_END   "# --- end of Linux 2000 colours ---\n"
 
 static void hex(int c, char *out)
 {
@@ -111,7 +111,7 @@ static void gtk_css(const char *dir, int adwaita)
     hex(C_HIGHLIGHTTEXT, seltext); hex(C_TOOLTIP, tip); hex(C_TOOLTIPTEXT, tiptext);
     hex(C_SCROLLBAR, scroll); hex(C_WINDOWFRAME, frame);
     fprintf(f,
-        "/* Written by Windows 2000 for X11 from ~/.w2k/scheme -- do not edit;\n"
+        "/* Written by Linux 2000 from ~/.w2k/scheme -- do not edit;\n"
         " * change the colours in Display Properties > Appearance. These are the\n"
         " * names Chicago95's gtk.css draws with. */\n"
         "@define-color bg_color %s;\n"
@@ -242,7 +242,7 @@ static void gtk_css(const char *dir, int adwaita)
         FILE *g = fopen(path, "a");
         if (g) {
             if (css && css[0] && css[strlen(css) - 1] != '\n') fputc('\n', g);
-            fputs("/* Windows 2000 for X11: the desktop's colours, kept in "
+            fputs("/* Linux 2000: the desktop's colours, kept in "
                   "w2k-colors.css. */\n@import url(\"w2k-colors.css\");\n", g);
             fclose(g);
         }

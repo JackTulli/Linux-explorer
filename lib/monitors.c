@@ -202,19 +202,33 @@ int w2k_monitors_apply_saved(void)
         for (int k = 0; k < nconn; k++)
             if (!strcmp(connected[k], c->name)) present = 1;
         if (!present) continue;
-        char part[256];
+        char part[320], extra[96] = "";
+        /* The rate goes with an explicit mode; the scale is xrandr's
+         * transform, 125 per cent being a 0.8 scale (a smaller virtual
+         * screen stretched over the panel). 100 resets an earlier one. */
+        if (c->rate[0] && c->mode[0])
+            snprintf(extra, sizeof extra, " --rate %s", c->rate);
+        if (c->scale && c->scale != 100) {
+            char sc[40];
+            snprintf(sc, sizeof sc, " --scale %.4fx%.4f", 100.0 / c->scale, 100.0 / c->scale);
+            strncat(extra, sc, sizeof extra - strlen(extra) - 1);
+        } else {
+            strncat(extra, " --scale 1x1", sizeof extra - strlen(extra) - 1);
+        }
         if (!c->enabled)
             snprintf(part, sizeof part, " --output %s --off", c->name);
         else if (c->mode[0])
-            snprintf(part, sizeof part, " --output %s --mode %s --pos %dx%d%s",
-                     c->name, c->mode, c->x, c->y, c->primary ? " --primary" : "");
+            snprintf(part, sizeof part, " --output %s --mode %s%s --pos %dx%d%s",
+                     c->name, c->mode, extra, c->x, c->y, c->primary ? " --primary" : "");
         else
-            snprintf(part, sizeof part, " --output %s --auto --pos %dx%d%s",
-                     c->name, c->x, c->y, c->primary ? " --primary" : "");
+            snprintf(part, sizeof part, " --output %s --auto%s --pos %dx%d%s",
+                     c->name, extra, c->x, c->y, c->primary ? " --primary" : "");
         strncat(cmd, part, sizeof cmd - strlen(cmd) - 1);
         n++;
     }
     if (!n) return 0;
+    /* Development aid: W2K_XRANDR_DRY=1 prints the command instead. */
+    if (getenv("W2K_XRANDR_DRY")) { fprintf(stderr, "%s\n", cmd); return 1; }
     strncat(cmd, " >/dev/null 2>&1", sizeof cmd - strlen(cmd) - 1);
     return system(cmd) == 0;
 }

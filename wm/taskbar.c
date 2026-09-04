@@ -1098,7 +1098,7 @@ static void taskbar_context_menu(int x, int y)
     int id = w2k_menu_popup(m, x, y, MPOP_BOTTOMUP);
     w2k_menu_free(m);
 
-    if (id == TB_TASKMGR)    wm_spawn("w2ktaskmgr");
+    if (id == TB_TASKMGR)    wm_spawn("l2ktaskmgr");
     else if (id == TB_PROPS) wm_startmenu_dialog();
     else if (id >= TB_EDGE_BOTTOM && id <= TB_EDGE_RIGHT) {
         w2k_taskbar_edge = id - TB_EDGE_BOTTOM;
@@ -1322,7 +1322,7 @@ int taskbar_event(XEvent *e)
         static long last_clock_click;
         long now = w2k_now_ms();
         if (last_clock_click && now - last_clock_click < w2k_dblclk_ms) {
-            wm_spawn("w2kcontrol datetime");
+            wm_spawn("l2kcontrol datetime");
             last_clock_click = 0;
         } else last_clock_click = now;
         return 1;

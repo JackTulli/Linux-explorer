@@ -1,12 +1,12 @@
 [Unit]
-Description=Windows 2000 desktop: logon screen and session (w2kdm)
+Description=Linux 2000 (a Windows 2000-like desktop): logon screen and session (l2kdm)
 Documentation=https://github.com/JackTulli/Linux-explorer
 After=systemd-user-sessions.service plymouth-quit-wait.service getty-pre.target
 Conflicts=getty@tty7.service
 Wants=systemd-user-sessions.service
 
 [Service]
-ExecStart=/usr/local/bin/w2kdm
+ExecStart=/usr/local/bin/l2kdm
 Environment=XCURSOR_THEME=Windows2000 XCURSOR_SIZE=32
 Restart=always
 RestartSec=2

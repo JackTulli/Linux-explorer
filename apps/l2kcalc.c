@@ -1,4 +1,4 @@
-/* w2kcalc.c -- Calculator, Standard and Scientific.
+/* l2kcalc.c -- Calculator, Standard and Scientific.
  *
  * The Windows calculator is a state machine with a display: a pending
  * operand, a pending operator, and a flag saying whether the next digit
@@ -331,7 +331,7 @@ static void command(void *u, int id)
     case ID_SCIENTIFIC: cal.scientific = 1; resize_window(); break;
     case ID_ABOUT:
         w2k_msgbox(cal.win, "About Calculator",
-                   "Calculator\nWindows 2000 for X11", MB_OK | MB_ICONINFO);
+                   "Calculator\nLinux 2000\n\nLinux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.", MB_OK | MB_ICONINFO);
         break;
     case ID_EXIT: w2k_win_close(cal.win, 0); break;
     }
@@ -394,13 +394,13 @@ static int event(W2kWin *w, XEvent *e)
 
 int main(void)
 {
-    if (w2k_init("w2kcalc") < 0) return 1;
+    if (w2k_init("l2kcalc") < 0) return 1;
 
     snprintf(cal.display, sizeof cal.display, "0");
     cal.fresh = 1;
     cal.down = -1;
 
-    cal.win = w2k_win_new("Calculator", "w2kcalc", 260, 220, 0);
+    cal.win = w2k_win_new("Calculator", "l2kcalc", 260, 220, 0);
     cal.win->paint = paint;
     cal.win->event = event;
 

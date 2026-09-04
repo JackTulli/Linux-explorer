@@ -124,7 +124,7 @@ static DBusHandlerResult on_message(DBusConnection *c, DBusMessage *msg, void *u
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     if (dbus_message_is_method_call(msg, NOTIFY_IFACE, "GetServerInformation")) {
-        const char *name = "w2kwm", *vendor = "Linux-explorer", *ver = W2K_VERSION, *spec = "1.2";
+        const char *name = "l2kwm", *vendor = "Linux-explorer", *ver = W2K_VERSION, *spec = "1.2";
         DBusMessage *r = dbus_message_new_method_return(msg);
         dbus_message_append_args(r, DBUS_TYPE_STRING, &name, DBUS_TYPE_STRING, &vendor,
                                  DBUS_TYPE_STRING, &ver, DBUS_TYPE_STRING, &spec, DBUS_TYPE_INVALID);
@@ -226,7 +226,7 @@ int notifyd_init(void)
     dbus_error_init(&err);
     conn = dbus_bus_get_private(DBUS_BUS_SESSION, &err);
     if (!conn) {
-        fprintf(stderr, "w2kwm: notifications: no session bus (%s)\n",
+        fprintf(stderr, "l2kwm: notifications: no session bus (%s)\n",
                 dbus_error_is_set(&err) ? err.message : "unknown");
         dbus_error_free(&err);
         return -1;
@@ -243,7 +243,7 @@ int notifyd_init(void)
         dbus_error_free(&err);
         pid_t owner_pid = owner_process(NOTIFY_IFACE);
         if (owner_pid > 0 && owner_pid != getpid()) {
-            fprintf(stderr, "w2kwm: notifications: stopping the daemon holding %s (pid %ld)\n",
+            fprintf(stderr, "l2kwm: notifications: stopping the daemon holding %s (pid %ld)\n",
                     NOTIFY_IFACE, (long)owner_pid);
             kill(owner_pid, SIGTERM);
             for (int i = 0; i < 20 && kill(owner_pid, 0) == 0; i++) usleep(50 * 1000);
@@ -254,7 +254,7 @@ int notifyd_init(void)
         }
     }
     if (rc != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
-        fprintf(stderr, "w2kwm: notifications: another service holds %s (%s)\n",
+        fprintf(stderr, "l2kwm: notifications: another service holds %s (%s)\n",
                 NOTIFY_IFACE, dbus_error_is_set(&err) ? err.message : "not replaceable");
         dbus_error_free(&err);
         dbus_connection_close(conn);
@@ -265,7 +265,7 @@ int notifyd_init(void)
     dbus_connection_register_object_path(conn, NOTIFY_PATH, &vtable, NULL);
     if (!dbus_connection_get_unix_fd(conn, &fd)) fd = -1;
     if (getenv("W2K_DEBUG") || !getenv("W2K_QUIET"))
-        fprintf(stderr, "w2kwm: notifications: serving %s\n", NOTIFY_IFACE);
+        fprintf(stderr, "l2kwm: notifications: serving %s\n", NOTIFY_IFACE);
     return 0;
 }
 

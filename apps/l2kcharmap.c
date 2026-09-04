@@ -1,4 +1,4 @@
-/* w2kcharmap.c -- Character Map.
+/* l2kcharmap.c -- Character Map.
  *
  * A grid of every character in a font, a box of the ones you have picked,
  * and a Copy button. The grid is the interesting part: characters are
@@ -357,13 +357,13 @@ static void resized(W2kWin *w)
 
 int main(void)
 {
-    if (w2k_init("w2kcharmap") < 0) return 1;
+    if (w2k_init("l2kcharmap") < 0) return 1;
     FcInit();
 
     snprintf(cm.family, sizeof cm.family, "Tahoma");
     cm.sel = -1;
 
-    cm.win = w2k_win_new("Character Map", "w2kcharmap",
+    cm.win = w2k_win_new("Character Map", "l2kcharmap",
                          COLS * CELL + 24 + SCROLL_W, 420, 1);
     cm.win->paint = paint;
     cm.win->event = event;

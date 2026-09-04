@@ -153,16 +153,16 @@ static int pin_icon_resolve(const Pin *p)
         int id = w2k_icon_by_name(dicon);
         if (id != ICO_APP) return id;
     }
-    if (strstr(p->cmd, "w2kexplorer")) return ICO_EXPLORER;
-    if (strstr(p->cmd, "w2knotepad"))  return ICO_NOTEPAD;
-    if (strstr(p->cmd, "w2ktaskmgr"))  return ICO_TASKMGR;
-    if (strstr(p->cmd, "w2ksnip"))    return ICO_SNIP;
-    if (strstr(p->cmd, "w2kcalc"))     return ICO_CALC;
-    if (strstr(p->cmd, "w2kcharmap"))  return ICO_CHARMAP;
-    if (strstr(p->cmd, "w2kdevmgmt"))  return ICO_MYCOMPUTER;
-    if (strstr(p->cmd, "w2kcontrol"))  return ICO_CONTROLPANEL;
-    if (strstr(p->cmd, "w2kdisplay"))  return ICO_SETTINGS;
-    if (strstr(p->cmd, "w2kimage"))    return ICO_PAINT;
+    if (strstr(p->cmd, "l2kexplorer")) return ICO_EXPLORER;
+    if (strstr(p->cmd, "l2knotepad"))  return ICO_NOTEPAD;
+    if (strstr(p->cmd, "l2ktaskmgr"))  return ICO_TASKMGR;
+    if (strstr(p->cmd, "l2ksnip"))    return ICO_SNIP;
+    if (strstr(p->cmd, "l2kcalc"))     return ICO_CALC;
+    if (strstr(p->cmd, "l2kcharmap"))  return ICO_CHARMAP;
+    if (strstr(p->cmd, "l2kdevmgmt"))  return ICO_MYCOMPUTER;
+    if (strstr(p->cmd, "l2kcontrol"))  return ICO_CONTROLPANEL;
+    if (strstr(p->cmd, "l2kdisplay"))  return ICO_SETTINGS;
+    if (strstr(p->cmd, "l2kimage"))    return ICO_PAINT;
     if (strstr(p->cmd, "term"))        return ICO_TERMINAL;
     return ICO_APP;
 }

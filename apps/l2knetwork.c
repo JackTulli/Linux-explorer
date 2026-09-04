@@ -1,4 +1,4 @@
-/* w2knetwork.c -- Network and Dial-up Connections.
+/* l2knetwork.c -- Network and Dial-up Connections.
  *
  * The Windows 2000 folder: Make New Connection and one icon per adapter,
  * the web-view pane describing the selected one (type, status, the
@@ -809,7 +809,7 @@ static void open_status(Conn *c)
     int cw = 334, chh = c->wireless ? 356 : 316;
     char title[120];
     snprintf(title, sizeof title, "%s Status", c->label);
-    W2kWin *w = w2k_win_new(title, "w2knetwork", cw, chh, 0);
+    W2kWin *w = w2k_win_new(title, "l2knetwork", cw, chh, 0);
 
     sd.tabs = w2k_tabs_new(&sd, status_on_tab);
     w2k_tabs_add(sd.tabs, "General");
@@ -993,16 +993,16 @@ static void resized(W2kWin *w)
 
 int main(int argc, char **argv)
 {
-    if (w2k_init("w2knetwork") < 0) return 1;
+    if (w2k_init("l2knetwork") < 0) return 1;
     nw.have_nmcli = in_path("nmcli");
     scan_adapters();
 
-    /* "w2knetwork status eth0" opens that adapter's Status dialog. */
+    /* "l2knetwork status eth0" opens that adapter's Status dialog. */
     if (argc > 2 && !strcmp(argv[1], "status")) {
         for (int i = 0; i < nw.nconn; i++)
             if (!strcmp(nw.conn[i].ifname, argv[2])) {
                 nw.fw = w2k_folderwin_new("Network and Dial-up Connections",
-                                          "w2knetwork", ICO_CP_NETWORK, 870, 682,
+                                          "l2knetwork", ICO_CP_NETWORK, 870, 682,
                                           NULL, command);
                 nw.win = nw.fw->win;
                 open_status(&nw.conn[i]);
@@ -1011,7 +1011,7 @@ int main(int argc, char **argv)
             }
     }
 
-    nw.fw = w2k_folderwin_new("Network and Dial-up Connections", "w2knetwork",
+    nw.fw = w2k_folderwin_new("Network and Dial-up Connections", "l2knetwork",
                               ICO_CP_NETWORK, 870, 682, NULL, command);
     nw.win = nw.fw->win;
     nw.win->paint = paint;

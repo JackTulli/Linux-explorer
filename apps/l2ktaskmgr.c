@@ -1,4 +1,4 @@
-/* w2ktaskmgr -- Windows Task Manager.
+/* l2ktaskmgr -- Windows Task Manager.
  *
  * Applications / Processes / Performance, refreshed once a second.
  * Applications come from the window manager's _NET_CLIENT_LIST; processes
@@ -876,9 +876,9 @@ static void command(void *user, int id)
     case ID_CPU_PER_CORE: tm.per_core = 1; break;
     case ID_ABOUT:
         w2k_msgbox(tm.win, "About Task Manager",
-                   "Windows Task Manager\nWindows 2000 for X11\n\n"
+                   "Windows Task Manager\nLinux 2000\n\n"
                    "Applications from the window manager, processes and\n"
-                   "performance figures from /proc.",
+                   "performance figures from /proc.\n\nLinux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
                    MB_OK | MB_ICONINFO);
         break;
     }
@@ -1100,7 +1100,7 @@ static int event(W2kWin *w, XEvent *e)
 
 int main(void)
 {
-    if (w2k_init("w2ktaskmgr") < 0) return 1;
+    if (w2k_init("l2ktaskmgr") < 0) return 1;
 
     g_bright = w2k_rgb(0, 255, 0);
     g_dim    = w2k_rgb(0, 130, 0);
@@ -1108,7 +1108,7 @@ int main(void)
     tm.interval_ms = 1000;
     tm.per_core = 1;
 
-    tm.win = w2k_win_new("Windows Task Manager", "w2ktaskmgr", 520, 520, 1);
+    tm.win = w2k_win_new("Windows Task Manager", "l2ktaskmgr", 520, 520, 1);
     tm.win->paint = paint;
     tm.win->event = event;
     tm.win->resized = layout;

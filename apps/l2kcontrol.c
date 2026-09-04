@@ -1,4 +1,4 @@
-/* w2kcontrol.c -- Control Panel.
+/* l2kcontrol.c -- Control Panel.
  *
  * A folder of applets, opened by double-clicking, plus the one applet that
  * lives here rather than in its own program: Default Programs, which sets
@@ -38,9 +38,9 @@ static const Applet applets[] = {
     { "Default Programs", "Choose which programs open which kinds of files.",
       ICO_PROGRAMS, NULL },
     { "Device Manager", "Shows the hardware installed in this computer and lets you change its drivers.",
-      ICO_MYCOMPUTER, "w2kdevmgmt" },
+      ICO_MYCOMPUTER, "l2kdevmgmt" },
     { "Display", "Customize your desktop display and screen saver.",
-      ICO_CP_DISPLAY, "w2kdisplay" },
+      ICO_CP_DISPLAY, "l2kdisplay" },
     { "Folder Options", "Customizes the display of files and folders, changes file associations, and makes network files available offline.",
       ICO_CP_FOLDEROPTS, NULL },
     { "Fonts", "Displays and manages fonts on your computer.",
@@ -50,13 +50,13 @@ static const Applet applets[] = {
     { "Mouse", "Customizes your mouse settings.",
       ICO_CP_MOUSE, NULL },
     { "Network and Dial-up Connections", "Connects to other computers, networks, and the Internet.",
-      ICO_CP_NETWORK, "w2knetwork" },
+      ICO_CP_NETWORK, "l2knetwork" },
     { "Sounds and Multimedia", "Assigns sounds to events and configures sound devices.",
       ICO_CP_SOUNDS, NULL },
     { "System", "Provides system information and changes environment settings.",
       ICO_CP_SYSTEM, NULL },
     { "Task Manager", "Shows the programs and processes running on your computer.",
-      ICO_TASKMGR, "w2ktaskmgr" },
+      ICO_TASKMGR, "l2ktaskmgr" },
     { "Taskbar and Start Menu", "Customizes the Start Menu and the taskbar.",
       ICO_TASKBAR, "@startmenu" },      /* @ = ask the shell, not a program */
 };
@@ -174,7 +174,7 @@ static void open_defaults(void)
     if (dd.n > 8) dd.n = 8;
 
     int cw = 420, chh = 60 + dd.n * 30 + 76;
-    W2kWin *w = w2k_win_new("Default Programs", "w2kcontrol", cw, chh, 0);
+    W2kWin *w = w2k_win_new("Default Programs", "l2kcontrol", cw, chh, 0);
 
     for (int i = 0; i < dd.n; i++) {
         dd.edit[i] = w2k_edit_new(0);
@@ -361,7 +361,7 @@ static void open_performance(void)
     pd.preset = PRESET_CUSTOM;
 
     int cw = 400, chh = 420;
-    W2kWin *w = w2k_win_new("Performance Options", "w2kcontrol", cw, chh, 0);
+    W2kWin *w = w2k_win_new("Performance Options", "l2kcontrol", cw, chh, 0);
     int fh = w2k_font_height(F_UI);
 
     int ry = 12 + 2 * (fh + 2) + 10;
@@ -546,7 +546,7 @@ static int input_event(W2kWin *w, XEvent *e)
 static void input_run(InputDlg *id, int height)
 {
     int cw = 360, chh = height;
-    W2kWin *w = w2k_win_new(id->title, "w2kcontrol", cw, chh, 0);
+    W2kWin *w = w2k_win_new(id->title, "l2kcontrol", cw, chh, 0);
     int fh = w2k_font_height(F_UI);
 
     int y = 14;
@@ -784,7 +784,7 @@ static void open_fontview(const char *family)
         fv.face[i] = w2k_face_open(family, preview_sizes[i]);
 
     int cw = 560, chh = 420;
-    W2kWin *w = w2k_win_new(family, "w2kcontrol", cw, chh, 1);
+    W2kWin *w = w2k_win_new(family, "l2kcontrol", cw, chh, 1);
     fv.done = (W2kRect){ cw - 12 - 75, chh - 12 - 23, 75, 23 };
     w->user = &fv;
     w->paint = fontview_paint;
@@ -866,7 +866,7 @@ static void open_fonts(void)
 {
     fonts_scan();
 
-    W2kWin *w = w2k_win_new("Fonts", "w2kcontrol", 520, 400, 1);
+    W2kWin *w = w2k_win_new("Fonts", "l2kcontrol", 520, 400, 1);
     fonts.win = w;
     fonts.list = w2k_list_new(LV_ICON);
     fonts.list->on_activate = fonts_activate;
@@ -1272,7 +1272,7 @@ static void open_datetime(void)
 {
     DtDlg dt;
     memset(&dt, 0, sizeof dt);
-    dt.win = w2k_win_new("Date/Time Properties", "w2kcontrol", 398, 316, 0);
+    dt.win = w2k_win_new("Date/Time Properties", "l2kcontrol", 398, 316, 0);
     dt.tabs = w2k_tabs_new(&dt, dt_on_tab);
     w2k_tabs_add(dt.tabs, "Date && Time");
     w2k_tabs_add(dt.tabs, "Time Zone");
@@ -1459,9 +1459,9 @@ static void resized(W2kWin *w)
 
 int main(int argc, char **argv)
 {
-    if (w2k_init("w2kcontrol") < 0) return 1;
+    if (w2k_init("l2kcontrol") < 0) return 1;
 
-    /* "w2kcontrol mouse" opens that applet straight away, the way
+    /* "l2kcontrol mouse" opens that applet straight away, the way
      * "control mouse" does in Windows -- the Start menu uses it, and so
      * can anything else. */
     if (argc > 1) {
@@ -1488,7 +1488,7 @@ int main(int argc, char **argv)
     }
 
     /* The folder window at the size of the reference screenshot. */
-    cp.fw = w2k_folderwin_new("Control Panel", "w2kcontrol", ICO_CONTROLPANEL,
+    cp.fw = w2k_folderwin_new("Control Panel", "l2kcontrol", ICO_CONTROLPANEL,
                               870, 682, NULL, command);
     cp.win = cp.fw->win;
     cp.win->paint = paint;

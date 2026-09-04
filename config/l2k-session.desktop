@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Linux 2000
+Comment=Linux 2000, a Windows 2000-like desktop for X11
+Exec=l2k-session
+TryExec=l2k-session
+Type=Application
+DesktopNames=W2K

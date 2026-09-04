@@ -1,4 +1,4 @@
-/* w2kswatch -- scratch harness for eyeballing primitives and icon art. */
+/* l2kswatch -- scratch harness for eyeballing primitives and icon art. */
 #include "w2k.h"
 #include <stdio.h>
 
@@ -38,7 +38,7 @@ static void draw(Window win, int W, int H)
 
 int main(void)
 {
-    if (w2k_init("w2kswatch") < 0) return 1;
+    if (w2k_init("l2kswatch") < 0) return 1;
     int W = 740, H = 340;
     Window win = XCreateSimpleWindow(w2k.dpy, w2k.root, 20, 20, W, H, 0, 0,
                                      w2k.col[C_FACE]);

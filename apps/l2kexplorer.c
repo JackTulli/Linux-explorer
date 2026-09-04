@@ -1,4 +1,4 @@
-/* w2kexplorer -- Windows Explorer.
+/* l2kexplorer -- Windows Explorer.
  *
  * Folders pane on the left, contents on the right, four view modes, an
  * address bar, a status bar and the usual file operations. Virtual roots
@@ -430,7 +430,7 @@ static void viewmem_save(void)
     if (slash) { *slash = 0; mkdir(dir, 0755); }
     FILE *f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "# Windows 2000 for X11 -- per-folder view settings\n");
+    fprintf(f, "# Linux 2000 -- per-folder view settings\n");
     for (int i = 0; i < nviewmem; i++)
         fprintf(f, "%s\t%d %d %d\n", viewmem[i].path, viewmem[i].view,
                 viewmem[i].sort_col, viewmem[i].sort_dir);
@@ -943,7 +943,7 @@ static void do_create_shortcut(const char *into)
         /* A folder opens in Explorer; a file goes to whatever opens it. */
         char cmd[4400], q[4200];
         w2k_shell_quote(paths[i], q, sizeof q);
-        if (isdir) snprintf(cmd, sizeof cmd, "w2kexplorer %s", q);
+        if (isdir) snprintf(cmd, sizeof cmd, "l2kexplorer %s", q);
         else       w2k_assoc_command(paths[i], cmd, sizeof cmd);
         fprintf(f, "[Desktop Entry]\nType=Application\nName=%s\nExec=%s\n"
                    "Terminal=false\n", base, cmd);
@@ -1083,7 +1083,7 @@ static void on_activate(void *u, int idx)
 
     if (ex.cur.kind == K_DESKTOP || ex.cur.kind == K_MYCOMPUTER) {
         Node nd = { K_FS };
-        if (!strcmp(e->target, "@controlpanel")) { spawn("%s", "w2kcontrol"); return; }
+        if (!strcmp(e->target, "@controlpanel")) { spawn("%s", "l2kcontrol"); return; }
         if (e->target[0]) { navigate_path(e->target, 1); return; }
         if (!strcmp(e->name, "Local Disk (C:)")) snprintf(nd.path, sizeof nd.path, "/");
         else if (!strcmp(e->name, "My Documents")) snprintf(nd.path, sizeof nd.path, "%s", ex.home);
@@ -1099,7 +1099,7 @@ static void on_activate(void *u, int idx)
     char q[4200];
     w2k_shell_quote(full, q, sizeof q);
     if (e->isdir) {
-        if (w2k_folder_newwindow) spawn("w2kexplorer %s", q);
+        if (w2k_folder_newwindow) spawn("l2kexplorer %s", q);
         else navigate_path(full, 1);
         return;
     }
@@ -1469,7 +1469,7 @@ static int run_with_progress(const char *title, const char *cmd, int total,
     fcntl(p.fd, F_SETFL, fcntl(p.fd, F_GETFL) | O_NONBLOCK);
 
     int cw = 420, ch = 176;
-    p.win = w2k_win_new(title, "w2kexplorer", cw, ch, 0);
+    p.win = w2k_win_new(title, "l2kexplorer", cw, ch, 0);
     p.bar = (W2kRect){ 14, 92, cw - 28, 18 };
     p.cancel = (W2kRect){ cw - 12 - 75, ch - 12 - 23, 75, 23 };
     p.win->user = &p;
@@ -1642,7 +1642,7 @@ static int arc_event(W2kWin *w, XEvent *e)
 static int arc_dialog(ArcDlg *a, const char *title, const char *initial)
 {
     int cw = 440, ch = a->extract ? 296 : 352;
-    a->win = w2k_win_new(title, "w2kexplorer", cw, ch, 0);
+    a->win = w2k_win_new(title, "l2kexplorer", cw, ch, 0);
     a->name = w2k_edit_new(0);
     a->name->r = (W2kRect){ 118, 34, cw - 118 - 12 - 86, 21 };
     w2k_edit_bind(a->name, a->win);
@@ -2252,20 +2252,20 @@ static void favorites_add(void)
     char q[4200];
     w2k_shell_quote(ex.cur.path, q, sizeof q);
     fprintf(f, "[Desktop Entry]\nType=Application\nName=%s\n"
-               "Exec=w2kexplorer %s\nTerminal=false\n", name, q);
+               "Exec=l2kexplorer %s\nTerminal=false\n", name, q);
     fclose(f);
     chmod(link, 0755);                       /* a shortcut we made is trusted */
     favorites_load();
 }
 
-/* A favourite made here runs "w2kexplorer <path>"; going there in this
+/* A favourite made here runs "l2kexplorer <path>"; going there in this
  * window is better than opening another one, so the path is pulled back
  * out of the command when it has that shape. */
 static void favorites_open(int i)
 {
     if (i < 0 || i >= nfavs) return;
     const char *cmd = favs[i].target;
-    const char *p = strstr(cmd, "w2kexplorer ");
+    const char *p = strstr(cmd, "l2kexplorer ");
     if (p) {
         char path[1024];
         snprintf(path, sizeof path, "%s", p + 12);
@@ -2453,8 +2453,9 @@ static void command(void *user, int id)
         break;
     case ID_ABOUT:
         w2k_msgbox(ex.win, "About Windows",
-                   "Windows Explorer\nWindows 2000 for X11\n\n"
-                   "Browsing the filesystem the way the shell used to.",
+                   "Windows Explorer\nLinux 2000\n\n"
+                   "Browsing the filesystem the way the shell used to.\n\n"
+                   "Linux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
                    MB_OK | MB_ICONINFO);
         break;
     }
@@ -2638,8 +2639,8 @@ static int event(W2kWin *w, XEvent *e)
             if (ex.cur.kind == K_FS) {
                 char q[4200];
                 w2k_shell_quote(ex.cur.path, q, sizeof q);
-                spawn("w2kexplorer %s", q);
-            } else spawn("%s", "w2kexplorer");
+                spawn("l2kexplorer %s", q);
+            } else spawn("%s", "l2kexplorer");
             return 1;
         }
         if (e->xkey.state & ControlMask) {
@@ -2672,7 +2673,7 @@ static int event(W2kWin *w, XEvent *e)
 
 int main(int argc, char **argv)
 {
-    if (w2k_init("w2kexplorer") < 0) return 1;
+    if (w2k_init("l2kexplorer") < 0) return 1;
 
     const char *h = getenv("HOME");
     if (!h) {
@@ -2688,7 +2689,7 @@ int main(int argc, char **argv)
     ex.show_tree = 1;
     ex.split_x = 190;
 
-    ex.win = w2k_win_new("My Computer", "w2kexplorer", 720, 480, 1);
+    ex.win = w2k_win_new("My Computer", "l2kexplorer", 720, 480, 1);
     ex.win->paint = paint;
     ex.win->event = event;
     ex.win->resized = layout;

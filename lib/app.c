@@ -506,13 +506,18 @@ int w2k_scheme_load(const char *path)
             continue;
         }
         if (!strcasecmp(line, "Monitor")) {
-            /* Monitor=<output> <mode|auto> <x> <y> <primary> <enabled> */
+            /* Monitor=<output> <mode|auto> <x> <y> <primary> <enabled>
+             *         [<rate|auto> <scale%>] -- the last two since 1.7 */
             if (w2k_monitor_cfg_n < 8) {
                 W2kMonitorCfg *m = &w2k_monitor_cfg[w2k_monitor_cfg_n];
                 memset(m, 0, sizeof *m);
-                if (sscanf(val, "%63s %15s %d %d %d %d", m->name, m->mode,
-                           &m->x, &m->y, &m->primary, &m->enabled) == 6) {
+                int got = sscanf(val, "%63s %15s %d %d %d %d %15s %d", m->name,
+                                 m->mode, &m->x, &m->y, &m->primary, &m->enabled,
+                                 m->rate, &m->scale);
+                if (got >= 6) {
                     if (!strcmp(m->mode, "auto")) m->mode[0] = 0;
+                    if (got < 7 || !strcmp(m->rate, "auto")) m->rate[0] = 0;
+                    if (got < 8 || m->scale < 50 || m->scale > 400) m->scale = 0;
                     w2k_monitor_cfg_n++;
                 }
             }
@@ -675,7 +680,7 @@ int w2k_scheme_save(const char *path)
     if (slash) { *slash = 0; mkdir(dir, 0755); }
     FILE *f = fopen(path, "w");
     if (!f) return -1;
-    fprintf(f, "# Windows 2000 for X11 -- appearance scheme (registry colour names, R G B)\n");
+    fprintf(f, "# Linux 2000 -- appearance scheme (registry colour names, R G B)\n");
     for (int i = 0; i < N_COLORS; i++)
         if (color_names[i] && i != C_BLACK && i != C_WHITE)
             fprintf(f, "%s=%d %d %d\n", color_names[i], scheme[i][0], scheme[i][1], scheme[i][2]);
@@ -741,9 +746,10 @@ int w2k_scheme_save(const char *path)
             w2k_start_icon == SI_DISTRO ? "distro" : "flag");
     for (int i = 0; i < w2k_monitor_cfg_n; i++) {
         const W2kMonitorCfg *m = &w2k_monitor_cfg[i];
-        fprintf(f, "Monitor=%s %s %d %d %d %d\n", m->name,
+        fprintf(f, "Monitor=%s %s %d %d %d %d %s %d\n", m->name,
                 m->mode[0] ? m->mode : "auto", m->x, m->y, m->primary,
-                m->enabled);
+                m->enabled, m->rate[0] ? m->rate : "auto",
+                m->scale ? m->scale : 100);
     }
     fclose(f);
     /* The user's own scheme also reaches GTK and Qt programs. */

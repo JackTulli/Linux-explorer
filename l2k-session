@@ -1,8 +1,8 @@
 #!/bin/sh
-# w2k-session -- start the Windows 2000 desktop as an X session.
+# l2k-session -- start the Windows 2000 desktop as an X session.
 #
-# Use from ~/.xinitrc ("exec w2k-session"), from a display manager session
-# entry, or inside a nested server:  Xephyr :2 -screen 1024x768 & DISPLAY=:2 w2k-session
+# Use from ~/.xinitrc ("exec l2k-session"), from a display manager session
+# entry, or inside a nested server:  Xephyr :2 -screen 1024x768 & DISPLAY=:2 l2k-session
 #
 # The window manager owns the desktop, taskbar and Start menu; everything
 # else is an ordinary X client. Anything listed in ~/.w2k/autostart (one
@@ -23,23 +23,23 @@ export PATH
 LOG="${HOME:-/tmp}/.w2k/session.log"
 mkdir -p "${HOME:-/tmp}/.w2k" 2>/dev/null
 exec >>"$LOG" 2>&1
-echo "=== $(date) : w2k-session starting ==="
+echo "=== $(date) : l2k-session starting ==="
 echo "    script : $0 -> $here"
 echo "    DISPLAY: ${DISPLAY:-(unset)}   HOME: ${HOME:-(unset)}"
 echo "    PATH   : $PATH"
-echo "    w2kwm  : $(command -v w2kwm || echo '(not found)')"
+echo "    l2kwm  : $(command -v l2kwm || echo '(not found)')"
 
 # Show a fatal error on screen. xmessage blocks, so X stays up to be read.
 die() {
-    echo "w2k-session: $1"
-    xmessage -center "w2k-session: $1
+    echo "l2k-session: $1"
+    xmessage -center "l2k-session: $1
 
 Details: $LOG" 2>/dev/null
     exit 1
 }
 
-command -v w2kwm >/dev/null 2>&1 \
-    || die "w2kwm not found. Run 'make' in $here first."
+command -v l2kwm >/dev/null 2>&1 \
+    || die "l2kwm not found. Run 'make' in $here first."
 
 # ------------------------------------------------------------------
 # Make everything else on the desktop match
@@ -96,13 +96,13 @@ if [ -r "$HOME/.w2k/autostart" ]; then
 fi
 
 # The WM exits when the user logs off (0), shuts down (10) or restarts (11).
-w2kwm -- "$@"
+l2kwm -- "$@"
 rc=$?
-echo "=== $(date) : w2kwm exited with $rc ==="
+echo "=== $(date) : l2kwm exited with $rc ==="
 case $rc in
     0)  ;;
     10) systemctl poweroff 2>/dev/null || loginctl poweroff 2>/dev/null || poweroff ;;
     11) systemctl reboot   2>/dev/null || loginctl reboot   2>/dev/null || reboot ;;
-    *)  die "w2kwm exited with status $rc (see the log for its last words)." ;;
+    *)  die "l2kwm exited with status $rc (see the log for its last words)." ;;
 esac
 exit 0

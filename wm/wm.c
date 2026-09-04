@@ -1,6 +1,6 @@
 /* wm.c -- the window manager proper: root setup, the event loop, EWMH.
  *
- * w2kwm reparents every managed window into a decoration frame, owns the
+ * l2kwm reparents every managed window into a decoration frame, owns the
  * desktop and the taskbar, and is the only process that talks to the X
  * server about window layout. */
 #include "wm.h"
@@ -49,7 +49,7 @@ int wm_xerror(Display *d, XErrorEvent *e)
         return 0;
     char buf[128];
     XGetErrorText(d, e->error_code, buf, sizeof buf);
-    fprintf(stderr, "w2kwm: X error: %s (request %d.%d)\n", buf,
+    fprintf(stderr, "l2kwm: X error: %s (request %d.%d)\n", buf,
             e->request_code, e->minor_code);
     return 0;
 }
@@ -83,7 +83,7 @@ void wm_spawn(const char *cmd)
     setsid();
     signal(SIGCHLD, SIG_DFL);
     execlp("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-    fprintf(stderr, "w2kwm: cannot run \"%s\": %s\n", cmd, strerror(errno));
+    fprintf(stderr, "l2kwm: cannot run \"%s\": %s\n", cmd, strerror(errno));
     _exit(127);
 }
 
@@ -183,7 +183,7 @@ static void ewmh_init(void)
                     32, PropModeReplace, (unsigned char *)&wm_check, 1);
     XChangeProperty(w2k.dpy, wm_check, w2k.a_net_supporting_wm_check, XA_WINDOW,
                     32, PropModeReplace, (unsigned char *)&wm_check, 1);
-    w2k_set_wm_name(wm_check, "w2kwm");
+    w2k_set_wm_name(wm_check, "l2kwm");
 
     Atom supported[] = {
         w2k.a_net_supported, w2k.a_net_wm_name, w2k.a_net_wm_state,
@@ -399,7 +399,7 @@ static void handle_clientmessage(XClientMessageEvent *e)
         case 2: wm_logout(0); break;
         case 3: wm_startmenu_dialog(); break;    /* Control Panel applet */
         case 5: wm_search_dialog(""); break;     /* Explorer's Search button */
-        case 6: restarting = 1; break;           /* w2kwm --restart */
+        case 6: restarting = 1; break;           /* l2kwm --restart */
         case 4: {
             /* A balloon: title and text sit in _W2K_NOTIFY on the root,
              * NUL-separated, so the message itself stays 32 bytes. */
@@ -606,7 +606,7 @@ static void manage_own_window(Window w)
 /* Adopt whatever is already on screen when we start. */
 /* Start over with the same windows: every client goes back to the root,
  * mapped, and the new process finds them there and frames them again. The
- * process keeps its pid, so w2k-session is none the wiser. */
+ * process keeps its pid, so l2k-session is none the wiser. */
 static void wm_restart(void)
 {
     for (Client *c = clients; c; c = c->next)
@@ -621,7 +621,7 @@ static void wm_restart(void)
     /* The binary by its path on disk, never /proc/self/exe: that link
      * names the image this process was started from, which after a
      * rebuild is the old, deleted file -- exec of it would run the old
-     * build again for ever. The path also keeps the process named w2kwm
+     * build again for ever. The path also keeps the process named l2kwm
      * for pgrep -x, which the installer uses to find running desktops. */
     char self[1024];
     ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
@@ -633,7 +633,7 @@ static void wm_restart(void)
     }
     execvp(saved_argv[0], saved_argv);
     execv("/proc/self/exe", saved_argv);
-    fprintf(stderr, "w2kwm: cannot restart: %s\n", strerror(errno));
+    fprintf(stderr, "l2kwm: cannot restart: %s\n", strerror(errno));
     exit(1);
 }
 
@@ -659,13 +659,13 @@ int main(int argc, char **argv)
     saved_argv = argv;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--version")) {
-            puts("w2kwm " W2K_VERSION " -- Windows 2000 window manager for X11");
+            puts("l2kwm " W2K_VERSION " -- Linux 2000, a Windows 2000-like desktop for X11");
             return 0;
         }
         if (!strcmp(argv[i], "--restart")) {
             /* Ask the running shell to start itself again, keeping every
              * window: the way to pick up a new build without logging off. */
-            if (w2k_init("w2kwm") < 0) return 1;
+            if (w2k_init("l2kwm") < 0) return 1;
             XEvent ev = { 0 };
             ev.xclient.type = ClientMessage;
             ev.xclient.window = w2k.root;
@@ -683,7 +683,7 @@ int main(int argc, char **argv)
             return 0;
         }
     }
-    if (w2k_init("w2kwm") < 0) return 1;
+    if (w2k_init("l2kwm") < 0) return 1;
     /* Other toolkits' programs pick the scheme's colours up at logon. */
     w2k_scheme_export_gtk();
 
@@ -746,7 +746,7 @@ int main(int argc, char **argv)
                  ButtonPressMask | KeyPressMask);
     XSync(w2k.dpy, False);
     if (other_wm) {
-        fprintf(stderr, "w2kwm: another window manager is already running\n");
+        fprintf(stderr, "l2kwm: another window manager is already running\n");
         return 1;
     }
     XSetErrorHandler(wm_xerror);
@@ -845,6 +845,6 @@ int main(int argc, char **argv)
     while (clients) client_unmanage(clients, 0);
     XDestroyWindow(w2k.dpy, wm_check);
     w2k_fini();
-    /* 0 = log off, 10 = shut down, 11 = restart (see w2k-session). */
+    /* 0 = log off, 10 = shut down, 11 = restart (see l2k-session). */
     return logging_out == 2 ? 10 : logging_out == 3 ? 11 : 0;
 }

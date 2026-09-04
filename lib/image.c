@@ -105,7 +105,7 @@ unsigned char *w2k_image_load(const char *path, int *w, int *h)
     return NULL;
 }
 
-/* Does this look like something w2kimage can open? Used for associations
+/* Does this look like something l2kimage can open? Used for associations
  * and for stepping through a folder. */
 int w2k_image_is_image(const char *path)
 {

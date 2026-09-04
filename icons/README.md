@@ -3,7 +3,7 @@
 `win2k/` holds the original Windows 2000 shell icons (275 `.ico` files),
 taken unmodified from https://github.com/trapd00r/win95-winxp_icons .
 The artwork is Microsoft's; it is used here for a free, non-commercial
-hobby recreation of the Windows 2000 desktop.
+hobby Windows 2000-like desktop, Linux 2000.
 
 `tools/genicons.py` selects the icons the desktop needs, extracts the 16x16
 and 32x32 images and writes them as C arrays to `lib/icon_data.inc`, which
@@ -11,7 +11,7 @@ is compiled into `libw2k` so the binaries stay self-contained.
 
 Any icon can also be overridden at runtime without rebuilding: drop a file
 named `<slug>.ico` into `~/.w2k/icons/` (or the directory named by
-`$W2K_ICON_DIR`). Run `w2kwm --icons` to list the slugs.
+`$W2K_ICON_DIR`). Run `l2kwm --icons` to list the slugs.
 
 `win98/` holds a handful of PNGs from https://github.com/alexh/vintage-icons
 (Windows 98 system icons). They are used only for artwork that Windows 2000
@@ -31,7 +31,7 @@ list-window icon standing in for the Views button.
 
 Display Properties > Appearance > Icons lets the user pick whose icons the
 desktop draws. Each directory under `sets/` holds `<slug>.ico` files (16 and
-32 pixel images) for the slots `w2kwm --icons` lists; a slot a set lacks
+32 pixel images) for the slots `l2kwm --icons` lists; a slot a set lacks
 falls back to the built-in Windows 2000 artwork. The sets are produced by
 `tools/geniconsets.py`, which records where each icon comes from:
 

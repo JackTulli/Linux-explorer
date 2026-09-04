@@ -855,7 +855,7 @@ void wm_shutdown_dialog(void)
     int what = s.what->sel;
     w2k_combo_free(s.what);
 
-    /* 0 = log off, 1 = shut down, 2 = restart; w2k-session acts on it. */
+    /* 0 = log off, 1 = shut down, 2 = restart; l2k-session acts on it. */
     if (rc == ID_OK) wm_logout(what);
 }
 
@@ -870,13 +870,15 @@ void wm_logoff_dialog(void)
 void wm_help_dialog(void)
 {
     w2k_msgbox(NULL, "About Windows",
-               "Windows 2000 for X11\n"
+               "Linux 2000\n"
                "\n"
-               "A window manager and desktop environment that recreates the\n"
-               "Windows 2000 shell on X11, using Xlib and nothing else.\n"
+               "A window manager and desktop environment in the style of the\n"
+               "Windows 2000 shell, on X11, using Xlib and nothing else.\n"
                "\n"
                "Press Ctrl+Esc for the Start menu, Alt+Tab to switch windows,\n"
-               "and Ctrl+Alt+Del for Task Manager.",
+               "and Ctrl+Alt+Del for Task Manager.\n"
+               "\n"
+               "Linux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
                MB_OK | MB_ICONINFO);
 }
 

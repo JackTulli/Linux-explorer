@@ -156,7 +156,7 @@ static void command(void *u, int id)
         if (f->list->n) f->list->sel = 0;
         break;
     case FW_UP:
-    case FW_FOLDERS:     spawn("w2kexplorer"); return;
+    case FW_FOLDERS:     spawn("l2kexplorer"); return;
     case FW_SEARCH: {
         /* The shell's Search dialog, asked for through _W2K_COMMAND. */
         XEvent ev = { 0 };
@@ -176,8 +176,9 @@ static void command(void *u, int id)
     case FW_HELPTOPICS:
     case FW_ABOUT:
         w2k_msgbox(f->win, "About Windows",
-                   "Windows 2000 for X11\n\n"
-                   "The classic shell, written from scratch against Xlib.",
+                   "Linux 2000\n\n"
+                   "A Windows 2000-like shell, written from scratch against Xlib.\n\n"
+                   "Linux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
                    MB_OK | MB_ICONINFO);
         return;
     case FW_HISTORY: case FW_GO: case FW_BACK: case FW_FORWARD:

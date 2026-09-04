@@ -1,4 +1,4 @@
-/* w2knotepad -- Notepad, as it shipped with Windows 2000.
+/* l2knotepad -- Notepad, as it shipped with Windows 2000.
  *
  * File / Edit / Format / Help, one edit control filling the client area,
  * word wrap off by default, single-level undo. */
@@ -325,7 +325,7 @@ static void find_dialog(void)
 {
     FindDlg f = { 0 };
     int cw = 360, chh = 100;
-    W2kWin *w = w2k_win_new("Find", "w2knotepad", cw, chh, 0);
+    W2kWin *w = w2k_win_new("Find", "l2knotepad", cw, chh, 0);
     f.what = w2k_edit_new(0);
     w2k_edit_bind(f.what, w);
     f.what->focused = 1;
@@ -542,9 +542,9 @@ static void command(void *user, int id)
     case ID_ABOUT:
         w2k_msgbox(pad.win, "About Notepad",
                    "Notepad\n"
-                   "Windows 2000 for X11\n"
+                   "Linux 2000\n"
                    "\n"
-                   "A faithful rebuild of the classic text editor.",
+                   "A faithful rebuild of the classic text editor.\n\nLinux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
                    MB_OK | MB_ICONINFO);
         break;
     }
@@ -629,10 +629,10 @@ static int closing(W2kWin *w)
 
 int main(int argc, char **argv)
 {
-    if (w2k_init("w2knotepad") < 0) return 1;
+    if (w2k_init("l2knotepad") < 0) return 1;
 
     pad.untitled = 1;
-    pad.win = w2k_win_new("Untitled - Notepad", "w2knotepad", 560, 420, 1);
+    pad.win = w2k_win_new("Untitled - Notepad", "l2knotepad", 560, 420, 1);
     pad.win->paint = paint;
     pad.win->event = event;
     pad.win->resized = layout;

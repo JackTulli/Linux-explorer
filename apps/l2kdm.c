@@ -1,11 +1,11 @@
-/* w2kdm.c -- the display manager: the machine boots straight into
+/* l2kdm.c -- the display manager: the machine boots straight into
  * "Log On to Windows".
  *
- * A root service (config/w2kdm.service) that starts the X server on a
+ * A root service (config/l2kdm.service) that starts the X server on a
  * virtual terminal, shows the Windows 2000 logon dialog on it with the
  * shell's own toolkit, checks the name and password through PAM, opens a
  * PAM session (which is what registers the login with logind), and runs
- * w2k-session as that user. When the session ends the logon screen comes
+ * l2k-session as that user. When the session ends the logon screen comes
  * back; when it ends asking for it, the machine shuts down or restarts.
  * Nothing else stands between the boot and the desktop. */
 #include "w2kui.h"
@@ -28,7 +28,7 @@
 
 #define DISPLAY_NAME ":0"
 #define VT_NUM       "7"
-#define RUN_DIR      "/run/w2kdm"
+#define RUN_DIR      "/run/l2kdm"
 #define AUTH_FILE    RUN_DIR "/Xauthority"
 
 /* Measured off a 800x600 screenshot: the dialog's frame is 415 by 254; the
@@ -38,7 +38,7 @@
 #define CAP_H    18
 #define BANNER_H 92
 
-static char session_cmd[1024] = "/usr/local/bin/w2k-session";
+static char session_cmd[1024] = "/usr/local/bin/l2k-session";
 static char cookie[33];
 static pid_t xpid;
 static pid_t session_pid;                 /* the session leader, while one runs */
@@ -48,7 +48,7 @@ static void log_line(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    fputs("w2kdm: ", stderr);
+    fputs("l2kdm: ", stderr);
     vfprintf(stderr, fmt, ap);
     fputc('\n', stderr);
     va_end(ap);
@@ -270,7 +270,7 @@ static int authenticate(const char *user)
 {
     struct pam_conv conv = { converse, NULL };
     pam_info[0] = 0;
-    int rc = pam_start("w2kdm", user, &conv, &pamh);
+    int rc = pam_start("l2kdm", user, &conv, &pamh);
     if (rc != PAM_SUCCESS) { log_line("pam_start: %s", pam_strerror(NULL, rc)); return 0; }
     pam_set_item(pamh, PAM_TTY, "tty" VT_NUM);
     pam_set_item(pamh, PAM_XDISPLAY, DISPLAY_NAME);
@@ -445,7 +445,7 @@ static int shut_event(W2kWin *w, XEvent *e)
 static void do_shutdown_dialog(void)
 {
     ShutDlg s = { 0 };
-    W2kWin *w = w2k_win_new("Shut Down Windows", "w2kdm", 400, 150, 0);
+    W2kWin *w = w2k_win_new("Shut Down Windows", "l2kdm", 400, 150, 0);
     s.what = w2k_combo_new(0);
     w2k_combo_add(s.what, "Shut down");
     w2k_combo_add(s.what, "Restart");
@@ -569,7 +569,7 @@ static int quiet_xio(Display *d)
 static int logon_screen(const char *last_user, char *user_out, int n)
 {
     memset(&lg, 0, sizeof lg);
-    lg.win = w2k_win_new("Log On to Windows", "w2kdm", w2k.sw, w2k.sh, 0);
+    lg.win = w2k_win_new("Log On to Windows", "l2kdm", w2k.sw, w2k.sh, 0);
     lg.win->paint = paint;
     lg.win->event = event;
     lg.win->resized = layout;
@@ -638,7 +638,7 @@ int main(int argc, char **argv)
 #endif
     }
     if (geteuid() != 0 && !getenv("W2K_RENDER")) {
-        fprintf(stderr, "w2kdm: must run as root (it is a service: systemctl start w2kdm)\n");
+        fprintf(stderr, "l2kdm: must run as root (it is a service: systemctl start l2kdm)\n");
         return 1;
     }
     /* The session lives beside us. */
@@ -647,7 +647,7 @@ int main(int argc, char **argv)
     if (len > 0) {
         self[len] = 0;
         char *slash = strrchr(self, '/');
-        if (slash) { *slash = 0; snprintf(session_cmd, sizeof session_cmd, "%.900s/w2k-session", self); }
+        if (slash) { *slash = 0; snprintf(session_cmd, sizeof session_cmd, "%.900s/l2k-session", self); }
     }
 
     struct sigaction st = { .sa_handler = on_term };
@@ -657,10 +657,10 @@ int main(int argc, char **argv)
 
     int own_x = !getenv("DISPLAY");
     if (own_x && !start_x()) {
-        log_line("no X server: see the lines above (journalctl -u w2kdm)");
+        log_line("no X server: see the lines above (journalctl -u l2kdm)");
         return 1;
     }
-    if (w2k_init("w2kdm") < 0) { log_line("cannot open the display"); return 1; }
+    if (w2k_init("l2kdm") < 0) { log_line("cannot open the display"); return 1; }
     XSetErrorHandler(quiet_xerror);
     XSetIOErrorHandler(quiet_xio);
     /* The Windows arrow on the root as well, from the first moment. */

@@ -1,4 +1,4 @@
-# Windows 2000 desktop environment for X11 -- build
+# Linux 2000, a Windows 2000-like desktop environment for X11 -- build
 
 PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
@@ -23,31 +23,31 @@ LIB     := lib/libw2k.a
 WM_SRC  := $(wildcard wm/*.c)
 WM_OBJ  := $(WM_SRC:.c=.o)
 
-# w2kswatch is a development scratch tool: buildable, never installed.
-APPS    := $(filter-out bin/w2kswatch,$(patsubst apps/%.c,bin/%,$(wildcard apps/*.c)))
+# l2kswatch is a development scratch tool: buildable, never installed.
+APPS    := $(filter-out bin/l2kswatch,$(patsubst apps/%.c,bin/%,$(wildcard apps/*.c)))
 # The display manager needs PAM; without its header it still builds, as the
 # picture alone (W2K_RENDER).
 ifneq ($(wildcard /usr/include/security/pam_appl.h),)
-apps/w2kdm.o: CFLAGS += -DHAVE_PAM
-bin/w2kdm: LDLIBS += -lpam
+apps/l2kdm.o: CFLAGS += -DHAVE_PAM
+bin/l2kdm: LDLIBS += -lpam
 endif
 # The notification service needs libdbus; without it the shell shows only
 # its own balloons.
 ifneq ($(shell pkg-config --exists dbus-1 2>/dev/null && echo y),)
 wm/notifyd.o: CFLAGS += -DHAVE_DBUS $(shell pkg-config --cflags dbus-1)
-bin/w2kwm: LDLIBS += $(shell pkg-config --libs dbus-1)
+bin/l2kwm: LDLIBS += $(shell pkg-config --libs dbus-1)
 endif
-BINS    := bin/w2kwm $(APPS)
+BINS    := bin/l2kwm $(APPS)
 
 all: $(BINS)
 
-swatch: bin/w2kswatch
+swatch: bin/l2kswatch
 
 $(LIB): $(LIB_OBJ)
 	@mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
-bin/w2kwm: $(WM_OBJ) $(LIB)
+bin/l2kwm: $(WM_OBJ) $(LIB)
 	@mkdir -p bin
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(WM_OBJ) $(LIB) $(LDLIBS)
 
@@ -74,7 +74,11 @@ clean:
 install: all
 	install -d $(DESTDIR)$(BINDIR)
 	install -m755 $(BINS) $(DESTDIR)$(BINDIR)
-	install -m755 w2k-session $(DESTDIR)$(BINDIR)
+	install -m755 l2k-session $(DESTDIR)$(BINDIR)
+	# The programs were called w2k* until 1.7; the old names keep working
+	# (saved associations, scripts, a running w2kwm's --restart).
+	for b in $(notdir $(BINS)) l2k-session; do \
+	    ln -sfn $$b $(DESTDIR)$(BINDIR)/w2k$${b#l2k}; done
 	install -d $(DESTDIR)$(PREFIX)/share/w2k/skins
 	install -m644 skins/*.png $(DESTDIR)$(PREFIX)/share/w2k/skins
 	install -d $(DESTDIR)$(PREFIX)/share/w2k/cursors
@@ -86,7 +90,8 @@ install: all
 	# A session entry for any other display manager that may be around --
 	# where that directory can be written (a user prefix cannot).
 	@if install -d $(DESTDIR)/usr/share/xsessions 2>/dev/null; then \
-	    sed 's|^Exec=.*|Exec=$(BINDIR)/w2k-session|; /^TryExec/d' config/w2k-session.desktop > $(DESTDIR)/usr/share/xsessions/w2k-session.desktop; \
+	    sed 's|^Exec=.*|Exec=$(BINDIR)/l2k-session|; /^TryExec/d' config/l2k-session.desktop > $(DESTDIR)/usr/share/xsessions/l2k-session.desktop; \
+	    rm -f $(DESTDIR)/usr/share/xsessions/w2k-session.desktop; \
 	else echo "(no /usr/share/xsessions entry: not writable)"; fi
 
 .PHONY: all clean install swatch

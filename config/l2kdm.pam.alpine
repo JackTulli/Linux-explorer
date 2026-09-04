@@ -1,5 +1,5 @@
 #%PAM-1.0
-# w2kdm -- the Windows 2000 logon screen (Alpine: the base-* stacks)
+# l2kdm -- the Windows 2000 logon screen (Alpine: the base-* stacks)
 auth      requisite  pam_nologin.so
 auth      include    base-auth
 account   include    base-account

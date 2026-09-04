@@ -1,5 +1,5 @@
 #!/bin/sh
-# install.sh -- set up the Windows 2000 desktop on any Linux.
+# install.sh -- set up Linux 2000, the Windows 2000-like desktop, on any Linux.
 #
 #   ./install.sh                 everything: packages, build, install, theme
 #   ./install.sh --prefix DIR    install under DIR (default /usr/local)
@@ -7,7 +7,7 @@
 #   ./install.sh --no-build      do not compile or install the binaries
 #   ./install.sh --no-theme      skip Chicago95 (needs the network)
 #   ./install.sh --tahoma        fetch Tahoma from the corefonts project
-#   ./install.sh --xinitrc       make w2k-session your startx session
+#   ./install.sh --xinitrc       make l2k-session your startx session
 #   ./install.sh --user-only     only this user's configuration
 #   ./install.sh --full          a bare system too: X server, the logon screen,
 #                                sound, guest tools, a browser
@@ -18,7 +18,7 @@
 #   1. installs the build and runtime packages for your distribution
 #      (Debian/Ubuntu, Fedora/RHEL, Arch, openSUSE, Alpine, Void);
 #   2. builds and installs the shell (make install), the cursor set, and
-#      with --full the w2kdm service that boots into Log On to Windows;
+#      with --full the l2kdm service that boots into Log On to Windows;
 #   3. for the user running it: the Windows cursor set, the Xcursor theme
 #      other programs use, Chicago95 for GTK, the Windows style and 2000
 #      palette for Qt, and the file manager as the folder handler.
@@ -182,16 +182,16 @@ if [ "$DO_BUILD" = 1 ]; then
     as_root install -d "$PREFIX/share/w2k/cursors"
     as_root sh -c "install -m644 '$HERE'/cursors/* '$PREFIX/share/w2k/cursors/'"
     # A desktop that is running picks the new build up in place: the
-    # window manager restarts itself with every window kept (w2kwm
-    # --restart), each session found by its w2kwm process.
+    # window manager restarts itself with every window kept (l2kwm
+    # --restart), each session found by its l2kwm process.
     if [ "$DRY" != 1 ] && [ "$(id -u)" = 0 ]; then
-        for pid in $(pgrep -x w2kwm 2>/dev/null); do
+        for pid in $(pgrep -x l2kwm 2>/dev/null; pgrep -x w2kwm 2>/dev/null); do
             u=$(stat -c %U "/proc/$pid" 2>/dev/null) || continue
             disp=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^DISPLAY=//p' | head -1)
             xauth=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^XAUTHORITY=//p' | head -1)
             [ -n "$disp" ] || continue
             say "Restarting the desktop of $u on $disp"
-            su -s /bin/sh "$u" -c "DISPLAY='$disp' XAUTHORITY='${xauth:-$(getent passwd "$u" | cut -d: -f6)/.Xauthority}' '$PREFIX/bin/w2kwm' --restart" || true
+            su -s /bin/sh "$u" -c "DISPLAY='$disp' XAUTHORITY='${xauth:-$(getent passwd "$u" | cut -d: -f6)/.Xauthority}' '$PREFIX/bin/l2kwm' --restart" || true
         done
     fi
     # The Xcursor theme for every other program, system-wide too (Xcursor
@@ -209,17 +209,18 @@ if [ "$DO_BUILD" = 1 ]; then
     if [ "$FULL" = 1 ]; then
         # Our own display manager: the machine boots into "Log On to
         # Windows". LightDM and friends, if any, stand down.
-        if [ "$DRY" != 1 ] && ! "$PREFIX/bin/w2kdm" --check 2>/dev/null; then
-            echo "  w2kdm was built without PAM (no PAM development headers); nobody could log on." >&2
+        if [ "$DRY" != 1 ] && ! "$PREFIX/bin/l2kdm" --check 2>/dev/null; then
+            echo "  l2kdm was built without PAM (no PAM development headers); nobody could log on." >&2
             echo "  Install them (libpam0g-dev / pam-devel) and rerun." >&2
             exit 1
         fi
         # The PAM stack in the words this distribution's stacks use.
-        if [ -f /etc/pam.d/common-auth ]; then pamsrc=w2kdm.pam.debian
-        elif [ -f /etc/pam.d/password-auth ]; then pamsrc=w2kdm.pam.fedora
-        elif [ -f /etc/pam.d/base-auth ]; then pamsrc=w2kdm.pam.alpine
-        else pamsrc=w2kdm.pam.generic; fi
-        as_root install -m644 "$HERE/config/$pamsrc" /etc/pam.d/w2kdm
+        if [ -f /etc/pam.d/common-auth ]; then pamsrc=l2kdm.pam.debian
+        elif [ -f /etc/pam.d/password-auth ]; then pamsrc=l2kdm.pam.fedora
+        elif [ -f /etc/pam.d/base-auth ]; then pamsrc=l2kdm.pam.alpine
+        else pamsrc=l2kdm.pam.generic; fi
+        as_root install -m644 "$HERE/config/$pamsrc" /etc/pam.d/l2kdm
+        as_root rm -f /etc/pam.d/w2kdm          # the name before 1.7
         # Inside a virtual machine the X server's hardware cursor is often
         # never drawn by the hypervisor (virtio-gpu, QXL, VirtualBox and
         # VMware with the modesetting driver): an invisible pointer. A
@@ -230,7 +231,7 @@ if [ "$DO_BUILD" = 1 ]; then
             as_root install -m644 "$HERE/config/20-w2k-vm-cursor.conf" /etc/X11/xorg.conf.d/20-w2k-vm-cursor.conf
         fi
         if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
-            as_root sh -c "sed 's|^ExecStart=.*|ExecStart=$PREFIX/bin/w2kdm|' '$HERE/config/w2kdm.service' > /etc/systemd/system/w2kdm.service"
+            as_root sh -c "sed 's|^ExecStart=.*|ExecStart=$PREFIX/bin/l2kdm|' '$HERE/config/l2kdm.service' > /etc/systemd/system/l2kdm.service"
             # Another display manager stands down at the next boot; it is
             # not stopped now, because this may well be running under it.
             for dm in lightdm gdm gdm3 sddm xdm lxdm slim ly greetd; do
@@ -239,12 +240,17 @@ if [ "$DO_BUILD" = 1 ]; then
             # Whoever held the display-manager alias last leaves it, or
             # enable refuses.
             as_root rm -f /etc/systemd/system/display-manager.service
+            # The unit was w2kdm before 1.7: hand over without two managers.
+            if [ -f /etc/systemd/system/w2kdm.service ]; then
+                as_root systemctl disable w2kdm >/dev/null 2>&1 || true
+                as_root rm -f /etc/systemd/system/w2kdm.service
+            fi
             as_root systemctl daemon-reload
-            as_root systemctl enable w2kdm
+            as_root systemctl enable l2kdm
             as_root systemctl set-default graphical.target >/dev/null 2>&1 || true
-            echo "  w2kdm takes over the console at the next boot (or now: systemctl start w2kdm)."
+            echo "  l2kdm takes over the console at the next boot (or now: systemctl start l2kdm)."
         else
-            echo "  No systemd here: start '$PREFIX/bin/w2kdm' as root at boot from your" >&2
+            echo "  No systemd here: start '$PREFIX/bin/l2kdm' as root at boot from your" >&2
             echo "  init system (it runs in the foreground and restarts the logon screen itself)." >&2
         fi
     fi
@@ -261,7 +267,7 @@ if [ "$(id -u)" = 0 ] && [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != root ]; th
     [ "$DRY" = 1 ] && opts="$opts --dry-run"
     run su -s /bin/sh "$TARGET_USER" -c "cd '$HERE' && ./install.sh $opts --prefix '$PREFIX'"
     run su -s /bin/sh "$TARGET_USER" -c "xdg-user-dirs-update >/dev/null 2>&1 || true"
-    say "Done. Reboot, or: systemctl start w2kdm"
+    say "Done. Reboot, or: systemctl start l2kdm"
     exit 0
 fi
 
@@ -348,11 +354,11 @@ fi
 # startx: the session as this user's X session.
 if [ "$DO_XINITRC" = 1 ]; then
     backup "$HOME/.xinitrc"
-    run sh -c "printf '#!/bin/sh\nexec %s/bin/w2k-session\n' '$PREFIX' > '$HOME/.xinitrc'"
+    run sh -c "printf '#!/bin/sh\nexec %s/bin/l2k-session\n' '$PREFIX' > '$HOME/.xinitrc'"
     run chmod +x "$HOME/.xinitrc"
 fi
 
-say "Done: $("$PREFIX/bin/w2kwm" --version 2>/dev/null || echo "w2kwm installed")"
-echo "  Start it with:  startx $PREFIX/bin/w2k-session"
+say "Done: $("$PREFIX/bin/l2kwm" --version 2>/dev/null || echo "l2kwm installed")"
+echo "  Start it with:  startx $PREFIX/bin/l2k-session"
 echo "  or pick \"Windows 2000\" in your display manager. Explorer becomes the"
 echo "  folder handler for other programs the first time the shell runs."

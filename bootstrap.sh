@@ -1,6 +1,6 @@
 #!/bin/sh
 # bootstrap.sh -- from a bare Debian (or any of the distributions install.sh
-# knows) to the Windows 2000 desktop in one command, run as root:
+# knows) to Linux 2000, the Windows 2000-like desktop, in one command, run as root:
 #
 #   curl -sL jacktulli.github.io/w2k | sh
 #
@@ -8,7 +8,7 @@
 #   sh -c "$(curl -fsSL https://raw.githubusercontent.com/JackTulli/Linux-explorer/main/bootstrap.sh)")
 #
 # It installs git, fetches the repository into /usr/local/src, and runs
-# install.sh --full: the X server, w2kdm (our own logon screen, no LightDM),
+# install.sh --full: the X server, l2kdm (our own logon screen, no LightDM),
 # sound, VM guest tools, Firefox, the shell itself, the cursor
 # set, Chicago95 for GTK, the Windows 2000 palette for Qt and Tahoma --
 # all of it for the first ordinary user on the machine (or W2K_USER).
@@ -35,10 +35,10 @@ fi
 # rebuilt and installed over the old one, and a desktop that is running
 # restarts in place with its windows. Nothing of the user's is touched
 # twice (configuration files are only written when missing).
-if [ -x /usr/local/bin/w2kwm ]; then
-    echo "==> Updating the Windows 2000 desktop ($(/usr/local/bin/w2kwm --version 2>/dev/null | cut -d' ' -f2)) for $USERNAME"
+if [ -x /usr/local/bin/l2kwm ] || [ -x /usr/local/bin/w2kwm ]; then
+    echo "==> Updating Linux 2000 ($( { /usr/local/bin/l2kwm --version || /usr/local/bin/w2kwm --version; } 2>/dev/null | cut -d' ' -f2)) for $USERNAME"
 else
-    echo "==> Setting up the Windows 2000 desktop for $USERNAME"
+    echo "==> Setting up Linux 2000, the Windows 2000-like desktop, for $USERNAME"
 fi
 
 # git and curl, then the source.
@@ -69,4 +69,4 @@ echo "==> Source at $SRC, $(git -C "$SRC" log -1 --format='%h %s')"
 
 cd "$SRC"
 sh ./install.sh --full --tahoma --xinitrc --user "$USERNAME"
-echo "==> $(/usr/local/bin/w2kwm --version 2>/dev/null || echo 'w2kwm') is installed. Run this command again any time to update."
+echo "==> $(/usr/local/bin/l2kwm --version 2>/dev/null || echo 'l2kwm') is installed. Run this command again any time to update."

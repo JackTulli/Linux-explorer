@@ -140,7 +140,7 @@ void tray_init(Window taskbar)
     a_manager          = XInternAtom(w2k.dpy, "MANAGER", False);
 
     if (XGetSelectionOwner(w2k.dpy, a_tray_sel) != None) {
-        fprintf(stderr, "w2kwm: another system tray is running\n");
+        fprintf(stderr, "l2kwm: another system tray is running\n");
         return;
     }
 
