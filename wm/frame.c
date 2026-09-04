@@ -204,7 +204,15 @@ void frame_shape(Client *c)
         return;
     }
 
-    int rad = w2k_theme == THEME_BASIC7 ? 5 : 6;
+    /* The corner cut per row. Luna's is measured off its caption skin --
+     * the pixels there that are the screenshot's white, not the frame:
+     * five, three, two, one, one -- so the shape and the artwork agree to
+     * the pixel; a circle a pixel too tight left white specks outside the
+     * curve. Basic's caption has no such corner, and keeps a small arc. */
+    static const int luna[5] = { 5, 3, 2, 1, 1 };
+    static const int basic[5] = { 3, 2, 1, 1, 0 };
+    const int *ins = w2k_theme == THEME_BASIC7 ? basic : luna;
+    int rad = 5;
     Pixmap mask = XCreatePixmap(w2k.dpy, c->frame, (unsigned)fw, (unsigned)fh,
                                 1);
     GC g = XCreateGC(w2k.dpy, mask, 0, NULL);
@@ -214,10 +222,9 @@ void frame_shape(Client *c)
     XFillRectangle(w2k.dpy, mask, g, 0, rad, (unsigned)fw,
                    (unsigned)(fh - rad));
     for (int i = 0; i < rad; i++) {
-        int dy = rad - 1 - i, dx = rad - 1;
-        while (dx > 0 && dx * dx + dy * dy > (rad - 1) * (rad - 1) + 1) dx--;
-        int off = rad - 1 - dx;
-        XFillRectangle(w2k.dpy, mask, g, off, i, (unsigned)(fw - 2 * off), 1);
+        int off = ins[i];
+        if (2 * off < fw)
+            XFillRectangle(w2k.dpy, mask, g, off, i, (unsigned)(fw - 2 * off), 1);
     }
     XShapeCombineMask(w2k.dpy, c->frame, ShapeBounding, 0, 0, mask, ShapeSet);
     XFreeGC(w2k.dpy, g);
