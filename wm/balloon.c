@@ -1,147 +1,290 @@
 /* balloon.c -- the notification balloon.
  *
- * Windows 2000 introduced these: a rounded tip that rises out of the
- * notification area with a title, a line or two of text, and a close box,
- * fading away after a few seconds.
+ * The yellow rounded tip that rises out of the notification area with an
+ * icon, a bold title, a line or two of text and a close box, and goes away
+ * after a few seconds: Windows 2000 introduced it and XP made it the one
+ * everybody remembers. The body is a rounded rectangle with a tail that
+ * points down at the notification area, cut out of the screen with the
+ * Shape extension so the desktop shows round the corners.
  *
- * Applications ask for one through _W2K_NOTIFY on the root window: the
- * title and text arrive as two NUL-separated strings in the property, and
- * the shell shows it. That is the same shape as the tray protocol -- a
- * property and a client message -- rather than anything invented here. */
+ * Every program's notifications come here: the shell's own through the
+ * _W2K_NOTIFY property on the root window, everybody else's through the
+ * org.freedesktop.Notifications service the shell provides (notifyd.c).
+ * They queue, and show one after another, as Windows did. */
 #include "wm.h"
 #include "w2kui.h"
+#include <X11/extensions/shape.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-#define BALLOON_W    260
-#define BALLOON_MS  7000
-#define TAIL_H        12
+#define BALLOON_MAXW  330
+#define BALLOON_MINW  180
+#define BALLOON_MS   7000
+#define TAIL_H         16
+#define TAIL_W         22
+#define RADIUS          9
+#define PAD            10
+#define MAXLINES        5
+#define QUEUE_MAX      16
+
+typedef struct {
+    char     title[128];
+    char     text[512];
+    int      icon;
+    int      ms;
+    unsigned id;                    /* D-Bus notification id, 0 for ours */
+} Note;
+
+static Note   queue[QUEUE_MAX];
+static int    nqueue;
 
 static Window balloon;
-static char   b_title[128], b_text[512];
+static Note   cur;
 static long   b_until;
 static int    b_w, b_h;
+static int    b_tail_x;             /* where the tail's tip is, in the window */
+static int    b_flip;               /* tail on top: the bar is along the top edge */
 static W2kRect b_close;
+static int    close_down;
 
-static int wrap_text(const char *text, char lines[4][96])
+/* Word-wrap the text to the balloon's inner width. */
+static int wrap_text(const char *text, int width, char lines[MAXLINES][128])
 {
-    int n = 0, used = 0;
+    int n = 0;
     const char *p = text;
-    while (*p && n < 4) {
+    while (*p && n < MAXLINES) {
+        const char *nl = strchr(p, '\n');
         int fit = 0, last_space = 0;
-        for (int i = 0; p[i] && i < 95; i++) {
-            char probe[96];
+        for (int i = 0; p[i] && i < 127; i++) {
+            if (nl && p + i >= nl) break;
+            char probe[128];
             snprintf(probe, sizeof probe, "%.*s", i + 1, p);
-            if (w2k_text_width(F_UI, probe, -1) > BALLOON_W - 28) break;
+            if (w2k_text_width(F_UI, probe, -1) > width) break;
             fit = i + 1;
             if (p[i] == ' ') last_space = i + 1;
         }
         if (!fit) break;
-        if (p[fit] && last_space) fit = last_space;
-        snprintf(lines[n], 96, "%.*s", fit, p);
+        if (p[fit] && p[fit] != '\n' && last_space) fit = last_space;
+        snprintf(lines[n], 128, "%.*s", fit, p);
+        /* trim the trailing space the break left */
+        size_t l = strlen(lines[n]);
+        while (l && lines[n][l - 1] == ' ') lines[n][--l] = 0;
         p += fit;
         while (*p == ' ') p++;
+        if (*p == '\n') p++;
         n++;
-        used = 1;
     }
-    return used ? n : 0;
+    return n;
+}
+
+/* The balloon's outline, filled: a rounded rectangle plus the tail, drawn
+ * `inset` pixels inside the window's edge. Drawn once in black for the
+ * border and the shape, then once more inset by one in the balloon's
+ * colour, which leaves a one-pixel border all round. */
+static void draw_shape(Drawable d, GC g, int inset)
+{
+    int x0 = inset, y0 = inset + (b_flip ? TAIL_H : 0), w = b_w - 2 * inset, body_h = b_h - TAIL_H - 2 * inset;
+    int r = RADIUS - inset;
+    if (r < 1) r = 1;
+    XFillRectangle(w2k.dpy, d, g, x0 + r, y0, (unsigned)(w - 2 * r), (unsigned)body_h);
+    XFillRectangle(w2k.dpy, d, g, x0, y0 + r, (unsigned)w, (unsigned)(body_h - 2 * r));
+    XFillArc(w2k.dpy, d, g, x0, y0, (unsigned)(2 * r), (unsigned)(2 * r), 90 * 64, 90 * 64);
+    XFillArc(w2k.dpy, d, g, x0 + w - 2 * r - 1, y0, (unsigned)(2 * r), (unsigned)(2 * r), 0, 90 * 64);
+    XFillArc(w2k.dpy, d, g, x0, y0 + body_h - 2 * r - 1, (unsigned)(2 * r), (unsigned)(2 * r), 180 * 64, 90 * 64);
+    XFillArc(w2k.dpy, d, g, x0 + w - 2 * r - 1, y0 + body_h - 2 * r - 1, (unsigned)(2 * r), (unsigned)(2 * r), 270 * 64, 90 * 64);
+    /* The tail: from a base on the bottom edge down to its tip -- or, under
+     * a bar along the top, from the top edge up. */
+    int base_y = b_flip ? y0 : y0 + body_h - 1;
+    int tip_x = b_tail_x, tip_y = b_flip ? inset : b_h - 1 - inset;
+    int bl = b_tail_x - TAIL_W + 2 * inset, br = b_tail_x + 2 + inset;
+    XPoint tri[3] = { { (short)bl, (short)base_y }, { (short)br, (short)base_y },
+                      { (short)tip_x, (short)tip_y } };
+    XFillPolygon(w2k.dpy, d, g, tri, 3, Convex, CoordModeOrigin);
+}
+
+static void apply_shape(void)
+{
+    Pixmap mask = XCreatePixmap(w2k.dpy, balloon, (unsigned)b_w, (unsigned)b_h, 1);
+    GC g = XCreateGC(w2k.dpy, mask, 0, NULL);
+    XSetForeground(w2k.dpy, g, 0);
+    XFillRectangle(w2k.dpy, mask, g, 0, 0, (unsigned)b_w, (unsigned)b_h);
+    XSetForeground(w2k.dpy, g, 1);
+    draw_shape(mask, g, 0);
+    XShapeCombineMask(w2k.dpy, balloon, ShapeBounding, 0, 0, mask, ShapeSet);
+    XFreeGC(w2k.dpy, g);
+    XFreePixmap(w2k.dpy, mask);
 }
 
 static void balloon_paint(void)
 {
-    char lines[4][96];
-    int n = wrap_text(b_text, lines);
+    char lines[MAXLINES][128];
+    int n = wrap_text(cur.text, b_w - 2 * PAD - 4, lines);
     int fh = w2k_font_height(F_UI);
 
-    int body_h = b_h - TAIL_H;
-    int tail_x = b_w - 40;                 /* where the tail leaves the body */
-
-    w2k_fill(balloon, 0, 0, b_w, b_h, C_TOOLTIP);
-
-    /* Body outline, with a gap along the bottom where the tail joins it --
-     * otherwise the balloon looks like a box with a triangle stuck on. */
-    w2k_hline(balloon, 0, 0, b_w, C_WINDOWFRAME);
-    w2k_vline(balloon, 0, 0, body_h, C_WINDOWFRAME);
-    w2k_vline(balloon, b_w - 1, 0, body_h, C_WINDOWFRAME);
-    w2k_hline(balloon, 0, body_h - 1, tail_x, C_WINDOWFRAME);
-    w2k_hline(balloon, tail_x + TAIL_H, body_h - 1,
-              b_w - tail_x - TAIL_H, C_WINDOWFRAME);
-
-    /* The tail: a right triangle dropping from the gap, filled in the
-     * balloon's own colour and outlined down both sides. */
-    XSetForeground(w2k.dpy, w2k.gc, w2k.col[C_TOOLTIP]);
-    for (int i = 0; i < TAIL_H; i++)
-        XFillRectangle(w2k.dpy, balloon, w2k.gc, tail_x + i,
-                       body_h - 1 + i, TAIL_H - i, 1);
     XSetForeground(w2k.dpy, w2k.gc, w2k.col[C_WINDOWFRAME]);
-    for (int i = 0; i < TAIL_H; i++) {
-        XFillRectangle(w2k.dpy, balloon, w2k.gc, tail_x + i,
-                       body_h - 1 + i, 1, 1);                  /* slope */
-        XFillRectangle(w2k.dpy, balloon, w2k.gc, tail_x + TAIL_H - 1,
-                       body_h - 1 + i, 1, 1);                  /* upright */
-    }
+    draw_shape(balloon, w2k.gc, 0);
+    XSetForeground(w2k.dpy, w2k.gc, w2k.col[C_TOOLTIP]);
+    draw_shape(balloon, w2k.gc, 1);
 
-    w2k_icon_draw(balloon, 8, 8, ICO_INFO);
-    w2k_text(balloon, F_UI_BOLD, 30, 8, b_title, C_TOOLTIPTEXT);
+    /* Icon and bold title on the first row; the text under them, from
+     * the icon's left edge, as XP set it. */
+    int ty = PAD + (b_flip ? TAIL_H : 0);
+    w2k_icon_draw(balloon, PAD, ty, cur.icon);
+    w2k_text(balloon, F_UI_BOLD, PAD + 16 + 6, ty + (16 - w2k_font_height(F_UI_BOLD)) / 2,
+             cur.title, C_TOOLTIPTEXT);
     for (int i = 0; i < n; i++)
-        w2k_text(balloon, F_UI, 30, 10 + fh + 4 + i * (fh + 1), lines[i],
-                 C_TOOLTIPTEXT);
+        w2k_text(balloon, F_UI, PAD, ty + 16 + 6 + i * (fh + 2), lines[i], C_TOOLTIPTEXT);
 
-    /* The close box, top right. */
-    b_close = (W2kRect){ b_w - 18, 6, 12, 12 };
-    w2k_capglyph_close(balloon, b_close.x - 4, b_close.y - 3, C_TOOLTIPTEXT);
-}
-
-void balloon_show(const char *title, const char *text)
-{
-    if (!title || !text) return;
-    snprintf(b_title, sizeof b_title, "%s", title);
-    snprintf(b_text, sizeof b_text, "%s", text);
-
-    char lines[4][96];
-    int n = wrap_text(b_text, lines);
-    int fh = w2k_font_height(F_UI);
-    b_w = BALLOON_W;
-    b_h = 10 + fh + 4 + (n ? n : 1) * (fh + 1) + 10 + TAIL_H;
-
-    /* Sit above the notification area, on the primary monitor. */
-    const W2kMonitor *m = w2k_monitor_primary();
-    int wx, wy, ww, wh;
-    wm_workarea_of(m, &wx, &wy, &ww, &wh);
-    int x = wx + ww - b_w - 8;
-    int y = wy + wh - b_h - 2;
-    if (w2k_taskbar_edge == TB_TOP) y = wy + 2;
-
-    if (!balloon) {
-        XSetWindowAttributes a = {
-            .override_redirect = True, .save_under = True,
-            .background_pixel = w2k.col[C_TOOLTIP],
-            .event_mask = ExposureMask | ButtonPressMask
-        };
-        balloon = XCreateWindow(w2k.dpy, w2k.root, x, y, b_w, b_h, 0,
-                                CopyFromParent, InputOutput, CopyFromParent,
-                                CWOverrideRedirect | CWSaveUnder | CWBackPixel |
-                                CWEventMask, &a);
-    } else {
-        XMoveResizeWindow(w2k.dpy, balloon, x, y, b_w, b_h);
+    /* The close box: a small bordered square with an X, top right. */
+    b_close = (W2kRect){ b_w - PAD - 13, ty - 1, 13, 13 };
+    if (close_down) w2k_fill(balloon, b_close.x + 1, b_close.y + 1, 11, 11, C_FACE);
+    XSetForeground(w2k.dpy, w2k.gc, w2k.col[C_TOOLTIPTEXT]);
+    XDrawRectangle(w2k.dpy, balloon, w2k.gc, b_close.x, b_close.y, 12, 12);
+    int cx = b_close.x + 3 + close_down, cy = b_close.y + 3 + close_down;
+    for (int i = 0; i < 7; i++) {
+        XFillRectangle(w2k.dpy, balloon, w2k.gc, cx + i, cy + i, 1, 1);
+        XFillRectangle(w2k.dpy, balloon, w2k.gc, cx + 6 - i, cy + i, 1, 1);
     }
-    XMapRaised(w2k.dpy, balloon);
-    balloon_paint();
-    b_until = w2k_now_ms() + BALLOON_MS;
 }
 
-void balloon_hide(void)
+static void show_next(void);
+
+/* Take the balloon down. `reason` is the freedesktop one: 1 expired,
+ * 2 dismissed by the user, 3 closed by a program. */
+static void dismiss(int reason)
 {
     if (!balloon) return;
     XDestroyWindow(w2k.dpy, balloon);
     balloon = 0;
     b_until = 0;
+    close_down = 0;
+    if (cur.id) notifyd_closed(cur.id, reason);
+    cur.id = 0;
+    show_next();
+}
+
+static void show_next(void)
+{
+    if (balloon || !nqueue) return;
+    cur = queue[0];
+    memmove(queue, queue + 1, (size_t)(nqueue - 1) * sizeof *queue);
+    nqueue--;
+
+    /* Sized to the words: as wide as the longest line wants, within the
+     * limits, and as tall as the wrapped text needs. */
+    int fhb = w2k_font_height(F_UI_BOLD), fh = w2k_font_height(F_UI);
+    int want = w2k_text_width(F_UI_BOLD, cur.title, -1) + PAD + 16 + 6 + 20 + PAD;
+    int tw = w2k_text_width(F_UI, cur.text, -1) + 2 * PAD + 4;
+    if (tw > want) want = tw;
+    b_w = want > BALLOON_MAXW ? BALLOON_MAXW : want < BALLOON_MINW ? BALLOON_MINW : want;
+    char lines[MAXLINES][128];
+    int n = wrap_text(cur.text, b_w - 2 * PAD - 4, lines);
+    if (n < 1) n = 1;
+    (void)fhb;
+    b_h = PAD + 16 + 6 + n * (fh + 2) + PAD + TAIL_H;
+
+    /* Above the notification area, the tail pointing at it; below it when
+     * the bar is at the top. */
+    int ax, ay, top;
+    taskbar_tray_anchor(&ax, &ay, &top);
+    const W2kMonitor *m = w2k_monitor_primary();
+    int wx, wy, ww, wh;
+    wm_workarea_of(m, &wx, &wy, &ww, &wh);
+    int x = ax - (b_w - 40);
+    if (x + b_w > wx + ww - 2) x = wx + ww - 2 - b_w;
+    if (x < wx + 2) x = wx + 2;
+    b_tail_x = ax - x;
+    if (b_tail_x > b_w - RADIUS - 6) b_tail_x = b_w - RADIUS - 6;
+    if (b_tail_x < RADIUS + TAIL_W) b_tail_x = RADIUS + TAIL_W;
+    b_flip = top;
+    int y = top ? ay : ay - b_h;
+
+    XSetWindowAttributes a = {
+        .override_redirect = True, .save_under = True,
+        .background_pixmap = None,
+        .event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask
+    };
+    balloon = XCreateWindow(w2k.dpy, w2k.root, x, y, (unsigned)b_w, (unsigned)b_h, 0,
+                            CopyFromParent, InputOutput, CopyFromParent,
+                            CWOverrideRedirect | CWSaveUnder | CWBackPixmap |
+                            CWEventMask, &a);
+    apply_shape();
+    XMapRaised(w2k.dpy, balloon);
+    balloon_paint();
+    b_until = w2k_now_ms() + (cur.ms > 0 ? cur.ms : BALLOON_MS);
+}
+
+/* Queue a balloon. An id that is already queued or showing is replaced. */
+void balloon_queue(const char *title, const char *text, int icon, int ms, unsigned id)
+{
+    if (!title) title = "";
+    if (!text) text = "";
+    if (id && balloon && cur.id == id) {
+        /* Replacing the one on screen: repaint it in place. */
+        snprintf(cur.title, sizeof cur.title, "%s", title);
+        snprintf(cur.text, sizeof cur.text, "%s", text);
+        cur.icon = icon;
+        XDestroyWindow(w2k.dpy, balloon);
+        balloon = 0;
+        Note again = cur;
+        memmove(queue + 1, queue, (size_t)(nqueue < QUEUE_MAX - 1 ? nqueue : QUEUE_MAX - 1) * sizeof *queue);
+        queue[0] = again;
+        if (nqueue < QUEUE_MAX) nqueue++;
+        show_next();
+        return;
+    }
+    for (int i = 0; id && i < nqueue; i++)
+        if (queue[i].id == id) {
+            snprintf(queue[i].title, sizeof queue[i].title, "%s", title);
+            snprintf(queue[i].text, sizeof queue[i].text, "%s", text);
+            queue[i].icon = icon;
+            queue[i].ms = ms;
+            return;
+        }
+    if (nqueue >= QUEUE_MAX) {
+        if (queue[0].id) notifyd_closed(queue[0].id, 3);
+        memmove(queue, queue + 1, (size_t)(QUEUE_MAX - 1) * sizeof *queue);
+        nqueue = QUEUE_MAX - 1;
+    }
+    Note *n = &queue[nqueue++];
+    memset(n, 0, sizeof *n);
+    snprintf(n->title, sizeof n->title, "%s", title);
+    snprintf(n->text, sizeof n->text, "%s", text);
+    n->icon = w2k_icon_valid(icon) ? icon : ICO_INFO;
+    n->ms = ms;
+    n->id = id;
+    show_next();
+}
+
+void balloon_show(const char *title, const char *text)
+{
+    balloon_queue(title, text, ICO_INFO, 0, 0);
+}
+
+/* A program withdrew its notification (CloseNotification). */
+void balloon_close_id(unsigned id)
+{
+    if (!id) return;
+    if (balloon && cur.id == id) { dismiss(3); return; }
+    for (int i = 0; i < nqueue; i++)
+        if (queue[i].id == id) {
+            memmove(queue + i, queue + i + 1, (size_t)(nqueue - i - 1) * sizeof *queue);
+            nqueue--;
+            notifyd_closed(id, 3);
+            return;
+        }
+}
+
+void balloon_hide(void)
+{
+    dismiss(2);
 }
 
 /* Called from the main loop: take it down when its time is up. */
 void balloon_tick(void)
 {
-    if (balloon && b_until && w2k_now_ms() > b_until) balloon_hide();
+    if (balloon && b_until && w2k_now_ms() > b_until) dismiss(1);
 }
 
 /* When the balloon next needs to go away, or -1 if there is none up. */
@@ -160,8 +303,50 @@ int balloon_event(XEvent *e)
         return 1;
     }
     if (e->type == ButtonPress && e->xbutton.window == balloon) {
-        balloon_hide();          /* clicking anywhere dismisses it */
+        if (w2k_rect_hit(&b_close, e->xbutton.x, e->xbutton.y)) {
+            close_down = 1;
+            balloon_paint();
+        } else {
+            /* Clicking the balloon itself is the "act on it" click. */
+            if (cur.id) notifyd_action(cur.id, "default");
+            dismiss(2);
+        }
+        return 1;
+    }
+    if (e->type == ButtonRelease && e->xbutton.window == balloon) {
+        if (close_down) dismiss(2);
         return 1;
     }
     return 0;
+}
+
+/* Development aid, like the other W2K_RENDER hooks: show a balloon and
+ * write its picture out as a PPM. */
+int balloon_render(const char *path)
+{
+    balloon_queue("Take a tour of Windows XP",
+                  "To learn about the exciting new features in XP now, click here. "
+                  "To take the tour later, click All Programs on the Start menu, "
+                  "and then click Accessories.", ICO_INFO, 0, 0);
+    if (!balloon) return 0;
+    /* No bar in this mode, so it was placed off the top: bring it on. */
+    XMoveWindow(w2k.dpy, balloon, 40, 40);
+    XSync(w2k.dpy, False);
+    balloon_paint();
+    XSync(w2k.dpy, False);
+    XImage *im = XGetImage(w2k.dpy, balloon, 0, 0, (unsigned)b_w, (unsigned)b_h, AllPlanes, ZPixmap);
+    FILE *f = fopen(path, "wb");
+    if (f && im) {
+        fprintf(f, "P6\n%d %d\n255\n", b_w, b_h);
+        for (int y = 0; y < b_h; y++)
+            for (int x = 0; x < b_w; x++) {
+                unsigned long v = XGetPixel(im, x, y);
+                unsigned char rgb[3] = { (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff };
+                fwrite(rgb, 1, 3, f);
+            }
+    }
+    if (f) fclose(f);
+    if (im) XDestroyImage(im);
+    dismiss(3);
+    return 1;
 }

@@ -746,6 +746,21 @@ int taskbar_render(const char *path, int w)
 
 void taskbar_sync(void) { taskbar_paint(); }
 
+void taskbar_tray_anchor(int *x, int *y, int *top)
+{
+    int vert = vertical();
+    *top = w2k_taskbar_edge == TB_TOP;
+    if (vert) {
+        *x = tb_x + tb_w / 2;
+        *y = tb_y + notify_y;
+        *top = 0;
+        return;
+    }
+    /* The first docked icon, or the speaker when nothing is docked. */
+    *x = tb_x + (notify_w ? notify_x + 8 : vol_x + 8);
+    *y = *top ? tb_y + tb_h : tb_y;
+}
+
 /* Polling the mixer means running pactl, which means forking a shell.
  * Five seconds is often enough to notice that something else changed the
  * level -- once a second, which is what this used to do, is sixty

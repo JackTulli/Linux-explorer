@@ -174,7 +174,22 @@ void volume_popup(int bx, int by);   /* the slider, above the speaker */
 
 /* balloon.c -- notification balloons */
 void balloon_show(const char *title, const char *text);
+/* Queue a balloon: icon id, timeout in ms (0 = the default), and the
+ * notification id a program gave it (0 for the shell's own). */
+void balloon_queue(const char *title, const char *text, int icon, int ms, unsigned id);
+void balloon_close_id(unsigned id);
+int  balloon_render(const char *path);   /* development aid */
 void balloon_hide(void);
+/* notifyd.c: the org.freedesktop.Notifications service. */
+int  notifyd_init(void);
+int  notifyd_fd(void);                /* -1 when not serving */
+void notifyd_dispatch(void);
+void notifyd_closed(unsigned id, int reason);
+void notifyd_action(unsigned id, const char *action);
+void notifyd_fini(void);
+/* taskbar.c: where a balloon's tail should point -- the notification
+ * area's root position; *top says the bar is along the top edge. */
+void taskbar_tray_anchor(int *x, int *y, int *top);
 void balloon_tick(void);
 int  balloon_event(XEvent *e);
 

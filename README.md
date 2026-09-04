@@ -93,6 +93,12 @@ Windows 2000 (the built-in artwork), Windows 98, Windows XP, Windows 7 and
 ReactOS. Every window, the desktop, Explorer and the Start menu follow the
 choice at once.
 
+Notifications from every program appear as the yellow balloon over the
+notification area: the desktop provides the `org.freedesktop.Notifications`
+service, so Firefox, mail, `notify-send` and anything using libnotify all
+show the same balloon, one after another, with a close box and a click to
+act on it.
+
 Other programs match: GTK 2/3/4 get the Chicago95 theme and icons, Qt gets
 the Windows style with a Windows 2000 palette (qt5ct/qt6ct), every program
 gets the Windows cursors through an Xcursor theme, and Explorer is the

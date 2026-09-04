@@ -612,11 +612,26 @@ static void wm_restart(void)
     for (Client *c = clients; c; c = c->next)
         if (c->minimized) { c->minimized = 0; XMapWindow(w2k.dpy, c->frame); }
     XSetInputFocus(w2k.dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
+    notifyd_fini();
     tray_fini();
     while (clients) client_unmanage(clients, 0);
     XDestroyWindow(w2k.dpy, wm_check);
     XSync(w2k.dpy, False);
     w2k_fini();
+    /* The binary by its path on disk, never /proc/self/exe: that link
+     * names the image this process was started from, which after a
+     * rebuild is the old, deleted file -- exec of it would run the old
+     * build again for ever. The path also keeps the process named w2kwm
+     * for pgrep -x, which the installer uses to find running desktops. */
+    char self[1024];
+    ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
+    if (n > 0) {
+        self[n] = 0;
+        char *del = strstr(self, " (deleted)");
+        if (del) *del = 0;
+        if (access(self, X_OK) == 0) execv(self, saved_argv);
+    }
+    execvp(saved_argv[0], saved_argv);
     execv("/proc/self/exe", saved_argv);
     fprintf(stderr, "w2kwm: cannot restart: %s\n", strerror(errno));
     exit(1);
@@ -698,6 +713,9 @@ int main(int argc, char **argv)
         else if (which && !strcmp(which, "startpanel")) {
             startpanel_render(getenv("W2K_RENDER"));
         }
+        else if (which && !strcmp(which, "balloon")) {
+            balloon_render(getenv("W2K_RENDER"));
+        }
         else if (which && !strcmp(which, "changeicon")) {
             char icon[256];
             wm_change_icon_dialog(icon, sizeof icon);
@@ -776,6 +794,7 @@ int main(int argc, char **argv)
         }
 
     int fd = ConnectionNumber(w2k.dpy);
+    notifyd_init();                     /* the desktop's notification service */
     while (running) {
         while (XPending(w2k.dpy)) {
             XEvent e;
@@ -793,6 +812,8 @@ int main(int argc, char **argv)
         fd_set r;
         FD_ZERO(&r);
         FD_SET(fd, &r);
+        int nfd = notifyd_fd();
+        if (nfd >= 0) FD_SET(nfd, &r);
         int wait = taskbar_next_tick_ms();
         int d = desktop_next_tick_ms();
         if (d < wait) wait = d;
@@ -805,8 +826,9 @@ int main(int argc, char **argv)
         if (wait > 60000) wait = 60000;
         struct timeval tv = { .tv_sec = wait / 1000,
                               .tv_usec = (wait % 1000) * 1000 };
-        int rc = select(fd + 1, &r, NULL, NULL, &tv);
+        int rc = select((nfd > fd ? nfd : fd) + 1, &r, NULL, NULL, &tv);
         if (rc < 0 && errno != EINTR) break;
+        if (nfd >= 0) notifyd_dispatch();
         taskbar_tick();
         taskbar_hover_tick();
         balloon_tick();
@@ -816,6 +838,7 @@ int main(int argc, char **argv)
     }
 
     XSetInputFocus(w2k.dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
+    notifyd_fini();
     tray_fini();                        /* hand the icons back to the root */
     while (clients) client_unmanage(clients, 0);
     XDestroyWindow(w2k.dpy, wm_check);

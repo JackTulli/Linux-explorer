@@ -31,6 +31,12 @@ ifneq ($(wildcard /usr/include/security/pam_appl.h),)
 apps/w2kdm.o: CFLAGS += -DHAVE_PAM
 bin/w2kdm: LDLIBS += -lpam
 endif
+# The notification service needs libdbus; without it the shell shows only
+# its own balloons.
+ifneq ($(shell pkg-config --exists dbus-1 2>/dev/null && echo y),)
+wm/notifyd.o: CFLAGS += -DHAVE_DBUS $(shell pkg-config --cflags dbus-1)
+bin/w2kwm: LDLIBS += $(shell pkg-config --libs dbus-1)
+endif
 BINS    := bin/w2kwm $(APPS)
 
 all: $(BINS)
