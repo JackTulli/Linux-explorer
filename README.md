@@ -73,6 +73,8 @@ Try it nested first, without logging out of anything:
                    Options, Taskbar and Start Menu
     w2kdisplay     Display Properties: wallpaper (centre, tile, stretch, fit,
                    fill, span), appearance schemes, themes, monitors
+    w2kdevmgmt     Device Manager: the machine's hardware from sysfs, drivers,
+                   enable/disable, DKMS driver install (contributed)
     w2knotepad, w2kcalc, w2kcharmap, w2kimage (Imaging), w2ktaskmgr,
     w2ksnip        Snipping Tool
 

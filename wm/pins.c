@@ -159,6 +159,7 @@ static int pin_icon_resolve(const Pin *p)
     if (strstr(p->cmd, "w2ksnip"))    return ICO_SNIP;
     if (strstr(p->cmd, "w2kcalc"))     return ICO_CALC;
     if (strstr(p->cmd, "w2kcharmap"))  return ICO_CHARMAP;
+    if (strstr(p->cmd, "w2kdevmgmt"))  return ICO_MYCOMPUTER;
     if (strstr(p->cmd, "w2kcontrol"))  return ICO_CONTROLPANEL;
     if (strstr(p->cmd, "w2kdisplay"))  return ICO_SETTINGS;
     if (strstr(p->cmd, "w2kimage"))    return ICO_PAINT;

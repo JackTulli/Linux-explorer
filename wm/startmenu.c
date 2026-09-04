@@ -197,6 +197,7 @@ static int on_context(int id, int x, int y)
     case SM_TASKMGR:  own = "w2ktaskmgr";  own_label = "Task Manager"; break;
     case SM_CALC:     own = "w2kcalc";     own_label = "Calculator"; break;
     case SM_CHARMAP:  own = "w2kcharmap";  own_label = "Character Map"; break;
+    case SM_DEVMGMT:  own = "w2kdevmgmt";  own_label = "Device Manager"; break;
     case SM_IMAGING:  own = "w2kimage";    own_label = "Imaging"; break;
     case SM_CONTROLPANEL: own = "w2kcontrol"; own_label = "Control Panel"; break;
     }
@@ -238,6 +239,7 @@ void startmenu_open(void)
      * it -- Character Map lives there, not at the top level. */
     W2kMenu *systools = w2k_menu_new();
     prog_item(systools, SM_CHARMAP, "&Character Map", "w2kcharmap", ICO_CHARMAP);
+    prog_item(systools, SM_DEVMGMT, "&Device Manager", "w2kdevmgmt", ICO_MYCOMPUTER);
 
     W2kMenu *acc = w2k_menu_new();
     w2k_menu_sub(acc, "S&ystem Tools", ICO_ACCESSORIES, systools);
@@ -373,6 +375,7 @@ void startmenu_dispatch(int id)
     case SM_TASKMGR:      wm_spawn("w2ktaskmgr"); break;
     case SM_CALC:         wm_spawn("w2kcalc"); break;
     case SM_CHARMAP:      wm_spawn("w2kcharmap"); break;
+    case SM_DEVMGMT:      wm_spawn("w2kdevmgmt"); break;
     case SM_FOLDEROPTS:   wm_spawn("w2kcontrol folders"); break;
     case SM_PAINT:        wm_spawn("w2kpaint"); break;
     case SM_SNIP:         wm_spawn("w2ksnip"); break;

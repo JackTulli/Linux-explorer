@@ -144,6 +144,7 @@ static int icon_for_class(const char *cls)
     if (!strcasecmp(cls, "w2ktaskmgr"))  return ICO_TASKMGR;
     if (!strcasecmp(cls, "w2kcalc"))     return ICO_CALC;
     if (!strcasecmp(cls, "w2kcharmap"))  return ICO_CHARMAP;
+    if (!strncasecmp(cls, "w2kdevmgmt", 10)) return ICO_MYCOMPUTER;
     if (!strcasecmp(cls, "w2kimage"))    return ICO_PAINT;
     if (!strcasecmp(cls, "w2ksnip"))     return ICO_SNIP;
     if (!strcasecmp(cls, "w2kcontrol"))  return ICO_CONTROLPANEL;

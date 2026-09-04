@@ -37,6 +37,7 @@ static const Applet applets[] = {
       ICO_STARTFLAG, "@startmenu" },      /* @ = ask the shell, not a program */
     { "System", "Visual effects and performance", ICO_MYCOMPUTER, NULL },
     { "Task Manager", "Running programs and load", ICO_TASKMGR, "w2ktaskmgr" },
+    { "Device Manager", "The hardware in this computer", ICO_MYCOMPUTER, "w2kdevmgmt" },
     { "Folder Options", "How folders look and open", ICO_FOLDER_OPEN, NULL },
     { "Mouse", "Buttons, double-click and pointer speed", ICO_CURSORFILE, NULL },
     { "Keyboard", "Repeat delay, rate and cursor blink", ICO_APP, NULL },
