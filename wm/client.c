@@ -170,10 +170,17 @@ static int icon_for_client(Client *c)
     for (int i = 0; i < ncache; i++)
         if (!strcasecmp(cache[i].cls, c->cls)) return cache[i].id;
 
-    int id = icon_from_property(c->win);
-    /* Either half of WM_CLASS may be the icon theme's name for it. */
-    if (id < 0) id = w2k_icon_by_name(c->cls);
+    /* The icon theme first, by either half of WM_CLASS: a file there has
+     * real transparency. What the application publishes in _NET_WM_ICON
+     * comes second -- toolkits fill it from the same theme, but a pixel
+     * icon can arrive with an opaque checkerboard where the transparent
+     * pixels were, which on a dark title bar looks like corruption. */
+    int id = w2k_icon_by_name(c->cls);
     if (id == ICO_APP && c->cls_name) id = w2k_icon_by_name(c->cls_name);
+    if (id == ICO_APP) {
+        int own = icon_from_property(c->win);
+        if (own >= 0) id = own;
+    }
     static int next;
     int slot = ncache < (int)(sizeof cache / sizeof *cache) ? ncache++ : next++ % (int)(sizeof cache / sizeof *cache);
     snprintf(cache[slot].cls, sizeof cache[slot].cls, "%.63s", c->cls);

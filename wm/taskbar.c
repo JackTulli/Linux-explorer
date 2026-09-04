@@ -85,6 +85,60 @@ static int nql;
  * ------------------------------------------------------------------ */
 /* The Start button artwork for the current theme, loaded once. Absent, the
  * bar falls back to drawing a classic button. */
+/* The Windows 7 orb lights up under the pointer -- not at once, but over
+ * a quarter of a second, and it dims the same way when the pointer goes.
+ * The strip holds the normal and lit orbs; the frames between are mixed
+ * from them once, and a timer steps through them. */
+#define ORB_FRAMES 9
+#define ORB_STEP_MS 28
+static W2kSkin *orb_frames[ORB_FRAMES];
+static int orb_frame, orb_target;
+
+static void orb_frames_free(void)
+{
+    for (int i = 0; i < ORB_FRAMES; i++) { w2k_skin_free(orb_frames[i]); orb_frames[i] = NULL; }
+    orb_frame = orb_target = 0;
+}
+
+static void orb_frames_build(const char *path)
+{
+    int w = 0, h = 0;
+    unsigned char *rgba = w2k_image_load(path, &w, &h);
+    if (!rgba || h < 3) { free(rgba); return; }
+    int ch = h / 3;                         /* normal, lit, pressed */
+    size_t cell = (size_t)w * ch * 4;
+    unsigned char *mix = malloc(cell);
+    if (!mix) { free(rgba); return; }
+    const unsigned char *a = rgba, *b = rgba + cell;
+    for (int f = 0; f < ORB_FRAMES; f++) {
+        int t = f * 256 / (ORB_FRAMES - 1);
+        for (size_t i = 0; i < cell; i++)
+            mix[i] = (unsigned char)((a[i] * (256 - t) + b[i] * t) >> 8);
+        orb_frames[f] = w2k_skin_from_rgba(mix, w, ch);
+    }
+    free(mix);
+    free(rgba);
+}
+
+static void orb_tick(void *u)
+{
+    (void)u;
+    if (orb_frame < orb_target) orb_frame++;
+    else if (orb_frame > orb_target) orb_frame--;
+    if (orb_frame == orb_target) w2k_del_timer(orb_tick, NULL);
+    taskbar_paint();
+}
+
+/* The pointer came on to, or left, the Start button. */
+static void start_hot_changed(void)
+{
+    if (w2k_theme == THEME_BASIC7 && orb_frames[0]) {
+        orb_target = start_hot ? ORB_FRAMES - 1 : 0;
+        if (orb_frame != orb_target) w2k_add_timer(ORB_STEP_MS, orb_tick, NULL);
+    }
+    if (w2k_theme != THEME_CLASSIC) taskbar_paint();
+}
+
 static W2kSkin *theme_start_skin(void)
 {
     static W2kSkin *skin;
@@ -94,13 +148,18 @@ static W2kSkin *theme_start_skin(void)
     tried_small = w2k_taskbar_small;
     w2k_skin_free(skin);
     skin = NULL;
+    w2k_del_timer(orb_tick, NULL);
+    orb_frames_free();
     if (w2k_theme == THEME_CLASSIC) return NULL;
 
     const char *file = w2k_theme == THEME_XP ? "xp-start.png"
                                              : w2k_taskbar_small ? "w7-orb-small.png"
                                                                 : "w7-orb.png";
     char path[1024];
-    if (w2k_skin_path(file, path, sizeof path)) skin = w2k_skin_load(path);
+    if (w2k_skin_path(file, path, sizeof path)) {
+        skin = w2k_skin_load(path);
+        if (skin && w2k_theme == THEME_BASIC7) orb_frames_build(path);
+    }
     return skin;
 }
 
@@ -466,7 +525,11 @@ static void taskbar_draw(Pixmap pm, int h)
         int sw = w2k_skin_w(skin), sh = w2k_skin_h(skin) / 3;
         int state = start_pressed ? 2 : (start_hot ? 1 : 0);
         int sy = vert ? TB_PAD : (h - sh) / 2;
-        w2k_skin_draw(pm, skin, TB_PAD - 2, sy, 0, state * sh, sw, sh);
+        if (state != 2 && orb_frames[0] && w2k_theme == THEME_BASIC7)
+            /* Part way through the glow: the mixed frame. */
+            w2k_skin_draw(pm, orb_frames[orb_frame], TB_PAD - 2, sy, 0, 0, sw, sh);
+        else
+            w2k_skin_draw(pm, skin, TB_PAD - 2, sy, 0, state * sh, sw, sh);
     } else {
         w2k_button(pm, TB_PAD, by, start_w, BTN_H, start_pressed);
         int o = start_pressed ? 1 : 0;
@@ -640,6 +703,12 @@ int taskbar_render(const char *path, int w)
     tb_w = w;
     tb_h = TASKBAR_H;
     layout();
+    /* W2K_RENDER_ORB=n paints the orb part way through its glow. */
+    if (getenv("W2K_RENDER_ORB") && theme_start_skin() && orb_frames[0]) {
+        orb_frame = atoi(getenv("W2K_RENDER_ORB"));
+        if (orb_frame < 0) orb_frame = 0;
+        if (orb_frame >= ORB_FRAMES) orb_frame = ORB_FRAMES - 1;
+    }
     Pixmap pm = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)w, (unsigned)tb_h,
                               w2k.depth);
     taskbar_draw(pm, tb_h);
@@ -1079,7 +1148,7 @@ int taskbar_event(XEvent *e)
         int over_start = start_button_hit(e->xmotion.x, e->xmotion.y);
         if (over_start != start_hot) {
             start_hot = over_start;
-            if (w2k_theme != THEME_CLASSIC) taskbar_paint();
+            start_hot_changed();
         }
         int mx = e->xmotion.x, my = e->xmotion.y;
         int over = -1;
@@ -1106,7 +1175,10 @@ int taskbar_event(XEvent *e)
         }
         return 1;
     }
-    if (e->type == LeaveNotify && e->xcrossing.window == tb) hover_clear();
+    if (e->type == LeaveNotify && e->xcrossing.window == tb) {
+        hover_clear();
+        if (start_hot) { start_hot = 0; start_hot_changed(); }
+    }
     if (e->type == ButtonRelease && drag_task >= 0) { drag_task = -1; return 1; }
     if (e->type == ButtonPress) hover_clear();
 

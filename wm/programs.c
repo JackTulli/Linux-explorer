@@ -59,9 +59,11 @@ static const struct { const char *name; const char *match; } groups[] = {
 static int group_for(const char *categories)
 {
     if (!categories) return G_OTHER;
-    char buf[512];
+    char buf[512], *sp = NULL;
     snprintf(buf, sizeof buf, "%s", categories);
-    for (char *tok = strtok(buf, ";"); tok; tok = strtok(NULL, ";")) {
+    /* strtok_r: the caller may be in the middle of tokenising a list of
+     * directories with strtok, and a plain strtok here would hijack it. */
+    for (char *tok = strtok_r(buf, ";", &sp); tok; tok = strtok_r(NULL, ";", &sp)) {
         char key[128];
         snprintf(key, sizeof key, "%s;", tok);
         for (int g = 0; g < G_OTHER; g++)
@@ -184,9 +186,9 @@ static void scan_all(void)
 
     const char *dirs = getenv("XDG_DATA_DIRS");
     if (!dirs || !*dirs) dirs = "/usr/local/share:/usr/share";
-    char copy[2048];
+    char copy[2048], *sp = NULL;
     snprintf(copy, sizeof copy, "%s", dirs);
-    for (char *tok = strtok(copy, ":"); tok; tok = strtok(NULL, ":")) {
+    for (char *tok = strtok_r(copy, ":", &sp); tok; tok = strtok_r(NULL, ":", &sp)) {
         snprintf(path, sizeof path, "%s/applications", tok);
         scan_dir(path, strstr(tok, "flatpak") != NULL);
     }

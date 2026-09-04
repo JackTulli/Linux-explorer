@@ -230,6 +230,14 @@ typedef struct { int rs, gs, bs, rbits, gbits, bbits; unsigned long rm, gm, bm; 
 static PixLayout pix_layout(const XImage *im)
 {
     PixLayout l = { 0, 0, 0, 0, 0, 0, im->red_mask, im->green_mask, im->blue_mask };
+    /* An image read back from a pixmap carries no visual, so Xlib leaves
+     * its masks at zero; the pixels are laid out as the screen's visual
+     * says. (Without this every saved snip came out black.) */
+    if (!l.rm && !l.gm && !l.bm) {
+        l.rm = w2k.visual->red_mask;
+        l.gm = w2k.visual->green_mask;
+        l.bm = w2k.visual->blue_mask;
+    }
     while (l.rs < 32 && !((l.rm >> l.rs) & 1)) l.rs++;
     while (l.gs < 32 && !((l.gm >> l.gs) & 1)) l.gs++;
     while (l.bs < 32 && !((l.bm >> l.bs) & 1)) l.bs++;

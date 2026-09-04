@@ -42,7 +42,14 @@ W2kSkin *w2k_skin_load_scaled(const char *path, int scale)
             int v = rgba[i] * scale / 256;
             rgba[i] = (unsigned char)(v > 255 ? 255 : v);
         }
+    W2kSkin *s = w2k_skin_from_rgba(rgba, w, h);
+    free(rgba);
+    return s;
+}
 
+W2kSkin *w2k_skin_from_rgba(const unsigned char *rgba, int w, int h)
+{
+    if (!rgba || w <= 0 || h <= 0) return NULL;
     W2kSkin *s = w2k_alloc(sizeof *s);
     s->w = w;
     s->h = h;
@@ -65,7 +72,6 @@ W2kSkin *w2k_skin_load_scaled(const char *path, int scale)
             if (p[3] >= 128) bits[y * stride + (x >> 3)] |= 1 << (x & 7);
             else s->opaque = 0;
         }
-    free(rgba);
 
     if (im) {
         XPutImage(w2k.dpy, s->pm, w2k.gc_icon, im, 0, 0, 0, 0,

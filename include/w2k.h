@@ -310,6 +310,9 @@ W2kSkin *w2k_skin_load(const char *path);
  * the binaries' directory, then the installed copy. 1 if found. */
 int  w2k_skin_path(const char *name, char *out, int n);
 W2kSkin *w2k_skin_load_scaled(const char *path, int scale);
+/* A skin from pixels already in memory (RGBA, row-major); the caller keeps
+ * the buffer. */
+W2kSkin *w2k_skin_from_rgba(const unsigned char *rgba, int w, int h);
 void     w2k_skin_free(W2kSkin *s);
 GC       w2k_copy_gc(void);   /* a GC that copies and nothing else: no clip, no tile */
 int      w2k_skin_w(const W2kSkin *s);
