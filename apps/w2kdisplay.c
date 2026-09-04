@@ -13,31 +13,31 @@
 /* ------------------------------------------------------------------ *
  * Appearance: the editable elements and the classic preset schemes
  * ------------------------------------------------------------------ */
-static const struct { const char *label; int color; } elements[] = {
-    { "Desktop",                  C_DESKTOP },
-    { "Active Title Bar",         C_ACTIVETITLE },
-    { "Active Title Bar Gradient", C_ACTIVETITLE2 },
-    { "Active Title Bar Text",    C_TITLETEXT },
-    { "Inactive Title Bar",       C_INACTIVETITLE },
-    { "Inactive Title Bar Gradient", C_INACTIVETITLE2 },
-    { "Inactive Title Bar Text",  C_INACTIVETITLETEXT },
-    { "3D Objects",               C_FACE },
-    { "3D Objects Highlight",     C_HILIGHT },
-    { "3D Objects Light",         C_LIGHT },
-    { "3D Objects Shadow",        C_SHADOW },
-    { "3D Objects Dark Shadow",   C_DKSHADOW },
-    { "3D Objects Text",          C_TEXT },
-    { "Disabled Text",            C_GRAYTEXT },
-    { "Window",                   C_WINDOW },
-    { "Window Text",              C_WINDOWTEXT },
-    { "Menu",                     C_MENU },
-    { "Menu Text",                C_MENUTEXT },
-    { "Selected Items",           C_HIGHLIGHT },
-    { "Selected Items Text",      C_HIGHLIGHTTEXT },
-    { "Scrollbar",                C_SCROLLBAR },
-    { "ToolTip",                  C_TOOLTIP },
-    { "ToolTip Text",             C_TOOLTIPTEXT },
-    { "Application Background",   C_APPWORKSPACE },
+/* `color2` is the second colour of a gradient title bar -- Windows 2000's
+ * "Color 2" -- or -1 for the items that have one colour. */
+static const struct { const char *label; int color, color2; } elements[] = {
+    { "Desktop",                  C_DESKTOP,       -1 },
+    { "Active Title Bar",         C_ACTIVETITLE,   C_ACTIVETITLE2 },
+    { "Active Title Bar Text",    C_TITLETEXT,     -1 },
+    { "Inactive Title Bar",       C_INACTIVETITLE, C_INACTIVETITLE2 },
+    { "Inactive Title Bar Text",  C_INACTIVETITLETEXT, -1 },
+    { "3D Objects",               C_FACE,          -1 },
+    { "3D Objects Highlight",     C_HILIGHT, -1 },
+    { "3D Objects Light",         C_LIGHT, -1 },
+    { "3D Objects Shadow",        C_SHADOW, -1 },
+    { "3D Objects Dark Shadow",   C_DKSHADOW, -1 },
+    { "3D Objects Text",          C_TEXT, -1 },
+    { "Disabled Text",            C_GRAYTEXT, -1 },
+    { "Window",                   C_WINDOW, -1 },
+    { "Window Text",              C_WINDOWTEXT, -1 },
+    { "Menu",                     C_MENU, -1 },
+    { "Menu Text",                C_MENUTEXT, -1 },
+    { "Selected Items",           C_HIGHLIGHT, -1 },
+    { "Selected Items Text",      C_HIGHLIGHTTEXT, -1 },
+    { "Scrollbar",                C_SCROLLBAR, -1 },
+    { "ToolTip",                  C_TOOLTIP, -1 },
+    { "ToolTip Text",             C_TOOLTIPTEXT, -1 },
+    { "Application Background",   C_APPWORKSPACE, -1 },
 };
 #define NELEM ((int)(sizeof elements / sizeof *elements))
 
@@ -106,6 +106,7 @@ presets[] = {
 #undef S
 };
 #define NPRESET ((int)(sizeof presets / sizeof *presets))
+static int matching_preset(void);
 
 /* ------------------------------------------------------------------ *
  * Settings: monitors via xrandr
@@ -298,8 +299,9 @@ typedef struct {
     /* Appearance */
     W2kCombo *scheme, *item;
     W2kEdit  *red, *green, *blue;
-    W2kRect   swatch;
+    W2kRect   swatch, swatch2;              /* Color and Color 2 buttons */
     int       cur_elem;
+    int       cur_col;                      /* 0: Color, 1: Color 2 */
     int       suppress;                     /* while filling edits */
 
     /* Settings */
@@ -319,10 +321,17 @@ typedef struct {
 
 static Dlg dl;
 
+/* The scheme colour the edits and the palette act on. */
+static int cur_color(void)
+{
+    int c2 = elements[dl.cur_elem].color2;
+    return dl.cur_col && c2 >= 0 ? c2 : elements[dl.cur_elem].color;
+}
+
 static void fill_color_edits(void)
 {
     int r, g, b;
-    w2k_color_rgb(elements[dl.cur_elem].color, &r, &g, &b);
+    w2k_color_rgb(cur_color(), &r, &g, &b);
     char t[8];
     dl.suppress = 1;
     snprintf(t, sizeof t, "%d", r); w2k_edit_set(dl.red, t);
@@ -340,13 +349,65 @@ static void color_edited(void *u)
     r = r < 0 ? 0 : r > 255 ? 255 : r;
     g = g < 0 ? 0 : g > 255 ? 255 : g;
     b = b < 0 ? 0 : b > 255 ? 255 : b;
-    w2k_color_set(elements[dl.cur_elem].color, r, g, b);
+    w2k_color_set(cur_color(), r, g, b);
     XSetWindowBackground(w2k.dpy, dl.win->win, w2k.col[C_FACE]);
+    dl.scheme->sel = matching_preset();
     dl.dirty = 1;
     w2k_win_dirty(dl.win);
 }
 
-static void on_item(void *u, int i) { (void)u; dl.cur_elem = i; fill_color_edits(); w2k_win_dirty(dl.win); }
+static void on_item(void *u, int i)
+{
+    (void)u;
+    dl.cur_elem = i;
+    dl.cur_col = 0;
+    fill_color_edits();
+    w2k_win_dirty(dl.win);
+}
+
+/* A colour button: the colour in a raised button with a drop arrow, as
+ * the Windows dialog draws Color and Color 2. */
+static void draw_color_button(Drawable d, const W2kRect *r, int color, int selected)
+{
+    int cr, cg, cb;
+    w2k_color_rgb(color, &cr, &cg, &cb);
+    w2k_button(d, r->x, r->y, r->w, r->h, 0);
+    XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(cr, cg, cb));
+    XFillRectangle(w2k.dpy, d, w2k.gc, r->x + 4, r->y + 4, (unsigned)(r->w - 24),
+                   (unsigned)(r->h - 8));
+    w2k_frame(d, r->x + 4, r->y + 4, r->w - 24, r->h - 8, C_DKSHADOW);
+    int ax = r->x + r->w - 14, ay = r->y + r->h / 2 - 1;
+    w2k_hline(d, ax, ay, 7, C_TEXT);
+    w2k_hline(d, ax + 1, ay + 1, 5, C_TEXT);
+    w2k_hline(d, ax + 2, ay + 2, 3, C_TEXT);
+    w2k_hline(d, ax + 3, ay + 3, 1, C_TEXT);
+    if (selected) w2k_focus_rect(d, r->x + 2, r->y + 2, r->w - 4, r->h - 4);
+}
+
+/* Color / Color 2 clicked: that colour becomes the one the edits show,
+ * and the palette drops down under the button. */
+static void pick_color(int which)
+{
+    dl.cur_col = which;
+    fill_color_edits();
+    const W2kRect *r = which ? &dl.swatch2 : &dl.swatch;
+    int rx, ry;
+    Window dummy;
+    XTranslateCoordinates(w2k.dpy, dl.win->win, w2k.root, r->x, r->y + r->h,
+                          &rx, &ry, &dummy);
+    w2k_win_dirty(dl.win);
+    w2k_win_repaint_now(dl.win);
+    int cr, cg, cb;
+    w2k_color_rgb(cur_color(), &cr, &cg, &cb);
+    if (w2k_color_popup(rx, ry, &cr, &cg, &cb)) {
+        w2k_color_set(cur_color(), cr, cg, cb);
+        XSetWindowBackground(w2k.dpy, dl.win->win, w2k.col[C_FACE]);
+        fill_color_edits();
+        dl.scheme->sel = matching_preset();
+        dl.dirty = 1;
+    }
+    w2k_win_dirty(dl.win);
+}
 
 /* The icon set changes at once in this window (the row of samples), and
  * everywhere else when Apply writes the scheme. */
@@ -358,6 +419,40 @@ static void on_iconset(void *u, int i)
     w2k_icon_load_default();
     dl.dirty = 1;
     w2k_win_dirty(dl.win);
+}
+
+/* The preset the current colours are, or -1 (the box shows nothing, as
+ * the Windows dialog does for colours that are nobody's scheme). A theme
+ * preset matches by theme; a tint preset by every colour it sets, with
+ * the rest at Windows Standard. */
+static int matching_preset(void)
+{
+    for (int i = 0; i < NPRESET; i++) {
+        if (presets[i].theme >= 0) {
+            if (w2k_theme == presets[i].theme && presets[i].theme != THEME_CLASSIC)
+                return i;
+            if (presets[i].theme != THEME_CLASSIC) continue;
+        }
+        if (w2k_theme != THEME_CLASSIC) continue;
+        /* Every colour must be what this preset would set it to. */
+        int ok = 1;
+        for (int c = 0; c < N_COLORS && ok; c++) {
+            if (c == C_BLACK || c == C_WHITE) continue;
+            unsigned char want[3];
+            w2k_theme_colour(THEME_CLASSIC, c, want);
+            for (int k = 0; k < presets[i].n; k++)
+                if (presets[i].t[k].color == c) {
+                    want[0] = presets[i].t[k].r;
+                    want[1] = presets[i].t[k].g;
+                    want[2] = presets[i].t[k].b;
+                }
+            int r, g, b;
+            w2k_color_rgb(c, &r, &g, &b);
+            if (r != want[0] || g != want[1] || b != want[2]) ok = 0;
+        }
+        if (ok) return i;
+    }
+    return -1;
 }
 
 static void on_scheme(void *u, int i)
@@ -602,6 +697,19 @@ static void draw_monitor_preview(Drawable d, int x, int y, int w, int h)
     w2k_fill(d, x + w / 2 - 30, y + h - 14, 60, 6, C_SHADOW);
 }
 
+/* Minimize, Maximize and Close, right-aligned at `right`, with their
+ * glyphs -- the shell's own, as the frames draw them. */
+static void caption_buttons(Drawable d, int right, int y)
+{
+    int cx = right - 16, mx = cx - 2 - 16, mn = mx - 16;
+    w2k_button(d, mn, y, 16, 14, 0);
+    w2k_capglyph_min(d, mn, y, C_TEXT);
+    w2k_button(d, mx, y, 16, 14, 0);
+    w2k_capglyph_max(d, mx, y, C_TEXT);
+    w2k_button(d, cx, y, 16, 14, 0);
+    w2k_capglyph_close(d, cx, y, C_TEXT);
+}
+
 /* The Appearance preview: inactive window, active window, message box. */
 static void draw_appearance_preview(Drawable d, W2kRect r)
 {
@@ -615,6 +723,7 @@ static void draw_appearance_preview(Drawable d, W2kRect r)
     w2k_edge(d, ix, iy, iw, ih, EDGE_RAISED, BF_RECT);
     w2k_gradient(d, ix + 4, iy + 4, iw - 8, 18, C_INACTIVETITLE, C_INACTIVETITLE2);
     w2k_text(d, F_UI_BOLD, ix + 8, iy + 6, "Inactive Window", C_INACTIVETITLETEXT);
+    caption_buttons(d, ix + iw - 6, iy + 6);
 
     /* active */
     int ax = r.x + 30, ay = r.y + 36, aw = r.w - 60, ah = r.h - 60;
@@ -622,8 +731,7 @@ static void draw_appearance_preview(Drawable d, W2kRect r)
     w2k_edge(d, ax, ay, aw, ah, EDGE_RAISED, BF_RECT);
     w2k_gradient(d, ax + 4, ay + 4, aw - 8, 18, C_ACTIVETITLE, C_ACTIVETITLE2);
     w2k_text(d, F_UI_BOLD, ax + 8, ay + 6, "Active Window", C_TITLETEXT);
-    for (int i = 0; i < 3; i++)
-        w2k_button(d, ax + aw - 6 - 16 * (3 - i) - (i == 2 ? 0 : 2), ay + 6, 16, 14, 0);
+    caption_buttons(d, ax + aw - 6, ay + 6);
     /* menu bar */
     w2k_fill(d, ax + 4, ay + 22, aw - 8, 19, C_MENU);
     w2k_text(d, F_UI, ax + 10, ay + 25, "Normal", C_MENUTEXT);
@@ -645,6 +753,8 @@ static void draw_appearance_preview(Drawable d, W2kRect r)
     w2k_edge(d, mx, my, mw, mh, EDGE_RAISED, BF_RECT);
     w2k_gradient(d, mx + 3, my + 3, mw - 6, 18, C_ACTIVETITLE, C_ACTIVETITLE2);
     w2k_text(d, F_UI_BOLD, mx + 7, my + 5, "Message Box", C_TITLETEXT);
+    w2k_button(d, mx + mw - 5 - 16, my + 5, 16, 14, 0);
+    w2k_capglyph_close(d, mx + mw - 5 - 16, my + 5, C_TEXT);
     w2k_text(d, F_UI, mx + 10, my + 26, "Message Text", C_TEXT);
     W2kRect ok = { mx + mw / 2 - 30, my + mh - 26, 60, 20 };
     w2k_draw_pushbutton(d, &ok, "OK", BS_DEFAULT);
@@ -794,10 +904,12 @@ static void paint(W2kWin *w, Drawable d)
         w2k_edit_draw(d, dl.red);
         w2k_edit_draw(d, dl.green);
         w2k_edit_draw(d, dl.blue);
-        int r, g, b;
-        w2k_color_rgb(elements[dl.cur_elem].color, &r, &g, &b);
-        XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r, g, b));
-        XFillRectangle(w2k.dpy, d, w2k.gc, dl.swatch.x, dl.swatch.y, dl.swatch.w, dl.swatch.h);
+        w2k_text_mnemonic(d, F_UI, dl.swatch.x, dl.swatch.y - fh - 3, "&Color:", C_TEXT, 1);
+        draw_color_button(d, &dl.swatch, elements[dl.cur_elem].color, dl.cur_col == 0);
+        if (elements[dl.cur_elem].color2 >= 0) {
+            w2k_text_mnemonic(d, F_UI, dl.swatch2.x, dl.swatch2.y - fh - 3, "Color &2:", C_TEXT, 1);
+            draw_color_button(d, &dl.swatch2, elements[dl.cur_elem].color2, dl.cur_col == 1);
+        }
         w2k_edge(d, dl.swatch.x, dl.swatch.y, dl.swatch.w, dl.swatch.h, EDGE_SUNKEN, BF_RECT);
         w2k_draw_checkbox(d, dl.decorate_box.x, dl.decorate_box.y,
                           "&Title bar and border on windows that ask for none",
@@ -905,6 +1017,11 @@ static int event(W2kWin *w, XEvent *e)
                 w2k_force_decorations = !w2k_force_decorations;
                 dl.dirty = 1;
                 w2k_win_dirty(w);
+                return 1;
+            }
+            if (w2k_rect_hit(&dl.swatch, x, y)) { pick_color(0); return 1; }
+            if (elements[dl.cur_elem].color2 >= 0 && w2k_rect_hit(&dl.swatch2, x, y)) {
+                pick_color(1);
                 return 1;
             }
             W2kEdit *eds[] = { dl.red, dl.green, dl.blue };
@@ -1094,11 +1211,19 @@ int main(void)
     dl.scheme = w2k_combo_new(0);
     for (int i = 0; i < NPRESET; i++) w2k_combo_add(dl.scheme, presets[i].name);
     dl.scheme->on_change = on_scheme;
+    dl.scheme->sel = matching_preset();
+
     dl.scheme->r = (W2kRect){ c.x + 10, c.y + 206, 190, 21 };
     dl.item = w2k_combo_new(0);
     for (int i = 0; i < NELEM; i++) w2k_combo_add(dl.item, elements[i].label);
     dl.item->on_change = on_item;
     dl.item->r = (W2kRect){ c.x + 10, c.y + 252, 190, 21 };
+    /* Development aid: W2K_RENDER_ITEM=n renders with that item selected. */
+    if (getenv("W2K_RENDER_ITEM")) {
+        int it = atoi(getenv("W2K_RENDER_ITEM"));
+        if (it >= 0 && it < NELEM) dl.cur_elem = it;
+    }
+    dl.item->sel = dl.cur_elem;
     int ex = c.x + 214;
     dl.red   = w2k_edit_new(0); dl.red->r   = (W2kRect){ ex, c.y + 252, 44, 21 };
     dl.green = w2k_edit_new(0); dl.green->r = (W2kRect){ ex + 50, c.y + 252, 44, 21 };
@@ -1109,7 +1234,8 @@ int main(void)
         eds[k]->on_change = color_edited;
         w2k_add_timer(w2k_caret_blink, blink_cb, eds[k]);
     }
-    dl.swatch = (W2kRect){ ex, c.y + 206, 144, 21 };
+    dl.swatch  = (W2kRect){ ex, c.y + 206, 66, 21 };
+    dl.swatch2 = (W2kRect){ ex + 78, c.y + 206, 66, 21 };
     dl.iconset = w2k_combo_new(0);
     dl.nsets = w2k_icon_sets(dl.sets, 16);
     for (int i = 0; i < dl.nsets; i++) {

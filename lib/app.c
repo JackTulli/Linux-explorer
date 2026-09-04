@@ -319,6 +319,16 @@ const char *w2k_theme_name(int theme)
     return "Windows Standard";
 }
 
+void w2k_theme_colour(int theme, int color, unsigned char rgb[3])
+{
+    const unsigned char (*t)[3] = theme == THEME_XP    ? luna :
+                                  theme == THEME_BASIC7 ? basic7 : standard;
+    if (color < 0 || color >= N_COLORS) { rgb[0] = rgb[1] = rgb[2] = 0; return; }
+    rgb[0] = t[color][0];
+    rgb[1] = t[color][1];
+    rgb[2] = t[color][2];
+}
+
 void w2k_theme_colours(int theme)
 {
     const unsigned char (*t)[3] = theme == THEME_XP    ? luna :
@@ -446,6 +456,19 @@ int w2k_scheme_load(const char *path)
     if (!f) return 0;
     char line[1200];
     int n = 0;
+    /* The theme first, whatever line it is on: it brings a whole colour
+     * table, and the colour lines (which the file lists before it) must
+     * override that table, not be wiped by it. */
+    while (fgets(line, sizeof line, f)) {
+        if (strncasecmp(line, "Theme=", 6)) continue;
+        const char *val = line + 6;
+        w2k_theme = !strncasecmp(val, "xp", 2)     ? THEME_XP :
+                    !strncasecmp(val, "basic7", 6) ? THEME_BASIC7
+                                                   : THEME_CLASSIC;
+        w2k_theme_colours(w2k_theme);
+        break;
+    }
+    rewind(f);
     while (fgets(line, sizeof line, f)) {
         char *eq = strchr(line, '=');
         if (!eq || line[0] == '#') continue;
@@ -530,17 +553,7 @@ int w2k_scheme_load(const char *path)
                 }
             if (done) continue;
         }
-        if (!strcasecmp(line, "Theme")) {
-            w2k_theme = !strcasecmp(val, "xp")    ? THEME_XP :
-                        !strcasecmp(val, "basic7") ? THEME_BASIC7
-                                                   : THEME_CLASSIC;
-            /* Load that theme's whole colour table now: the reset above
-             * ran before this line was read, so the palette in memory is
-             * still the previous theme's. Colour lines further down the
-             * file still override individual entries. */
-            w2k_theme_colours(w2k_theme);
-            continue;
-        }
+        if (!strcasecmp(line, "Theme")) continue;     /* taken above */
         if (!strcasecmp(line, "FolderHidden")) {
             w2k_folder_hidden = atoi(val) != 0;
             continue;

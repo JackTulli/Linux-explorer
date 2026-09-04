@@ -446,6 +446,9 @@ void        w2k_combo_set_text(W2kCombo *c, const char *text);
 enum { ID_OK = 1, ID_CANCEL, ID_YES, ID_NO };
 
 int  w2k_msgbox(W2kWin *over, const char *title, const char *text, int flags);
+/* The colour dialog's 48 basic colours as a drop-down at root (rx, ry).
+ * Returns 1 and sets r, g, b when one was picked. */
+int  w2k_color_popup(int rx, int ry, int *r, int *g, int *b);
 /* Single-line prompt. Returns 1 and fills `out` on OK. */
 int  w2k_prompt(W2kWin *over, const char *title, const char *label,
                 const char *initial, char *out, int outsz, int icon);

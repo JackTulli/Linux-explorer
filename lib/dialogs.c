@@ -104,6 +104,110 @@ void w2k_combo_draw(Drawable d, W2kCombo *c)
                by + (c->r.h - 4 - 7) / 2 + 2 + c->pressed, C_TEXT);
 }
 
+/* The basic colours of the Windows colour dialog, in its 8 by 6 order. */
+static const unsigned char basic_colors[48][3] = {
+    {255,128,128},{255,255,128},{128,255,128},{0,255,128},{128,255,255},{0,128,255},{255,128,192},{255,128,255},
+    {255,0,0},{255,255,0},{128,255,0},{0,255,64},{0,255,255},{0,128,192},{128,128,192},{255,0,255},
+    {128,64,64},{255,128,64},{0,255,0},{0,128,128},{0,64,128},{128,128,255},{128,0,64},{255,0,128},
+    {128,0,0},{255,128,0},{0,128,0},{0,128,64},{0,0,255},{0,0,160},{128,0,128},{128,0,255},
+    {64,0,0},{128,64,0},{0,64,0},{0,64,64},{0,0,128},{0,0,64},{64,0,64},{64,0,128},
+    {0,0,0},{128,128,0},{128,128,64},{128,128,128},{64,128,128},{192,192,192},{64,0,64},{255,255,255},
+};
+
+int w2k_color_popup(int rx, int ry, int *r, int *g, int *b)
+{
+    const int cell = 18, gap = 2, cols = 8, rows = 6;
+    int w = cols * (cell + gap) + gap + 4, h = rows * (cell + gap) + gap + 4;
+    const W2kMonitor *m = w2k_monitor_at(rx, ry);
+    int x = rx, y = ry;
+    if (x + w > m->x + m->w) x = m->x + m->w - w;
+    if (y + h > m->y + m->h) y = ry - h - 22;
+    if (y < m->y) y = m->y;
+
+    XSetWindowAttributes a = {
+        .override_redirect = True, .save_under = True,
+        .background_pixel = w2k.col[C_FACE],
+        .event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
+                      PointerMotionMask | KeyPressMask
+    };
+    Window win = XCreateWindow(w2k.dpy, w2k.root, x, y, (unsigned)w, (unsigned)h, 0,
+                               CopyFromParent, InputOutput, CopyFromParent,
+                               CWOverrideRedirect | CWSaveUnder | CWBackPixel |
+                               CWEventMask, &a);
+    XMapRaised(w2k.dpy, win);
+    if (XGrabPointer(w2k.dpy, win, True,
+                     ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+                     GrabModeAsync, GrabModeAsync, None, w2k.cur_arrow,
+                     CurrentTime) != GrabSuccess) {
+        XDestroyWindow(w2k.dpy, win);
+        return 0;
+    }
+    XGrabKeyboard(w2k.dpy, win, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+
+    int hot = -1, picked = 0, done = 0, repaint = 1;
+    for (int i = 0; i < 48; i++)
+        if (basic_colors[i][0] == *r && basic_colors[i][1] == *g && basic_colors[i][2] == *b)
+            hot = i;
+    long opened = w2k_now_ms();
+    while (!done) {
+        if (repaint) {
+            Pixmap pm = XCreatePixmap(w2k.dpy, win, (unsigned)w, (unsigned)h, w2k.depth);
+            w2k_fill(pm, 0, 0, w, h, C_FACE);
+            w2k_edge(pm, 0, 0, w, h, EDGE_RAISED, BF_RECT);
+            for (int i = 0; i < 48; i++) {
+                int cx = 2 + gap + (i % cols) * (cell + gap);
+                int cy = 2 + gap + (i / cols) * (cell + gap);
+                XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(basic_colors[i][0],
+                               basic_colors[i][1], basic_colors[i][2]));
+                XFillRectangle(w2k.dpy, pm, w2k.gc, cx + 1, cy + 1, (unsigned)cell - 2,
+                               (unsigned)cell - 2);
+                w2k_edge(pm, cx, cy, cell, cell, EDGE_SUNKEN_THIN, BF_RECT);
+                if (i == hot) w2k_focus_rect(pm, cx - 1, cy - 1, cell + 2, cell + 2);
+            }
+            XCopyArea(w2k.dpy, pm, win, w2k.gc, 0, 0, (unsigned)w, (unsigned)h, 0, 0);
+            w2k_free_pixmap(pm);
+            repaint = 0;
+        }
+        XEvent e;
+        XNextEvent(w2k.dpy, &e);
+        if (e.type == MotionNotify || e.type == ButtonRelease || e.type == ButtonPress) {
+            int lx = (e.type == MotionNotify ? e.xmotion.x_root : e.xbutton.x_root) - x;
+            int ly = (e.type == MotionNotify ? e.xmotion.y_root : e.xbutton.y_root) - y;
+            int i = -1;
+            if (lx >= 2 + gap && ly >= 2 + gap && lx < w - 2 && ly < h - 2) {
+                int c = (lx - 2 - gap) / (cell + gap), rr = (ly - 2 - gap) / (cell + gap);
+                if (c < cols && rr < rows) i = rr * cols + c;
+            }
+            if (e.type == MotionNotify) {
+                if (i >= 0 && i != hot) { hot = i; repaint = 1; }
+                continue;
+            }
+            if (e.type == ButtonRelease && w2k_now_ms() - opened < 250) continue;
+            if (lx < 0 || lx >= w || ly < 0 || ly >= h) { done = 1; continue; }
+            if (e.type == ButtonRelease && i >= 0) { hot = i; picked = 1; done = 1; }
+        } else if (e.type == KeyPress) {
+            KeySym ks = XLookupKeysym(&e.xkey, 0);
+            if (ks == XK_Escape) done = 1;
+            else if ((ks == XK_Return || ks == XK_KP_Enter) && hot >= 0) { picked = 1; done = 1; }
+            else if (ks == XK_Right && hot < 47) { hot++; repaint = 1; }
+            else if (ks == XK_Left && hot > 0) { hot--; repaint = 1; }
+            else if (ks == XK_Down && hot + cols < 48) { hot += cols; repaint = 1; }
+            else if (ks == XK_Up && hot - cols >= 0) { hot -= cols; repaint = 1; }
+            else if (hot < 0 && (ks == XK_Right || ks == XK_Down)) { hot = 0; repaint = 1; }
+        } else if (e.type == Expose && e.xexpose.window == win) repaint = 1;
+    }
+    XUngrabKeyboard(w2k.dpy, CurrentTime);
+    XUngrabPointer(w2k.dpy, CurrentTime);
+    XDestroyWindow(w2k.dpy, win);
+    XFlush(w2k.dpy);
+    if (picked && hot >= 0) {
+        *r = basic_colors[hot][0];
+        *g = basic_colors[hot][1];
+        *b = basic_colors[hot][2];
+    }
+    return picked;
+}
+
 /* A modal drop-down list. Returns the chosen index, or -1. */
 static int combo_dropdown(W2kCombo *c, int rx, int ry)
 {

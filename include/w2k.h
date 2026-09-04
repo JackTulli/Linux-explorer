@@ -182,6 +182,8 @@ int   w2k_scheme_load(const char *path);        /* NULL = default file   */
 int   w2k_scheme_save(const char *path);
 void  w2k_scheme_broadcast(void);               /* tell other processes  */
 void  w2k_scheme_reset(void);                   /* back to Windows Standard */
+/* A theme's built-in value for one colour. */
+void  w2k_theme_colour(int theme, int color, unsigned char rgb[3]);
 /* A scheme colour's RGB. */
 const unsigned char *w2k_scheme_rgb(int color);
 /* Write the scheme's colours where GTK 2/3/4 and Qt (qt5ct/qt6ct) read
