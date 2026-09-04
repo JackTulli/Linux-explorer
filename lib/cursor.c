@@ -413,6 +413,17 @@ void w2k_cursors_init(void)
     for (int r = 0; r < N_ROLES; r++)
         *role_slot(r) = XCreateFontCursor(w2k.dpy, role_info[r].font_shape);
 
+    /* The server's own pointers, by choice (Mouse Properties, or
+     * Cursors=x11 in the scheme) or by W2K_CURSORS=x11: the way out on a
+     * server that draws ARGB cursors as nothing at all. */
+    const char *force = getenv("W2K_CURSORS");
+    if ((force && !strcmp(force, "x11")) || !w2k_cursors_windows) {
+        if (getenv("W2K_DEBUG") || !getenv("W2K_QUIET"))
+            fprintf(stderr, "w2k: cursors: using the X server's own pointers (%s)\n",
+                    force ? "W2K_CURSORS=x11" : "Cursors=x11 in the scheme");
+        return;
+    }
+
     const char *dirs[3];
     char home_dir[512];
     int nd = 0;

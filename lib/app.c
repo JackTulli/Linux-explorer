@@ -611,6 +611,10 @@ int w2k_scheme_load(const char *path)
             w2k_start_personalized = atoi(val) != 0;
             continue;
         }
+        if (!strcasecmp(line, "Cursors")) {
+            w2k_cursors_windows = strcasecmp(val, "x11") != 0;
+            continue;
+        }
         if (!strcasecmp(line, "IconSet")) {
             snprintf(w2k_icon_set, sizeof w2k_icon_set, "%.31s", val);
             continue;
@@ -688,6 +692,7 @@ int w2k_scheme_save(const char *path)
     fprintf(f, "Theme=%s\n", w2k_theme == THEME_XP ? "xp" :
             w2k_theme == THEME_BASIC7 ? "basic7" : "classic");
     fprintf(f, "IconSet=%s\n", w2k_icon_set);
+    fprintf(f, "Cursors=%s\n", w2k_cursors_windows ? "windows" : "x11");
     fprintf(f, "DoubleClickTime=%d\n", w2k_dblclk_ms);
     fprintf(f, "MouseSwap=%d\n", w2k_mouse_swap);
     fprintf(f, "MouseSpeed=%d\n", w2k_mouse_speed);
@@ -755,6 +760,8 @@ void *w2k_alloc(size_t n)
     if (!p) { fputs("w2k: out of memory\n", stderr); exit(1); }
     return p;
 }
+
+int w2k_cursors_windows = 1;
 
 void w2k_shell_quote(const char *in, char *out, int n)
 {

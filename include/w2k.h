@@ -615,6 +615,10 @@ int  w2k_icon_load_dir(const char *dir);
  * directory of <slug>.ico files under icons/sets (beside the binaries,
  * installed under PREFIX/share/w2k, or ~/.w2k/iconsets). */
 extern char w2k_icon_set[32];
+/* 1: the Windows 2000 pointer set (the .cur files); 0: the X server's own
+ * pointers, for a server that will not show ARGB cursors. Also forced by
+ * W2K_CURSORS=x11 in the environment. */
+extern int  w2k_cursors_windows;
 int  w2k_icon_set_apply(void);              /* load the set named in w2k_icon_set */
 int  w2k_icon_sets(char names[][32], int max);  /* the sets available, win2k first */
 const char *w2k_icon_set_label(const char *name);  /* "Windows XP" for "winxp" */

@@ -573,6 +573,7 @@ static void mouse_commit(InputDlg *id)
     w2k_mouse_speed = id->sl[1].s.pos;
     w2k_effects[FX_CURSOR_SHADOW] = id->chk[0].on &&
                                     w2k_effect_supported(FX_CURSOR_SHADOW);
+    w2k_cursors_windows = id->chk[1].on;
 }
 
 static void open_mouse(void)
@@ -594,10 +595,12 @@ static void open_mouse(void)
     id.sl[1].lo = "Slow"; id.sl[1].hi = "Fast";
     id.sl[1].s = (W2kSlider){ .lo = 1, .hi = 10, .ticks = 9,
                               .pos = w2k_mouse_speed };
-    id.ncheck = 1;
+    id.ncheck = 2;
     id.chk[0].label = "Show &shadow under pointer";
     id.chk[0].on = w2k_effects[FX_CURSOR_SHADOW];
-    input_run(&id, 300);
+    id.chk[1].label = "Use the &Windows 2000 pointers (off: the X server's own)";
+    id.chk[1].on = w2k_cursors_windows;
+    input_run(&id, 322);
 }
 
 static void keyboard_commit(InputDlg *id)
