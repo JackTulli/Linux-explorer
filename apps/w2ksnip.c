@@ -894,7 +894,8 @@ static void opt_paint(W2kWin *w, Drawable d)
     for (int i = 0; i < 4; i++)
         w2k_draw_checkbox(d, o->chk[i].r.x, o->chk[i].r.y, o->chk[i].label,
                           *o->chk[i].on, 0, o->chk[i].off);
-    w2k_text(d, F_UI_BOLD, 12, o->chk[4].r.y - fh - 12, "Selection", C_TEXT);
+    /* The Selection group: its heading, then Ink color, then the two boxes. */
+    w2k_text(d, F_UI_BOLD, 12, o->ink->r.y - fh - 8, "Selection", C_TEXT);
     w2k_text(d, F_UI, 28, o->ink->r.y + (21 - w2k_font_height(F_UI)) / 2, "Ink color:", C_TEXT);
     w2k_combo_draw(d, o->ink);
     for (int i = 4; i < 6; i++)
@@ -950,8 +951,8 @@ static void open_options(void)
     o.chk[1] = (OptChk){ "&Always copy snips to the Clipboard", &copy, 0, { 28, 54, 340, 18 } };
     o.chk[2] = (OptChk){ "Include &URL below snips (HTML only)", &url, 1, { 28, 76, 340, 18 } };
     o.chk[3] = (OptChk){ "&Prompt to save snips before exiting", &prompt, 0, { 28, 98, 340, 18 } };
-    o.chk[4] = (OptChk){ "&Show screen overlay when Snipping Tool is active", &overlay, 0, { 28, 178, 340, 18 } };
-    o.chk[5] = (OptChk){ "Show selection &ink after snips are captured", &ink, 0, { 28, 200, 340, 18 } };
+    o.chk[4] = (OptChk){ "&Show screen overlay when Snipping Tool is active", &overlay, 0, { 28, 184, 340, 18 } };
+    o.chk[5] = (OptChk){ "Show selection &ink after snips are captured", &ink, 0, { 28, 206, 340, 18 } };
     W2kWin *w = w2k_win_new("Snipping Tool Options", "w2ksnip", 380, 270, 0);
     o.ink = w2k_combo_new(0);
     w2k_combo_add(o.ink, "Red");
@@ -960,7 +961,7 @@ static void open_options(void)
     w2k_combo_add(o.ink, "Custom");
     o.ink->sel = (st.ink_r == 255 && !st.ink_g) ? 0 : (st.ink_b == 255 && !st.ink_r) ? 1
                : (!st.ink_r && !st.ink_g && !st.ink_b) ? 2 : 3;
-    o.ink->r = (W2kRect){ 100, 144, 120, 21 };
+    o.ink->r = (W2kRect){ 100, 150, 120, 21 };      /* first row of Selection */
     o.ok = (W2kRect){ 380 - 12 - 75 * 2 - 6, 270 - 12 - 23, 75, 23 };
     o.cancel = (W2kRect){ 380 - 12 - 75, 270 - 12 - 23, 75, 23 };
     w->user = &o;
@@ -1129,7 +1130,10 @@ static void do_save(void)
                                 "JPEG file (*.jpg)|*.jpg;*.jpeg|Bitmap (*.bmp)|*.bmp"))
         return;
     unsigned char *flat = flattened();
-    if (!flat) return;
+    if (!flat) {
+        w2k_msgbox(st.win, "Snipping Tool", "The snip could not be read back for saving.", MB_OK | MB_ICONERROR);
+        return;
+    }
     const char *base = strrchr(path, '/');
     const char *dot = strrchr(base ? base : path, '.');
     int ok;

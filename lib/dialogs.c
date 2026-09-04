@@ -769,7 +769,7 @@ int w2k_file_dialog_filter(W2kWin *over, int save, char *path, int pathsz,
     f.list->user = &f;
     f.list->on_activate = fd_activate;
     f.list->on_select = fd_select;
-    f.list->focused = 1;
+    f.list->focused = 0;                 /* typing goes to the name box */
     w2k_scroll_bind(&f.list->vsb, w);
     w2k_scroll_bind(&f.list->hsb, w);
     f.name = w2k_edit_new(0);
@@ -800,6 +800,8 @@ int w2k_file_dialog_filter(W2kWin *over, int save, char *path, int pathsz,
         if (!getcwd(f.dir, sizeof f.dir)) snprintf(f.dir, sizeof f.dir, "/");
     }
     fd_fill(&f);
+    f.name->focused = 1;
+    w2k_edit_select_all(f.name);
 
     w->user = &f;
     w->paint = fd_paint;

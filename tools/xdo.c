@@ -72,6 +72,26 @@ int main(int argc, char **argv)
             if (ks == NoSymbol) { fprintf(stderr, "xdo: bad keysym %s\n", argv[i]); return 1; }
             press_keysym(ks, 0);
             i++;
+        } else if (!strcmp(cmd, "type") && i < argc) {
+            /* ASCII text, one key at a time; a shifted key where needed. */
+            for (const char *c = argv[i]; *c; c++) {
+                char name[2] = { *c, 0 };
+                KeySym ks = XStringToKeysym(name);
+                if (*c == ' ') ks = XK_space;
+                else if (*c == '/') ks = XK_slash;
+                else if (*c == '.') ks = XK_period;
+                else if (*c == '-') ks = XK_minus;
+                else if (*c == '_') ks = XK_underscore;
+                else if (*c == ':') ks = XK_colon;
+                if (ks == NoSymbol) continue;
+                int shift = (*c >= 'A' && *c <= 'Z') || *c == '_' || *c == ':';
+                press_keysym(ks, shift);
+                nap(15);
+            }
+            i++;
+        } else if (!strcmp(cmd, "sleep") && i < argc) {
+            nap(atoi(argv[i]));
+            i++;
         } else if (!strcmp(cmd, "keydown") && i < argc) {
             XTestFakeKeyEvent(d, XKeysymToKeycode(d, XStringToKeysym(argv[i])), True, 0);
             i++;
