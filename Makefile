@@ -54,6 +54,9 @@ HDRS := include/w2k.h include/w2kui.h
 $(LIB_OBJ) $(patsubst apps/%.c,apps/%.o,$(wildcard apps/*.c)): $(HDRS)
 $(WM_OBJ): $(HDRS) wm/wm.h
 lib/icon.o: lib/icon_data.inc
+# The version stamp carries the commit, so the file that prints it is
+# rebuilt when the commit changes.
+wm/wm.o: VERSION $(wildcard .git/HEAD .git/refs/heads/*)
 
 %.o: %.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
