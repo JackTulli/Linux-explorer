@@ -261,12 +261,15 @@ static void rate_scale_args(const Monitor *m, char *out, int n)
         m->rate_sel < m->nrates[m->mode_sel]) {
         snprintf(out, (size_t)n, " --rate %s", m->rates[m->mode_sel][m->rate_sel]);
     }
-    char sc[48];
+    char sc[72];
+    /* Nearest-neighbour filtering keeps the scaled screen sharp: at 200
+     * per cent every pixel is shown as an exact two-by-two block, and at
+     * the fractional sizes the pixels stay crisp rather than smeared. */
     if (m->want_scale && m->want_scale != 100)
-        snprintf(sc, sizeof sc, " --scale %.4fx%.4f", 100.0 / m->want_scale,
+        snprintf(sc, sizeof sc, " --scale %.4fx%.4f --filter nearest", 100.0 / m->want_scale,
                  100.0 / m->want_scale);
     else
-        snprintf(sc, sizeof sc, " --scale 1x1");
+        snprintf(sc, sizeof sc, " --scale 1x1 --filter bilinear");
     strncat(out, sc, (size_t)n - strlen(out) - 1);
 }
 
@@ -335,7 +338,7 @@ static void apply_monitors(void)
             strncat(cmd, part, sizeof cmd - strlen(cmd) - 1);
             continue;
         }
-        char extra[96];
+        char extra[128];
         rate_scale_args(m, extra, sizeof extra);
         snprintf(part, sizeof part, " --output %.63s --mode %.15s%s --pos %dx%d%s",
                  m->name, m->nmodes ? m->modes[m->mode_sel] : "auto", extra,
@@ -1082,7 +1085,8 @@ static void paint(W2kWin *w, Drawable d)
             pending_size(&mons[cur], &mw, &mh);
             snprintf(info, sizeof info, "%s -- %d x %d at %d, %d%s",
                      mons[cur].name, mw, mh, mons[cur].px, mons[cur].py,
-                     mons[cur].want_scale > 100 ? " (scaled)" : "");
+                     mons[cur].want_scale == 200 ? " (scaled, every pixel doubled)" :
+                     mons[cur].want_scale > 100 ? " (scaled sharp; 200% is the exact one)" : "");
             w2k_text(d, F_UI, c.x + 10, c.y + c.h - fh - 6, info, C_GRAYTEXT);
         }
         break;

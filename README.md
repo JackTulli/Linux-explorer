@@ -110,7 +110,10 @@ Try it nested first, without logging out of anything:
                    style with signal strength and a Wireless Networks page
                    (scan, connect, disconnect through NetworkManager)
     l2kdisplay     Display Properties: wallpaper (centre, tile, stretch, fit,
-                   fill, span), appearance schemes, themes, monitors
+                   fill, span), appearance schemes, themes, monitors with
+                   their refresh rate and a per-monitor scale (nearest-
+                   neighbour, so 200% is an exact pixel doubling and the
+                   fractional sizes stay sharp rather than blurred)
     l2kdevmgmt     Device Manager: the machine's hardware from sysfs, drivers,
                    enable/disable, DKMS driver install (contributed)
     l2knotepad, l2kcalc, l2kcharmap, l2kimage (Imaging), l2ktaskmgr,

@@ -202,18 +202,22 @@ int w2k_monitors_apply_saved(void)
         for (int k = 0; k < nconn; k++)
             if (!strcmp(connected[k], c->name)) present = 1;
         if (!present) continue;
-        char part[320], extra[96] = "";
+        char part[360], extra[128] = "";
         /* The rate goes with an explicit mode; the scale is xrandr's
          * transform, 125 per cent being a 0.8 scale (a smaller virtual
          * screen stretched over the panel). 100 resets an earlier one. */
         if (c->rate[0] && c->mode[0])
             snprintf(extra, sizeof extra, " --rate %s", c->rate);
         if (c->scale && c->scale != 100) {
-            char sc[40];
-            snprintf(sc, sizeof sc, " --scale %.4fx%.4f", 100.0 / c->scale, 100.0 / c->scale);
+            /* Nearest-neighbour, not bilinear: the panel shows the virtual
+             * screen's pixels whole (200 per cent is an exact doubling)
+             * instead of smearing every edge across its neighbours. */
+            char sc[64];
+            snprintf(sc, sizeof sc, " --scale %.4fx%.4f --filter nearest",
+                     100.0 / c->scale, 100.0 / c->scale);
             strncat(extra, sc, sizeof extra - strlen(extra) - 1);
         } else {
-            strncat(extra, " --scale 1x1", sizeof extra - strlen(extra) - 1);
+            strncat(extra, " --scale 1x1 --filter bilinear", sizeof extra - strlen(extra) - 1);
         }
         if (!c->enabled)
             snprintf(part, sizeof part, " --output %s --off", c->name);
