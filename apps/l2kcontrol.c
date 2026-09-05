@@ -52,6 +52,8 @@ static const Applet applets[] = {
       ICO_CP_MOUSE, NULL },
     { "Network and Dial-up Connections", "Connects to other computers, networks, and the Internet.",
       ICO_CP_NETWORK, "l2knetwork" },
+    { "Power Options", "Configures energy-saving settings for your computer.",
+      ICO_CP_POWER, NULL },                /* laptops only: see main() */
     { "Sounds and Multimedia", "Assigns sounds to events and configures sound devices.",
       ICO_CP_SOUNDS, NULL },
     { "System", "Provides system information and changes environment settings.",
@@ -410,8 +412,8 @@ static void open_performance(void)
  * server on OK (see lib/input.c) and remembered in ~/.w2k/scheme.
  * ------------------------------------------------------------------ */
 enum { AP_DATETIME = 0, AP_DEFAULTS, AP_DEVMGR, AP_DISPLAY, AP_FOLDER,
-       AP_FONTS, AP_KEYBOARD, AP_MOUSE, AP_NETWORK, AP_SOUNDS, AP_SYSTEM,
-       AP_TASKMGR, AP_STARTMENU };
+       AP_FONTS, AP_KEYBOARD, AP_MOUSE, AP_NETWORK, AP_POWER, AP_SOUNDS,
+       AP_SYSTEM, AP_TASKMGR, AP_STARTMENU };
 
 #define MAX_SLIDERS 4
 
@@ -1707,6 +1709,243 @@ static void open_datetime(void)
     w2k_tabs_free(dt.tabs);
 }
 
+/* ------------------------------------------------------------------ *
+ * Power Options
+ *
+ * The Windows 2000 applet's Power Meter page -- the battery, what is left
+ * in it and where the power is coming from -- and a Brightness page for
+ * the screen's backlight, which the original kept in the laptop maker's
+ * own software. Shown in Control Panel on machines that have either.
+ * ------------------------------------------------------------------ */
+typedef struct {
+    W2kWin    *win;
+    W2kTabs   *tabs;
+    W2kRect    ok, cancel, apply;
+    W2kSlider  bright;
+    W2kPower   pw;
+    int        have_backlight, cur_bright, want_bright;
+    int        down, dirty;
+} PowerDlg;
+
+static void pw_refresh(PowerDlg *pd)
+{
+    w2k_power_read(&pd->pw);
+    if (pd->have_backlight && !pd->dirty) {
+        int b;
+        if (w2k_backlight_get(&b)) { pd->cur_bright = b; pd->bright.pos = b / 5; }
+    }
+}
+
+static void pw_tick(void *u)
+{
+    PowerDlg *pd = u;
+    pw_refresh(pd);
+    w2k_win_dirty(pd->win);
+}
+
+static void pw_on_bright(void *u, int pos)
+{
+    PowerDlg *pd = u;
+    pd->want_bright = pos * 5;
+    pd->dirty = pd->want_bright != pd->cur_bright;
+    w2k_win_dirty(pd->win);
+}
+
+static void pw_commit(PowerDlg *pd)
+{
+    if (!pd->dirty) return;
+    if (w2k_backlight_set(pd->want_bright) == 0) {
+        pd->cur_bright = pd->want_bright;
+        pd->dirty = 0;
+    } else {
+        w2k_msgbox(pd->win, "Power Options",
+                   "The brightness could not be changed. Install brightnessctl, or\n"
+                   "give your user write access to /sys/class/backlight.",
+                   MB_OK | MB_ICONERROR);
+    }
+}
+
+/* The meter's big battery: a case standing up, filled from the bottom
+ * to the charge, the percentage over it. */
+static void pw_draw_meter(Drawable d, int x, int y, const W2kPower *p)
+{
+    int w = 40, h = 64;
+    w2k_fill(d, x + 14, y, 12, 4, C_TEXT);                 /* the terminal */
+    w2k_edge(d, x, y + 4, w, h, EDGE_SUNKEN, BF_RECT);
+    w2k_fill(d, x + 2, y + 6, w - 4, h - 4, C_WINDOW);
+    if (p->present && p->percent >= 0) {
+        int fh = (h - 4) * p->percent / 100;
+        if (p->percent <= 10 && p->charging == 0)
+            w2k_fill_rgb(d, x + 2, y + 6 + (h - 4 - fh), w - 4, fh, 255, 0, 0);
+        else
+            w2k_fill_rgb(d, x + 2, y + 6 + (h - 4 - fh), w - 4, fh, 0, 128, 0);
+        char t[8];
+        snprintf(t, sizeof t, "%d%%", p->percent);
+        int tw = w2k_text_width(F_UI_BOLD, t, -1);
+        w2k_text(d, F_UI_BOLD, x + (w - tw) / 2, y + 4 + (h - w2k_font_height(F_UI_BOLD)) / 2,
+                 t, C_TEXT);
+    }
+}
+
+static void pw_paint(W2kWin *w, Drawable d)
+{
+    PowerDlg *pd = w->user;
+    int fh = w2k_font_height(F_UI);
+    w2k_tabs_draw(d, pd->tabs);
+    W2kRect c = w2k_tabs_client(pd->tabs);
+
+    if (pd->tabs->sel == 0) {
+        W2kRect g = { c.x + 9, c.y + 10, c.w - 18, 74 };
+        w2k_draw_groupbox(d, &g, "Power status");
+        w2k_bigicon_draw(d, g.x + 12, g.y + 22, ICO_CP_POWER);
+        const W2kPower *p = &pd->pw;
+        const char *src = !p->present ? "AC power" : p->ac_online == 1 ? "AC power" : "Batteries";
+        char line[160];
+        snprintf(line, sizeof line, "Current power source:  %s", src);
+        w2k_text(d, F_UI, g.x + 56, g.y + 22, line, C_TEXT);
+        if (p->present) snprintf(line, sizeof line, "Total battery power remaining:  %d%%", p->percent);
+        else            snprintf(line, sizeof line, "No battery is detected in this computer.");
+        w2k_text(d, F_UI, g.x + 56, g.y + 22 + fh + 6, line, C_TEXT);
+
+        W2kRect g2 = { c.x + 9, g.y + g.h + 10, c.w - 18, 120 };
+        w2k_draw_groupbox(d, &g2, "Battery");
+        pw_draw_meter(d, g2.x + 16, g2.y + 24, p);
+        int tx = g2.x + 76, ty = g2.y + 26;
+        if (p->present) {
+            char desc[96];
+            w2k_power_describe(p, desc, sizeof desc);
+            snprintf(line, sizeof line, "%s", p->name);
+            w2k_text(d, F_UI_BOLD, tx, ty, line, C_TEXT); ty += fh + 4;
+            w2k_text(d, F_UI, tx, ty, p->charging == 1 ? "Status:  Charging" :
+                     p->charging == 2 ? "Status:  Charged" : "Status:  Discharging", C_TEXT);
+            ty += fh + 2;
+            w2k_text(d, F_UI, tx, ty, desc, C_TEXT); ty += fh + 2;
+            snprintf(line, sizeof line, "Power source:  %s",
+                     p->ac_online == 1 ? "AC power" : "Battery");
+            w2k_text(d, F_UI, tx, ty, line, C_TEXT);
+        } else {
+            w2k_text(d, F_UI, tx, ty, "This computer runs on AC power.", C_GRAYTEXT);
+        }
+        w2k_text(d, F_UI, c.x + 9, c.y + c.h - fh - 8,
+                 "The meter refreshes every few seconds; the battery is read from sysfs.", C_GRAYTEXT);
+    } else {
+        W2kRect g = { c.x + 9, c.y + 10, c.w - 18, 90 };
+        w2k_draw_groupbox(d, &g, "Screen brightness");
+        if (pd->have_backlight) {
+            w2k_text_mnemonic(d, F_UI, g.x + 10, g.y + 20, "&Brightness:", C_TEXT, 1);
+            w2k_text(d, F_UI, g.x + 10, pd->bright.r.y + 4, "Dark", C_TEXT);
+            w2k_slider_draw(d, &pd->bright);
+            w2k_text(d, F_UI, g.x + g.w - 10 - w2k_text_width(F_UI, "Bright", -1),
+                     pd->bright.r.y + 4, "Bright", C_TEXT);
+            char line[64];
+            snprintf(line, sizeof line, "%d%%", pd->dirty ? pd->want_bright : pd->cur_bright);
+            w2k_text(d, F_UI_BOLD, g.x + g.w - 10 - w2k_text_width(F_UI_BOLD, line, -1),
+                     g.y + 20, line, C_TEXT);
+        } else {
+            w2k_text(d, F_UI, g.x + 10, g.y + 24, "No adjustable backlight was found on this computer.",
+                     C_GRAYTEXT);
+            w2k_text(d, F_UI, g.x + 10, g.y + 24 + fh + 2, "(/sys/class/backlight is empty.)",
+                     C_GRAYTEXT);
+        }
+        int y = g.y + g.h + 12;
+        w2k_text(d, F_UI, c.x + 9, y, "The brightness is written to the backlight directly when", C_GRAYTEXT); y += fh;
+        w2k_text(d, F_UI, c.x + 9, y, "your user may, and through brightnessctl or an", C_GRAYTEXT); y += fh;
+        w2k_text(d, F_UI, c.x + 9, y, "administrator prompt otherwise.", C_GRAYTEXT);
+    }
+    w2k_draw_pushbutton(d, &pd->ok, "OK", BS_DEFAULT | (pd->down == 1 ? BS_PRESSED : 0));
+    w2k_draw_pushbutton(d, &pd->cancel, "Cancel", pd->down == 2 ? BS_PRESSED : 0);
+    w2k_draw_pushbutton(d, &pd->apply, "&Apply",
+                        (pd->dirty ? 0 : BS_DISABLED) | (pd->down == 3 ? BS_PRESSED : 0));
+}
+
+static int pw_event(W2kWin *w, XEvent *e)
+{
+    PowerDlg *pd = w->user;
+    switch (e->type) {
+    case ButtonPress: {
+        int x = e->xbutton.x, y = e->xbutton.y;
+        if (w2k_tabs_press(pd->tabs, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        if (pd->tabs->sel == 1 && pd->have_backlight &&
+            w2k_slider_press(&pd->bright, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        if (w2k_rect_hit(&pd->ok, x, y)) pd->down = 1;
+        else if (w2k_rect_hit(&pd->cancel, x, y)) pd->down = 2;
+        else if (w2k_rect_hit(&pd->apply, x, y) && pd->dirty) pd->down = 3;
+        w2k_win_dirty(w);
+        return 1;
+    }
+    case ButtonRelease: {
+        int b = pd->down, x = e->xbutton.x, y = e->xbutton.y;
+        pd->down = 0;
+        w2k_slider_release(&pd->bright);
+        if (b == 1 && w2k_rect_hit(&pd->ok, x, y)) { pw_commit(pd); w2k_win_close(w, ID_OK); }
+        else if (b == 2 && w2k_rect_hit(&pd->cancel, x, y)) w2k_win_close(w, ID_CANCEL);
+        else if (b == 3 && w2k_rect_hit(&pd->apply, x, y)) pw_commit(pd);
+        w2k_win_dirty(w);
+        return 1;
+    }
+    case MotionNotify:
+        if (pd->tabs->sel == 1 && pd->have_backlight &&
+            w2k_slider_motion(&pd->bright, &e->xmotion)) { w2k_win_dirty(w); return 1; }
+        return 0;
+    case KeyPress: {
+        KeySym ks = XLookupKeysym(&e->xkey, 0);
+        if (ks == XK_Escape) { w2k_win_close(w, ID_CANCEL); return 1; }
+        if (ks == XK_Return || ks == XK_KP_Enter) { pw_commit(pd); w2k_win_close(w, ID_OK); return 1; }
+        if (w2k_tabs_key(pd->tabs, &e->xkey)) { w2k_win_dirty(w); return 1; }
+        if (pd->tabs->sel == 1 && pd->have_backlight &&
+            w2k_slider_key(&pd->bright, &e->xkey)) { w2k_win_dirty(w); return 1; }
+        return 1;
+    }
+    }
+    return 0;
+}
+
+static void open_power(void)
+{
+    PowerDlg pd;
+    memset(&pd, 0, sizeof pd);
+    int cw = 398, chh = 372;
+    W2kWin *w = w2k_win_new("Power Options Properties", "l2kcontrol", cw, chh, 0);
+    pd.win = w;
+    pd.tabs = w2k_tabs_new(&pd, NULL);
+    w2k_tabs_add(pd.tabs, "Power Meter");
+    w2k_tabs_add(pd.tabs, "Brightness");
+    pd.tabs->r = (W2kRect){ 7, 7, cw - 14, chh - 7 - 41 };
+    W2kRect c = w2k_tabs_client(pd.tabs);
+
+    pd.have_backlight = w2k_backlight_available();
+    pd.bright = (W2kSlider){ .r = { c.x + 9 + 40, c.y + 10 + 44, c.w - 18 - 80 - 10, 24 },
+                             .lo = 0, .hi = 20, .ticks = 10, .pos = 10,
+                             .owner = w, .user = &pd, .on_change = pw_on_bright };
+    pw_refresh(&pd);
+    pd.want_bright = pd.cur_bright;
+
+    int bby = chh - 12 - 23;
+    pd.apply  = (W2kRect){ cw - 12 - 75, bby, 75, 23 };
+    pd.cancel = (W2kRect){ cw - 12 - 75 * 2 - 6, bby, 75, 23 };
+    pd.ok     = (W2kRect){ cw - 12 - 75 * 3 - 12, bby, 75, 23 };
+
+    w->user = &pd;
+    w->paint = pw_paint;
+    w->event = pw_event;
+    w2k_win_center(w, cp.win);
+    Atom t = w2k.a_net_wm_wt_dialog;
+    XChangeProperty(w2k.dpy, w->win, w2k.a_net_wm_window_type, XA_ATOM, 32,
+                    PropModeReplace, (unsigned char *)&t, 1);
+    w2k_add_timer(5000, pw_tick, &pd);
+    w2k_win_modal(w);
+    w2k_del_timer(pw_tick, &pd);
+    w2k_tabs_free(pd.tabs);
+}
+
+/* Rows of the Control Panel list carry their applet's index: on a desktop
+ * machine Power Options is left out, so the row and the index differ. */
+static int applet_of_row(int row)
+{
+    if (!cp.fw || row < 0 || row >= cp.fw->list->n) return -1;
+    return (int)(intptr_t)cp.fw->list->items[row].data;
+}
+
 static void open_applet(int i)
 {
     if (i < 0 || i >= NAPPLETS) return;
@@ -1724,6 +1963,7 @@ static void open_applet(int i)
     case AP_SOUNDS:   open_sounds(); break;
     case AP_FONTS:    open_fonts(); break;
     case AP_DATETIME: open_datetime(); break;
+    case AP_POWER:    open_power(); break;
     }
 }
 
@@ -1747,17 +1987,17 @@ static void pane_fill(int idx)
         w2k_folderwin_pane_add(f, FW_LINK, "Windows Update");
         w2k_folderwin_pane_add(f, FW_LINK, "Windows 2000 Support");
         char buf[40];
-        snprintf(buf, sizeof buf, "%d object(s)", NAPPLETS);
+        snprintf(buf, sizeof buf, "%d object(s)", f->list->n);
         w2k_folderwin_status(f, buf);
     }
 }
 
-static void on_activate(void *u, int idx) { (void)u; open_applet(idx); }
+static void on_activate(void *u, int idx) { (void)u; open_applet(applet_of_row(idx)); }
 
 static void on_select(void *u, int idx)
 {
     (void)u;
-    pane_fill(idx);
+    pane_fill(applet_of_row(idx));
     w2k_win_dirty(cp.win);
 }
 
@@ -1831,6 +2071,7 @@ int main(int argc, char **argv)
             { "sounds",      open_sounds      },
             { "fonts",       open_fonts       },
             { "datetime",    open_datetime    },
+            { "power",       open_power       },
         };
         for (int i = 0; i < (int)(sizeof direct / sizeof *direct); i++)
             if (!strcasecmp(argv[1], direct[i].word)) {
@@ -1857,8 +2098,10 @@ int main(int argc, char **argv)
     W2kList *l = cp.fw->list;
     l->on_activate = on_activate;
     l->on_select = on_select;
+    int laptop = w2k_is_laptop();
     for (int i = 0; i < NAPPLETS; i++) {
-        int r = w2k_list_add(l, applets[i].icon, NULL);
+        if (i == AP_POWER && !laptop) continue;   /* nothing to meter or dim */
+        int r = w2k_list_add(l, applets[i].icon, (void *)(intptr_t)i);
         w2k_list_set(l, r, 0, applets[i].name);
     }
     pane_fill(-1);

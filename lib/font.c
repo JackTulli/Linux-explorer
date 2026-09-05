@@ -126,7 +126,7 @@ static XftFont *open_face(int i)
                                  XFT_FAMILY, XftTypeString,
                                      face[i].faces[k].family,
                                  XFT_PIXEL_SIZE, XftTypeDouble,
-                                     (double)face[i].faces[k].pixel,
+                                     (double)face[i].faces[k].pixel * w2k_ui_scale / 100.0,
                                  XFT_WEIGHT, XftTypeInteger,
                                      face[i].bold ? XFT_WEIGHT_BOLD : XFT_WEIGHT_MEDIUM,
                                  XFT_ANTIALIAS, XftTypeBool, aa,
@@ -273,7 +273,8 @@ void w2k_text_rgb(Drawable d, int font, int x, int y, const char *s,
 {
     if (!s || !*s) return;
     int len = (int)strlen(s);
-    int baseline = y + w2k_font_px_ascent(font);
+    x = w2k_cx(x);
+    int baseline = w2k_cx(y) + w2k_font_px_ascent(font);
 
     XftFont *fc = slot_face(font);
     if (fc) {
@@ -373,7 +374,8 @@ static W2kFace *face_open(const char *family, int pixel, int bold)
     if (!use_xft || !family || pixel <= 0) return NULL;
     XftFont *f = XftFontOpen(w2k.dpy, w2k.screen,
                              XFT_FAMILY, XftTypeString, family,
-                             XFT_PIXEL_SIZE, XftTypeDouble, (double)pixel,
+                             XFT_PIXEL_SIZE, XftTypeDouble,
+                                 (double)pixel * w2k_ui_scale / 100.0,
                              XFT_WEIGHT, XftTypeInteger,
                                  bold ? XFT_WEIGHT_BOLD : XFT_WEIGHT_MEDIUM,
                              XFT_ANTIALIAS, XftTypeBool,
@@ -404,12 +406,14 @@ void w2k_face_close(W2kFace *fa)
     free(fa);
 }
 
+static int face_lp(int px) { return w2k_scale_raw ? px : w2k_lp(px); }
+
 int w2k_face_height(W2kFace *fa)
 {
-    return fa && fa->f ? fa->f->ascent + fa->f->descent : 0;
+    return fa && fa->f ? face_lp(fa->f->ascent + fa->f->descent) : 0;
 }
 
-int w2k_face_ascent(W2kFace *fa) { return fa && fa->f ? fa->f->ascent : 0; }
+int w2k_face_ascent(W2kFace *fa) { return fa && fa->f ? face_lp(fa->f->ascent) : 0; }
 
 int w2k_face_width(W2kFace *fa, const char *s, int len)
 {
@@ -417,7 +421,7 @@ int w2k_face_width(W2kFace *fa, const char *s, int len)
     if (len < 0) len = (int)strlen(s);
     XGlyphInfo gi;
     XftTextExtentsUtf8(w2k.dpy, fa->f, (const FcChar8 *)s, len, &gi);
-    return gi.xOff;
+    return face_lp(gi.xOff);
 }
 
 /* Does this face have a glyph for the character, rather than the box that
@@ -444,6 +448,6 @@ void w2k_face_text(Drawable d, W2kFace *fa, int x, int y, const char *s,
     } else {
         XftDrawSetClip(dr, NULL);
     }
-    XftDrawStringUtf8(dr, c, fa->f, x, y + fa->f->ascent,
+    XftDrawStringUtf8(dr, c, fa->f, w2k_cx(x), w2k_cx(y) + fa->f->ascent,
                       (const FcChar8 *)s, (int)strlen(s));
 }

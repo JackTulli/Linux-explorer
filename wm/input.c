@@ -371,7 +371,7 @@ static int switch_list(Client **out, int max)
 
 static void switch_paint(Window win, int w, int h, Client **list, int n, int sel)
 {
-    Pixmap pm = XCreatePixmap(w2k.dpy, win, w, h, w2k.depth);
+    Pixmap pm = XCreatePixmap(w2k.dpy, win, (unsigned)w2k_px(w), (unsigned)w2k_px(h), w2k.depth);
     w2k_fill(pm, 0, 0, w, h, C_FACE);
     w2k_edge(pm, 0, 0, w, h, EDGE_RAISED, BF_RECT);
 
@@ -392,7 +392,7 @@ static void switch_paint(Window win, int w, int h, Client **list, int n, int sel
         w2k_text(pm, F_UI, (w - tw) / 2, h - SW_PAD - w2k_font_height(F_UI),
                  buf, C_TEXT);
     }
-    XCopyArea(w2k.dpy, pm, win, w2k.gc, 0, 0, w, h, 0, 0);
+    XCopyArea(w2k.dpy, pm, win, w2k.gc, 0, 0, (unsigned)w2k_px(w), (unsigned)w2k_px(h), 0, 0);
     w2k_free_pixmap(pm);
 }
 
@@ -415,13 +415,14 @@ void alt_tab(int backwards)
     const W2kMonitor *m = focused ? w2k_monitor_at(focused->x + focused->w / 2,
                                                    focused->y + focused->h / 2)
                                   : w2k_monitor_of_pointer();
-    int x = m->x + (m->w - w) / 2, y = m->y + (m->h - h) / 2;
+    int x = m->x + (m->w - w2k_px(w)) / 2, y = m->y + (m->h - w2k_px(h)) / 2;
 
     XSetWindowAttributes a = {
         .override_redirect = True, .save_under = True,
         .background_pixel = w2k.col[C_FACE], .event_mask = ExposureMask
     };
-    Window win = XCreateWindow(w2k.dpy, w2k.root, x, y, w, h, 0,
+    Window win = XCreateWindow(w2k.dpy, w2k.root, x, y, (unsigned)w2k_px(w),
+                               (unsigned)w2k_px(h), 0,
                                CopyFromParent, InputOutput, CopyFromParent,
                                CWOverrideRedirect | CWSaveUnder | CWBackPixel |
                                CWEventMask, &a);

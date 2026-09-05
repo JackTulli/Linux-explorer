@@ -82,10 +82,15 @@ static int wrap_text(const char *text, int width, char lines[MAXLINES][128])
  * `inset` pixels inside the window's edge. Drawn once in black for the
  * border and the shape, then once more inset by one in the balloon's
  * colour, which leaves a one-pixel border all round. */
+/* The balloon is laid out in logical pixels (b_w, b_h); this draws in
+ * screen pixels, so every measure is mapped on its way to X. */
 static void draw_shape(Drawable d, GC g, int inset)
 {
-    int x0 = inset, y0 = inset + (b_flip ? TAIL_H : 0), w = b_w - 2 * inset, body_h = b_h - TAIL_H - 2 * inset;
-    int r = RADIUS - inset;
+    int P = w2k_ui_scale;
+    #define M(v) ((int)((long)(v) * P / 100))
+    int x0 = M(inset), y0 = M(inset + (b_flip ? TAIL_H : 0));
+    int w = M(b_w - inset) - x0, body_h = M(b_h - TAIL_H - inset) - y0;
+    int r = M(RADIUS - inset);
     if (r < 1) r = 1;
     XFillRectangle(w2k.dpy, d, g, x0 + r, y0, (unsigned)(w - 2 * r), (unsigned)body_h);
     XFillRectangle(w2k.dpy, d, g, x0, y0 + r, (unsigned)w, (unsigned)(body_h - 2 * r));
@@ -96,19 +101,21 @@ static void draw_shape(Drawable d, GC g, int inset)
     /* The tail: from a base on the bottom edge down to its tip -- or, under
      * a bar along the top, from the top edge up. */
     int base_y = b_flip ? y0 : y0 + body_h - 1;
-    int tip_x = b_tail_x, tip_y = b_flip ? inset : b_h - 1 - inset;
-    int bl = b_tail_x - TAIL_W + 2 * inset, br = b_tail_x + 2 + inset;
+    int tip_x = M(b_tail_x), tip_y = b_flip ? M(inset) : M(b_h) - 1 - M(inset);
+    int bl = M(b_tail_x - TAIL_W + 2 * inset), br = M(b_tail_x + 2 + inset);
     XPoint tri[3] = { { (short)bl, (short)base_y }, { (short)br, (short)base_y },
                       { (short)tip_x, (short)tip_y } };
     XFillPolygon(w2k.dpy, d, g, tri, 3, Convex, CoordModeOrigin);
+    #undef M
 }
 
 static void apply_shape(void)
 {
-    Pixmap mask = XCreatePixmap(w2k.dpy, balloon, (unsigned)b_w, (unsigned)b_h, 1);
+    int pw = w2k_px(b_w), ph = w2k_px(b_h);
+    Pixmap mask = XCreatePixmap(w2k.dpy, balloon, (unsigned)pw, (unsigned)ph, 1);
     GC g = XCreateGC(w2k.dpy, mask, 0, NULL);
     XSetForeground(w2k.dpy, g, 0);
-    XFillRectangle(w2k.dpy, mask, g, 0, 0, (unsigned)b_w, (unsigned)b_h);
+    XFillRectangle(w2k.dpy, mask, g, 0, 0, (unsigned)pw, (unsigned)ph);
     XSetForeground(w2k.dpy, g, 1);
     draw_shape(mask, g, 0);
     XShapeCombineMask(w2k.dpy, balloon, ShapeBounding, 0, 0, mask, ShapeSet);
@@ -139,12 +146,12 @@ static void balloon_paint(void)
     /* The close box: a small bordered square with an X, top right. */
     b_close = (W2kRect){ b_w - PAD - 13, ty - 1, 13, 13 };
     if (close_down) w2k_fill(balloon, b_close.x + 1, b_close.y + 1, 11, 11, C_FACE);
+    w2k_frame(balloon, b_close.x, b_close.y, 13, 13, C_TOOLTIPTEXT);
     XSetForeground(w2k.dpy, w2k.gc, w2k.col[C_TOOLTIPTEXT]);
-    XDrawRectangle(w2k.dpy, balloon, w2k.gc, b_close.x, b_close.y, 12, 12);
     int cx = b_close.x + 3 + close_down, cy = b_close.y + 3 + close_down;
     for (int i = 0; i < 7; i++) {
-        XFillRectangle(w2k.dpy, balloon, w2k.gc, cx + i, cy + i, 1, 1);
-        XFillRectangle(w2k.dpy, balloon, w2k.gc, cx + 6 - i, cy + i, 1, 1);
+        w2k_fill_fg(balloon, cx + i, cy + i, 1, 1);
+        w2k_fill_fg(balloon, cx + 6 - i, cy + i, 1, 1);
     }
 }
 
@@ -191,21 +198,22 @@ static void show_next(void)
     const W2kMonitor *m = w2k_monitor_primary();
     int wx, wy, ww, wh;
     wm_workarea_of(m, &wx, &wy, &ww, &wh);
-    int x = ax - (b_w - 40);
-    if (x + b_w > wx + ww - 2) x = wx + ww - 2 - b_w;
+    int pw = w2k_px(b_w), ph = w2k_px(b_h);
+    int x = ax - w2k_px(b_w - 40);
+    if (x + pw > wx + ww - 2) x = wx + ww - 2 - pw;
     if (x < wx + 2) x = wx + 2;
-    b_tail_x = ax - x;
+    b_tail_x = w2k_lp(ax - x);
     if (b_tail_x > b_w - RADIUS - 6) b_tail_x = b_w - RADIUS - 6;
     if (b_tail_x < RADIUS + TAIL_W) b_tail_x = RADIUS + TAIL_W;
     b_flip = top;
-    int y = top ? ay : ay - b_h;
+    int y = top ? ay : ay - ph;
 
     XSetWindowAttributes a = {
         .override_redirect = True, .save_under = True,
         .background_pixmap = None,
         .event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask
     };
-    balloon = XCreateWindow(w2k.dpy, w2k.root, x, y, (unsigned)b_w, (unsigned)b_h, 0,
+    balloon = XCreateWindow(w2k.dpy, w2k.root, x, y, (unsigned)pw, (unsigned)ph, 0,
                             CopyFromParent, InputOutput, CopyFromParent,
                             CWOverrideRedirect | CWSaveUnder | CWBackPixmap |
                             CWEventMask, &a);
@@ -304,7 +312,7 @@ int balloon_event(XEvent *e)
         return 1;
     }
     if (e->type == ButtonPress && e->xbutton.window == balloon) {
-        if (w2k_rect_hit(&b_close, e->xbutton.x, e->xbutton.y)) {
+        if (w2k_rect_hit(&b_close, w2k_lp(e->xbutton.x), w2k_lp(e->xbutton.y))) {
             close_down = 1;
             balloon_paint();
         } else {
@@ -335,12 +343,13 @@ int balloon_render(const char *path)
     XSync(w2k.dpy, False);
     balloon_paint();
     XSync(w2k.dpy, False);
-    XImage *im = XGetImage(w2k.dpy, balloon, 0, 0, (unsigned)b_w, (unsigned)b_h, AllPlanes, ZPixmap);
+    int pw = w2k_px(b_w), ph = w2k_px(b_h);
+    XImage *im = XGetImage(w2k.dpy, balloon, 0, 0, (unsigned)pw, (unsigned)ph, AllPlanes, ZPixmap);
     FILE *f = fopen(path, "wb");
     if (f && im) {
-        fprintf(f, "P6\n%d %d\n255\n", b_w, b_h);
-        for (int y = 0; y < b_h; y++)
-            for (int x = 0; x < b_w; x++) {
+        fprintf(f, "P6\n%d %d\n255\n", pw, ph);
+        for (int y = 0; y < ph; y++)
+            for (int x = 0; x < pw; x++) {
                 unsigned long v = XGetPixel(im, x, y);
                 unsigned char rgb[3] = { (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff };
                 fwrite(rgb, 1, 3, f);

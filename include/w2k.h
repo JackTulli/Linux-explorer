@@ -425,11 +425,42 @@ int         w2k_trash_move(const char *path);      /* delete to the bin */
 int         w2k_trash_move_named(const char *path, char *name_out, int nout);
 int         w2k_trash_restore(const char *name);   /* put one back */
 
+/* Desktop scale: the toolkit's metrics were measured in Windows pixels,
+ * and under "desktop scaling" every one of them is multiplied on its way
+ * to the screen -- the way a real HiDPI desktop draws a 96-dpi layout at
+ * 192. Programs keep working in logical pixels: positions handed to the
+ * primitives, sizes handed to w2k_win_new(), and event coordinates are
+ * all logical. The window manager, which lays its chrome out in physical
+ * pixels, runs the primitives in "raw" mode: coordinates pass through
+ * unchanged, and only thicknesses, fonts, icons and skins are enlarged.
+ * w2k_ui_scale is per cent; 100 is exactly the old behaviour. */
+extern int w2k_ui_scale;
+extern int w2k_scale_raw;
+extern int w2k_ui_scale_pref;        /* what the scheme asks for, per cent */
+extern int w2k_scale_mode;           /* SCALE_XRANDR / SCALE_DESKTOP */
+enum { SCALE_XRANDR, SCALE_DESKTOP };
+
+static inline int w2k_px(int v)                  /* logical -> physical */
+{ return w2k_ui_scale == 100 ? v : (int)((long)v * w2k_ui_scale / 100); }
+static inline int w2k_lp(int v)                  /* physical -> logical */
+{ return w2k_ui_scale == 100 ? v : (int)(((long)v * 100 + w2k_ui_scale / 2) / w2k_ui_scale); }
+static inline int w2k_cx(int v)                  /* a coordinate, per mode */
+{ return w2k_scale_raw ? v : w2k_px(v); }
+static inline int w2k_cw(int x, int w)           /* a span, without gaps */
+{ return w2k_scale_raw ? w : w2k_px(x + w) - w2k_px(x); }
+static inline int w2k_th(int v)                  /* a thickness: always scaled */
+{ int t = w2k_px(v); return t < 1 ? 1 : t; }
+/* One logical pixel of line: the span 1 maps to under the current mode. */
+static inline int w2k_t1(int at) { return w2k_scale_raw ? w2k_th(1) : w2k_cw(at, 1); }
+
 /* Raw RGB -> pixel value on the current visual (TrueColor fast path). */
 unsigned long w2k_rgb(int r, int g, int b);
 void w2k_color_rgb(int color, int *r, int *g, int *b);
 
 void w2k_fill(Drawable d, int x, int y, int w, int h, int color);
+void w2k_fill_rgb(Drawable d, int x, int y, int w, int h, int r, int g, int b);
+void w2k_fill_fg(Drawable d, int x, int y, int w, int h); /* current GC colour */
+void w2k_frame_fg(Drawable d, int x, int y, int w, int h); /* outline, likewise */
 void w2k_frame(Drawable d, int x, int y, int w, int h, int color);
 void w2k_hline(Drawable d, int x, int y, int w, int color);
 void w2k_vline(Drawable d, int x, int y, int h, int color);
@@ -618,7 +649,7 @@ enum {
     /* Control Panel applets, cut from a Windows 2000 screenshot. */
     ICO_CP_DATETIME, ICO_CP_DISPLAY, ICO_CP_FOLDEROPTS, ICO_CP_KEYBOARD,
     ICO_CP_MOUSE, ICO_CP_NETWORK, ICO_CP_SOUNDS, ICO_CP_USERS, ICO_CP_SYSTEM,
-    ICO_CP_PRINTERS, ICO_CP_SCHEDULED, ICO_TASKBAR,
+    ICO_CP_PRINTERS, ICO_CP_SCHEDULED, ICO_TASKBAR, ICO_CP_POWER,
     /* Network and Dial-up Connections. */
     ICO_NET_LAN, ICO_NET_WIRELESS, ICO_NET_NEW,
     /* The Explorer toolbar's own glyphs. */
@@ -668,6 +699,24 @@ const char *w2k_sound_label(int ev);
 int         w2k_sound_group(int ev);          /* 0 Windows, 1 Windows Explorer */
 int         w2k_sound_by_slug(const char *slug);
 int         w2k_sound_packs(char (*ids)[32], char (*labels)[48], int max);
+
+/* ------------------------------------------------------------------ *
+ * Power: the battery, the mains and the screen's backlight, from sysfs
+ * ------------------------------------------------------------------ */
+typedef struct {
+    int  present;          /* a real battery was found (not a mouse's) */
+    int  percent;          /* 0..100, -1 unknown */
+    int  charging;         /* 0 discharging, 1 charging, 2 full / not charging */
+    int  ac_online;        /* 1 on the mains, 0 on battery, -1 unknown */
+    int  minutes_left;     /* to empty, or to full when charging; -1 unknown */
+    char name[64];
+} W2kPower;
+int  w2k_power_read(W2kPower *p);           /* 1 when a battery exists */
+void w2k_power_describe(const W2kPower *p, char *out, int n);  /* "1 hr 5 min (87%) remaining" */
+int  w2k_backlight_available(void);
+int  w2k_backlight_get(int *pct);           /* 1 on success */
+int  w2k_backlight_set(int pct);            /* 0 on success */
+int  w2k_is_laptop(void);                   /* a battery or a backlight */
 const char *w2k_sound_pack_label(const char *id);
 int         w2k_sound_pack_dir(const char *pack, char *out, int n);
 int         w2k_sound_pack_files(const char *pack, char (*out)[128], int max);

@@ -280,8 +280,7 @@ static void startdlg_paint(W2kWin *w, Drawable d)
         int gg = atoi(w2k_edit_text(sd->rgb[i][1]));
         int b = atoi(w2k_edit_text(sd->rgb[i][2]));
         W2kRect sw = { sd->rgb[i][2]->r.x + 56, sd->rgb[i][0]->r.y, 40, 21 };
-        XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r & 255, gg & 255, b & 255));
-        XFillRectangle(w2k.dpy, d, w2k.gc, sw.x, sw.y, sw.w, sw.h);
+        w2k_fill_rgb(d, sw.x, sw.y, sw.w, sw.h, r & 255, gg & 255, b & 255);
         w2k_edge(d, sw.x, sw.y, sw.w, sw.h, EDGE_SUNKEN, BF_RECT);
     }
     const char *rgb_head[3] = { "Red", "Green", "Blue" };
@@ -761,7 +760,7 @@ static void shut_paint(W2kWin *w, Drawable d)
                        w2k_rgb(10 + (0 - 10) * t / 255,
                                36 + (0 - 36) * t / 255,
                                106 + (48 - 106) * t / 255));
-        XFillRectangle(w2k.dpy, d, w2k.gc, 0, 0 + i, bw, 1);
+        w2k_fill_fg(d, 0, 0 + i, bw, 1);
     }
     w2k_icon_draw(d, (bw - 16) / 2, 12, ICO_STARTFLAG);
     w2k_text(d, F_UI_BOLD, 6, 40, "Windows", C_WHITE);

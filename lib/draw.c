@@ -34,32 +34,73 @@ int w2k_edge_size(int style)
     return (edge_tab[style][1] >= 0) ? 2 : 1;
 }
 
+/* Every primitive maps its rectangle through w2k_cx()/w2k_cw() so that
+ * adjacent logical rectangles stay adjacent on a scaled screen: a span is
+ * the difference of its mapped ends, never a rounded width. */
+void w2k_fill_fg(Drawable d, int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0) return;
+    int pw = w2k_cw(x, w), ph = w2k_cw(y, h);
+    if (pw <= 0 || ph <= 0) return;
+    XFillRectangle(w2k.dpy, d, w2k.gc, w2k_cx(x), w2k_cx(y),
+                   (unsigned)pw, (unsigned)ph);
+}
+
 void w2k_fill(Drawable d, int x, int y, int w, int h, int color)
 {
     if (w <= 0 || h <= 0) return;
     XSetForeground(w2k.dpy, w2k.gc, w2k.col[color]);
-    XFillRectangle(w2k.dpy, d, w2k.gc, x, y, w, h);
+    w2k_fill_fg(d, x, y, w, h);
+}
+
+void w2k_frame_fg(Drawable d, int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0) return;
+    int t = w2k_scale_raw ? w2k_th(1) : 1;
+    w2k_fill_fg(d, x, y, w, t);
+    w2k_fill_fg(d, x, y + h - t, w, t);
+    w2k_fill_fg(d, x, y, t, h);
+    w2k_fill_fg(d, x + w - t, y, t, h);
+}
+
+void w2k_fill_rgb(Drawable d, int x, int y, int w, int h, int r, int g, int b)
+{
+    if (w <= 0 || h <= 0) return;
+    XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r, g, b));
+    w2k_fill_fg(d, x, y, w, h);
 }
 
 void w2k_hline(Drawable d, int x, int y, int w, int color)
 {
     if (w <= 0) return;
     XSetForeground(w2k.dpy, w2k.gc, w2k.col[color]);
-    XFillRectangle(w2k.dpy, d, w2k.gc, x, y, w, 1);
+    XFillRectangle(w2k.dpy, d, w2k.gc, w2k_cx(x), w2k_cx(y),
+                   (unsigned)w2k_cw(x, w), (unsigned)w2k_t1(y));
 }
 
 void w2k_vline(Drawable d, int x, int y, int h, int color)
 {
     if (h <= 0) return;
     XSetForeground(w2k.dpy, w2k.gc, w2k.col[color]);
-    XFillRectangle(w2k.dpy, d, w2k.gc, x, y, 1, h);
+    XFillRectangle(w2k.dpy, d, w2k.gc, w2k_cx(x), w2k_cx(y),
+                   (unsigned)w2k_t1(x), (unsigned)w2k_cw(y, h));
 }
 
 void w2k_frame(Drawable d, int x, int y, int w, int h, int color)
 {
     if (w <= 0 || h <= 0) return;
-    XSetForeground(w2k.dpy, w2k.gc, w2k.col[color]);
-    XDrawRectangle(w2k.dpy, d, w2k.gc, x, y, w - 1, h - 1);
+    if (w2k_ui_scale == 100) {
+        XSetForeground(w2k.dpy, w2k.gc, w2k.col[color]);
+        XDrawRectangle(w2k.dpy, d, w2k.gc, x, y, w - 1, h - 1);
+        return;
+    }
+    /* In raw mode the strokes are th(1) thick and sit inside the rectangle
+     * given, as XDrawRectangle's would. */
+    int t = w2k_scale_raw ? w2k_th(1) : 1;
+    w2k_hline(d, x, y, w, color);
+    w2k_hline(d, x, y + h - t, w, color);
+    w2k_vline(d, x, y, h, color);
+    w2k_vline(d, x + w - t, y, h, color);
 }
 
 /* One ring of an edge. Bottom/right win at the corners, as in Windows. */
@@ -67,13 +108,14 @@ static void ring(Drawable d, int x, int y, int w, int h,
                  int lt, int rb, int flags)
 {
     if (w <= 0 || h <= 0) return;
+    int t = w2k_scale_raw ? w2k_th(1) : 1;   /* one logical pixel */
     if (lt >= 0) {
-        if (flags & BF_TOP)  w2k_hline(d, x, y, w - ((flags & BF_RIGHT) ? 1 : 0), lt);
-        if (flags & BF_LEFT) w2k_vline(d, x, y, h - ((flags & BF_BOTTOM) ? 1 : 0), lt);
+        if (flags & BF_TOP)  w2k_hline(d, x, y, w - ((flags & BF_RIGHT) ? t : 0), lt);
+        if (flags & BF_LEFT) w2k_vline(d, x, y, h - ((flags & BF_BOTTOM) ? t : 0), lt);
     }
     if (rb >= 0) {
-        if (flags & BF_BOTTOM) w2k_hline(d, x, y + h - 1, w, rb);
-        if (flags & BF_RIGHT)  w2k_vline(d, x + w - 1, y, h, rb);
+        if (flags & BF_BOTTOM) w2k_hline(d, x, y + h - t, w, rb);
+        if (flags & BF_RIGHT)  w2k_vline(d, x + w - t, y, h, rb);
     }
 }
 
@@ -83,9 +125,10 @@ void w2k_edge(Drawable d, int x, int y, int w, int h, int style, int flags)
     const signed char *e = edge_tab[style];
     ring(d, x, y, w, h, e[0], e[2], flags);
     if (e[1] >= 0) {
-        int dx = (flags & BF_LEFT) ? 1 : 0, dy = (flags & BF_TOP) ? 1 : 0;
-        int dw = dx + ((flags & BF_RIGHT) ? 1 : 0);
-        int dh = dy + ((flags & BF_BOTTOM) ? 1 : 0);
+        int t = w2k_scale_raw ? w2k_th(1) : 1;
+        int dx = (flags & BF_LEFT) ? t : 0, dy = (flags & BF_TOP) ? t : 0;
+        int dw = dx + ((flags & BF_RIGHT) ? t : 0);
+        int dh = dy + ((flags & BF_BOTTOM) ? t : 0);
         ring(d, x + dx, y + dy, w - dw, h - dh, e[1], e[3], flags);
     }
 }
@@ -93,14 +136,15 @@ void w2k_edge(Drawable d, int x, int y, int w, int h, int style, int flags)
 void w2k_button(Drawable d, int x, int y, int w, int h, int pressed)
 {
     if (w <= 0 || h <= 0) return;
+    int t = w2k_scale_raw ? w2k_th(1) : 1;
     if (pressed) {
         /* A depressed pushbutton loses the highlight entirely: a single
          * shadow ring, with the face pushed in by one pixel. */
         w2k_frame(d, x, y, w, h, C_SHADOW);
-        w2k_fill(d, x + 1, y + 1, w - 2, h - 2, C_FACE);
+        w2k_fill(d, x + t, y + t, w - 2 * t, h - 2 * t, C_FACE);
     } else {
         w2k_edge(d, x, y, w, h, EDGE_BUTTON, BF_RECT);
-        w2k_fill(d, x + 2, y + 2, w - 4, h - 4, C_FACE);
+        w2k_fill(d, x + 2 * t, y + 2 * t, w - 4 * t, h - 4 * t, C_FACE);
     }
 }
 
@@ -132,6 +176,8 @@ void w2k_bar_gradient(Drawable d, int x, int y, int w, int h, int theme)
         st = bar_basic7;
         n = (int)(sizeof bar_basic7 / sizeof *bar_basic7);
     }
+    int px = w2k_cx(x), py = w2k_cx(y), pw = w2k_cw(x, w);
+    h = w2k_cw(y, h);
     for (int i = 0; i < h; i++) {
         int at = h > 1 ? i * 1000 / (h - 1) : 0;
         int k = 0;
@@ -143,7 +189,7 @@ void w2k_bar_gradient(Drawable d, int x, int y, int w, int h, int theme)
                        w2k_rgb(a->r + (b->r - a->r) * t / 255,
                                a->g + (b->g - a->g) * t / 255,
                                a->b + (b->b - a->b) * t / 255));
-        XFillRectangle(w2k.dpy, d, w2k.gc, x, y + i, (unsigned)w, 1);
+        XFillRectangle(w2k.dpy, d, w2k.gc, px, py + i, (unsigned)pw, 1);
     }
 }
 
@@ -153,13 +199,15 @@ void w2k_gradient(Drawable d, int x, int y, int w, int h, int c1, int c2)
     int r1, g1, b1, r2, g2, b2;
     w2k_color_rgb(c1, &r1, &g1, &b1);
     w2k_color_rgb(c2, &r2, &g2, &b2);
-    if (w == 1) { w2k_fill(d, x, y, w, h, c1); return; }
+    int px = w2k_cx(x), py = w2k_cx(y), ph = w2k_cw(y, h);
+    w = w2k_cw(x, w);
+    if (w == 1) { w2k_fill(d, x, y, 1, h, c1); return; }
     for (int i = 0; i < w; i++) {
         int r = r1 + (r2 - r1) * i / (w - 1);
         int g = g1 + (g2 - g1) * i / (w - 1);
         int b = b1 + (b2 - b1) * i / (w - 1);
         XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r, g, b));
-        XFillRectangle(w2k.dpy, d, w2k.gc, x + i, y, 1, h);
+        XFillRectangle(w2k.dpy, d, w2k.gc, px + i, py, 1, (unsigned)ph);
     }
 }
 
@@ -169,6 +217,10 @@ int w2k_clip_on, w2k_clip_x, w2k_clip_y, w2k_clip_w, w2k_clip_h;
 
 void w2k_clip_set(int x, int y, int w, int h)
 {
+    /* Kept in physical pixels: the icon and skin blits intersect with it
+     * after mapping their own rectangles. */
+    int pw = w2k_cw(x, w), ph = w2k_cw(y, h);
+    x = w2k_cx(x); y = w2k_cx(y); w = pw; h = ph;
     XRectangle r = { x, y, w > 0 ? w : 0, h > 0 ? h : 0 };
     XSetClipRectangles(w2k.dpy, w2k.gc, 0, 0, &r, 1, Unsorted);
     w2k_clip_on = 1;
@@ -184,11 +236,13 @@ void w2k_clip_clear(void)
 void w2k_focus_rect(Drawable d, int x, int y, int w, int h)
 {
     if (w <= 0 || h <= 0) return;
+    int px = w2k_cx(x), py = w2k_cx(y), pw = w2k_cw(x, w), ph = w2k_cw(y, h);
+    int t = w2k_th(1);
     XSetTSOrigin(w2k.dpy, w2k.gc_focus, 0, 0);
-    XFillRectangle(w2k.dpy, d, w2k.gc_focus, x, y, w, 1);
-    XFillRectangle(w2k.dpy, d, w2k.gc_focus, x, y + h - 1, w, 1);
-    XFillRectangle(w2k.dpy, d, w2k.gc_focus, x, y + 1, 1, h - 2);
-    XFillRectangle(w2k.dpy, d, w2k.gc_focus, x + w - 1, y + 1, 1, h - 2);
+    XFillRectangle(w2k.dpy, d, w2k.gc_focus, px, py, pw, t);
+    XFillRectangle(w2k.dpy, d, w2k.gc_focus, px, py + ph - t, pw, t);
+    XFillRectangle(w2k.dpy, d, w2k.gc_focus, px, py + t, t, ph - 2 * t);
+    XFillRectangle(w2k.dpy, d, w2k.gc_focus, px + pw - t, py + t, t, ph - 2 * t);
 }
 
 void w2k_dither(Drawable d, int x, int y, int w, int h, int fg, int bg)
@@ -197,7 +251,8 @@ void w2k_dither(Drawable d, int x, int y, int w, int h, int fg, int bg)
     w2k_fill(d, x, y, w, h, bg);
     XSetForeground(w2k.dpy, w2k.gc_dither, w2k.col[fg]);
     XSetTSOrigin(w2k.dpy, w2k.gc_dither, 0, 0);
-    XFillRectangle(w2k.dpy, d, w2k.gc_dither, x, y, w, h);
+    XFillRectangle(w2k.dpy, d, w2k.gc_dither, w2k_cx(x), w2k_cx(y),
+                   (unsigned)w2k_cw(x, w), (unsigned)w2k_cw(y, h));
 }
 
 /* ------------------------------------------------------------------ *
@@ -207,12 +262,24 @@ int w2k_text_width(int font, const char *s, int len)
 {
     if (!s) return 0;
     if (len < 0) len = strlen(s);
-    return w2k_font_px_width(font, s, len);
+    int px = w2k_font_px_width(font, s, len);
+    return w2k_scale_raw ? px : w2k_lp(px);
 }
 
-int w2k_font_height(int font) { return w2k_font_px_height(font); }
+/* Physical metrics are what the fonts report; the logical ones the
+ * programs lay out with are those divided by the scale. In raw mode the
+ * two coincide. */
+int w2k_font_height(int font)
+{
+    int px = w2k_font_px_height(font);
+    return w2k_scale_raw ? px : w2k_lp(px);
+}
 
-int w2k_font_ascent(int font) { return w2k_font_px_ascent(font); }
+int w2k_font_ascent(int font)
+{
+    int px = w2k_font_px_ascent(font);
+    return w2k_scale_raw ? px : w2k_lp(px);
+}
 
 /* y is the top of the line, as every caller expects; the backend wants a
  * baseline. */
@@ -220,7 +287,8 @@ void w2k_textn(Drawable d, int font, int x, int y, const char *s, int len,
                int color)
 {
     if (!s || len <= 0) return;
-    w2k_font_draw(d, font, x, y + w2k_font_px_ascent(font), s, len, color);
+    w2k_font_draw(d, font, w2k_cx(x), w2k_cx(y) + w2k_font_px_ascent(font),
+                  s, len, color);
 }
 
 void w2k_text(Drawable d, int font, int x, int y, const char *s, int color)
@@ -271,7 +339,7 @@ int w2k_text_mnemonic(Drawable d, int font, int x, int y, const char *s,
     if (show_underline && ul >= 0 && w2k_accel_shown) {
         int x0 = x + w2k_text_width(font, buf, ul);
         int cw = w2k_text_width(font, buf + ul, 1);
-        w2k_hline(d, x0, y + w2k_font_px_ascent(font) + 1, cw, color);
+        w2k_hline(d, x0, y + w2k_font_ascent(font) + 1, cw, color);
     }
     return w2k_text_width(font, buf, n);
 }
@@ -287,9 +355,7 @@ int w2k_text_mnemonic_rgb(Drawable d, int font, int x, int y, const char *s,
     if (show_underline && ul >= 0 && w2k_accel_shown) {
         int x0 = x + w2k_text_width(font, buf, ul);
         int cw = w2k_text_width(font, buf + ul, 1);
-        XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r, g, b));
-        XFillRectangle(w2k.dpy, d, w2k.gc, x0, y + w2k_font_px_ascent(font) + 1,
-                       (unsigned)cw, 1);
+        w2k_fill_rgb(d, x0, y + w2k_font_ascent(font) + 1, cw, 1, r, g, b);
     }
     return w2k_text_width(font, buf, n);
 }
@@ -322,9 +388,10 @@ void w2k_text_vertical(Drawable d, int font, int x, int y, const char *s,
                        int color)
 {
     if (!s || !*s) return;
-    int tw = w2k_text_width(font, s, -1);
-    int th = w2k_font_height(font);
+    int tw = w2k_font_px_width(font, s, (int)strlen(s));
+    int th = w2k_font_px_height(font);
     if (tw <= 0 || th <= 0) return;
+    x = w2k_cx(x); y = w2k_cx(y);
 
     /* Render horizontally into a scratch pixmap of the normal depth --
      * Xft cannot draw into a 1-bit drawable -- then read it back and plot
@@ -338,7 +405,8 @@ void w2k_text_vertical(Drawable d, int font, int x, int y, const char *s,
     if (had_clip) w2k_clip_clear();
 
     Pixmap tmp = XCreatePixmap(w2k.dpy, w2k.root, tw, th, w2k.depth);
-    w2k_fill(tmp, 0, 0, tw, th, C_WHITE);
+    XSetForeground(w2k.dpy, w2k.gc, w2k.col[C_WHITE]);
+    XFillRectangle(w2k.dpy, tmp, w2k.gc, 0, 0, (unsigned)tw, (unsigned)th);
     w2k_font_draw(tmp, font, 0, w2k_font_px_ascent(font), s, (int)strlen(s),
                   C_BLACK);
     if (had_clip) w2k_clip_set(cx, cy, cw, ch);

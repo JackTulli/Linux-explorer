@@ -102,8 +102,9 @@ Try it nested first, without logging out of anything:
     l2kcontrol     Control Panel, the Windows 2000 folder with its web-view
                    pane: Date/Time, Default Programs, Device Manager, Display,
                    Folder Options, Fonts, Keyboard, Mouse, Network and Dial-up
-                   Connections, Sounds and Multimedia, System, Task Manager,
-                   Taskbar and Start Menu
+                   Connections, Power Options (on laptops: the Power Meter
+                   and a Brightness page for the backlight), Sounds and
+                   Multimedia, System, Task Manager, Taskbar and Start Menu
     l2knetwork     Network and Dial-up Connections: one icon per adapter, the
                    Local Area Connection Status dialog (Connection and
                    Activity), and a Wireless Network Connection in the same
@@ -111,9 +112,9 @@ Try it nested first, without logging out of anything:
                    (scan, connect, disconnect through NetworkManager)
     l2kdisplay     Display Properties: wallpaper (centre, tile, stretch, fit,
                    fill, span), appearance schemes, themes, monitors with
-                   their refresh rate and a per-monitor scale (nearest-
-                   neighbour, so 200% is an exact pixel doubling and the
-                   fractional sizes stay sharp rather than blurred)
+                   their refresh rate and a per-monitor scale -- either the
+                   screen's (xrandr; 200% is an exact pixel doubling) or,
+                   experimentally, the desktop's own: see Scaling below
     l2kdevmgmt     Device Manager: the machine's hardware from sysfs, drivers,
                    enable/disable, DKMS driver install (contributed)
     l2knotepad, l2kcalc, l2kcharmap, l2kimage (Imaging), l2ktaskmgr,
@@ -179,11 +180,33 @@ Keys: **Ctrl+Esc** / **Win** Start menu · **Alt+Tab** switch windows ·
 **Win+E** Explorer · **Win+R** Run · **Win+D** show desktop · typing at the
 Start menu searches.
 
+## Scaling
+
+Display Properties > Settings offers two ways to make everything bigger
+on a dense panel. The plain one is the screen's: xrandr draws a smaller
+virtual screen and stretches it over the panel (`--scale`), with the
+nearest filter at 200%, where every pixel becomes an exact two-by-two
+block, and bilinear at 125/150/175%, where it cannot.
+
+The experimental one -- "scale the desktop itself, not the screen" -- is
+how a real desktop does it: the screen stays at its native size and the
+desktop renders larger. Fonts open at the scaled size, icons and the XP
+and 7 chrome are enlarged from their art (exactly at 200%), title bars,
+frames, the taskbar, menus, the Start panel, balloons and the mouse
+pointer are all drawn to scale, and the programs keep laying out in
+Windows pixels -- the toolkit multiplies on the way to the screen. GTK
+and Qt programs started from the desktop are told the scale (`GDK_SCALE`,
+`GDK_DPI_SCALE`, `QT_SCALE_FACTOR`, `XCURSOR_SIZE`, `Xft.dpi`). It takes
+effect at the next logon and follows the primary monitor's scale. It is
+experimental: at fractional scales some one-pixel lines come out uneven,
+and screenshots from the Snipping Tool are in screen pixels.
+
 ## Configuration
 
 Everything the applets set lives in `~/.w2k/scheme` (colours, theme,
 wallpaper, effects, taskbar, folder options, input settings, the monitor
-arrangement) and is applied live to every running program. Commands in
+arrangement, `UiScale=` and `ScaleMode=desktop|xrandr` for the scaling
+above) and is applied live to every running program. Commands in
 `~/.w2k/autostart` (one per line) are launched at logon. Pinned programs,
 favorites and the Recycle Bin are under `~/.w2k` too.
 

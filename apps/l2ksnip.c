@@ -1095,14 +1095,15 @@ static void become_editor(int yes)
         sh.min_width = 300; sh.min_height = 200;
         sh.x = fx; sh.y = fy;
         XSetWMNormalHints(w2k.dpy, st.win->win, &sh);
-        XMoveResizeWindow(w2k.dpy, st.win->win, fx, fy, (unsigned)w, (unsigned)h);
+        w2k_win_resize(st.win, w, h);
+        XMoveWindow(w2k.dpy, st.win->win, fx, fy);
     } else {
         st.win->resizable = 0;
         sh.flags |= PMinSize | PMaxSize;
         sh.min_width = sh.max_width = STRIP_W;
         sh.min_height = sh.max_height = STRIP_H;
         XSetWMNormalHints(w2k.dpy, st.win->win, &sh);
-        XResizeWindow(w2k.dpy, st.win->win, STRIP_W, STRIP_H);
+        w2k_win_resize(st.win, STRIP_W, STRIP_H);
     }
     w2k_win_dirty(st.win);
 }
@@ -1432,8 +1433,8 @@ int main(int argc, char **argv)
         if (st.rgba) {
             st.pm_dirty = 1;
             become_editor(1);
-            st.win->w = st.iw + 28 < 400 ? 400 : st.iw + 28;
-            st.win->h = VIEW_TOP + st.ih + 28 < 300 ? 300 : VIEW_TOP + st.ih + 28;
+            w2k_win_resize(st.win, st.iw + 28 < 400 ? 400 : st.iw + 28,
+                           VIEW_TOP + st.ih + 28 < 300 ? 300 : VIEW_TOP + st.ih + 28);
             resized(st.win);
         }
     }

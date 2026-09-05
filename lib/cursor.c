@@ -213,6 +213,27 @@ static void add_shadow(CurImage *im)
     im->px = out;
 }
 
+/* Enlarge a decoded cursor for a scaled desktop, nearest neighbour: the
+ * pointer is drawn bigger at the panel's own resolution, as the rest of
+ * the desktop is. */
+static void scale_image(CurImage *im)
+{
+    int w2 = w2k_px(im->w), h2 = w2k_px(im->h);
+    if (w2 <= im->w || h2 <= im->h || w2 > 256 || h2 > 256) return;
+    unsigned *big = malloc((size_t)w2 * h2 * sizeof *big);
+    if (!big) return;
+    for (int y = 0; y < h2; y++) {
+        int sy = (int)((long)y * im->h / h2);
+        for (int x = 0; x < w2; x++)
+            big[(size_t)y * w2 + x] = im->px[(size_t)sy * im->w + (long)x * im->w / w2];
+    }
+    free(im->px);
+    im->px = big;
+    im->hx = w2k_px(im->hx);
+    im->hy = w2k_px(im->hy);
+    im->w = w2; im->h = h2;
+}
+
 static Cursor cursor_from_file(const char *path)
 {
     long n = 0;
@@ -225,6 +246,7 @@ static Cursor cursor_from_file(const char *path)
     free(d);
 
     if (w2k_effects[FX_CURSOR_SHADOW]) add_shadow(&im);
+    if (w2k_ui_scale != 100) scale_image(&im);
 
     Cursor c = None;
     if (XcursorSupportsARGB(w2k.dpy)) {

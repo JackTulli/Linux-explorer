@@ -12,9 +12,16 @@ typedef struct { int x, y, w, h; } Rect;
 
 /* Fill in the caption rect plus the three button rects, in frame
  * coordinates. Buttons that this window does not get are zero-width. */
+/* Frame geometry is in screen pixels: the theme's measurements are
+ * multiplied up here, and the chrome is drawn with the primitives in
+ * raw mode, where only line thicknesses, fonts, icons and skins scale. */
+#define P(v) w2k_px(v)
+
 static void caption_layout(Client *c, Rect *cap, Rect *sys,
                            Rect *mn, Rect *mx, Rect *cl)
 {
+    int raw = w2k_scale_raw;
+    w2k_scale_raw = 1;
     int b = client_border(c);
     int themed = w2k_theme != THEME_CLASSIC;
     /* Luna's caption reaches to the frame's edge and swallows the top
@@ -24,22 +31,22 @@ static void caption_layout(Client *c, Rect *cap, Rect *sys,
     cap->w = client_frame_w(c) - (themed ? 0 : 2 * b);
     cap->h = themed ? client_caption_h(c) + b : CAPTION_H;
 
-    int bw = themed ? w2k_theme_capbtn_size(w2k_theme) : CAPBTN_W;
+    int bw = themed ? P(w2k_theme_capbtn_size(w2k_theme)) : CAPBTN_W;
     int bh = themed ? bw : CAPBTN_H;
     if (themed) {
         /* Where the theme puts them, measured off a screenshot. XP's are
          * square; Windows 7's Close is wider than its neighbours. */
         int by, cx, mxx, mnx;
         w2k_theme_capbtn_place(w2k_theme, cap->w, &by, &cx, &mxx, &mnx);
-        cl->x = cx;  cl->y = by; cl->w = w2k_theme_capbtn_w(w2k_theme, W2K_CAP_CLOSE); cl->h = bh;
-        mx->x = mxx; mx->y = by; mx->w = w2k_theme_capbtn_w(w2k_theme, W2K_CAP_MAX);   mx->h = bh;
-        mn->x = mnx; mn->y = by; mn->w = w2k_theme_capbtn_w(w2k_theme, W2K_CAP_MIN);   mn->h = bh;
+        cl->x = cx;  cl->y = by; cl->w = P(w2k_theme_capbtn_w(w2k_theme, W2K_CAP_CLOSE)); cl->h = bh;
+        mx->x = mxx; mx->y = by; mx->w = P(w2k_theme_capbtn_w(w2k_theme, W2K_CAP_MAX));   mx->h = bh;
+        mn->x = mnx; mn->y = by; mn->w = P(w2k_theme_capbtn_w(w2k_theme, W2K_CAP_MIN));   mn->h = bh;
     } else {
         int by = cap->y + (cap->h - bh) / 2;
-        int right = cap->x + cap->w - 2;
+        int right = cap->x + cap->w - P(2);
         cl->x = right - bw; cl->y = by; cl->w = bw; cl->h = bh;
         /* Two pixels of air separate Close from the size buttons. */
-        mx->x = cl->x - 2 - bw; mx->y = by; mx->w = bw; mx->h = bh;
+        mx->x = cl->x - P(2) - bw; mx->y = by; mx->w = bw; mx->h = bh;
         mn->x = mx->x - bw;     mn->y = by; mn->w = bw; mn->h = bh;
     }
 
@@ -51,9 +58,10 @@ static void caption_layout(Client *c, Rect *cap, Rect *sys,
     /* A dialog has no system menu, and so no icon at the left of its
      * caption: the Windows 2000 Run and Open dialogs show their title
      * against the left edge. */
-    sys->x = cap->x + 1; sys->y = cap->y + 1; sys->w = c->is_dialog ? 0 : 16;
-    sys->h = 16;
-    if (sys->h > cap->h - 2) { sys->y = cap->y; sys->h = cap->h; }
+    sys->x = cap->x + P(1); sys->y = cap->y + P(1); sys->w = c->is_dialog ? 0 : P(16);
+    sys->h = P(16);
+    if (sys->h > cap->h - P(2)) { sys->y = cap->y; sys->h = cap->h; }
+    w2k_scale_raw = raw;
 }
 
 static int in_rect(const Rect *r, int x, int y)
@@ -67,7 +75,17 @@ static int in_rect(const Rect *r, int x, int y)
  * ------------------------------------------------------------------ */
 /* All of the frame's drawing goes to `d`, which is normally the frame
  * window -- and a pixmap when frame_render() is looking at it. */
+static void frame_draw_raw(Client *c, Drawable d);
+
 static void frame_draw(Client *c, Drawable d)
+{
+    int raw = w2k_scale_raw;
+    w2k_scale_raw = 1;
+    frame_draw_raw(c, d);
+    w2k_scale_raw = raw;
+}
+
+static void frame_draw_raw(Client *c, Drawable d)
 {
     int fw = client_frame_w(c), fh = client_frame_h(c);
     int b = client_border(c);
@@ -75,12 +93,13 @@ static void frame_draw(Client *c, Drawable d)
 
     if (w2k_theme == THEME_CLASSIC) {
         /* Sizing border: a raised edge with a face-coloured grab margin. */
+        int e2 = 2 * w2k_th(1);                 /* the edge is two lines */
         w2k_edge(d, 0, 0, fw, fh, EDGE_RAISED, BF_RECT);
-        if (b > 2) {
-            w2k_fill(d, 2, 2, fw - 4, b - 2, C_FACE);        /* top    */
-            w2k_fill(d, 2, fh - b, fw - 4, b - 2, C_FACE);   /* bottom */
-            w2k_fill(d, 2, 2, b - 2, fh - 4, C_FACE);        /* left   */
-            w2k_fill(d, fw - b, 2, b - 2, fh - 4, C_FACE);   /* right  */
+        if (b > e2) {
+            w2k_fill(d, e2, e2, fw - 2 * e2, b - e2, C_FACE);        /* top    */
+            w2k_fill(d, e2, fh - b, fw - 2 * e2, b - e2, C_FACE);    /* bottom */
+            w2k_fill(d, e2, e2, b - e2, fh - 2 * e2, C_FACE);        /* left   */
+            w2k_fill(d, fw - b, e2, b - e2, fh - 2 * e2, C_FACE);    /* right  */
         }
     } else {
         /* Luna's frame is the caption colour carried down both sides and
@@ -118,24 +137,24 @@ static void frame_draw(Client *c, Drawable d)
     /* Windows 7 sets its icon two pixels in from the eight-pixel border
      * and the title, in the regular UI face, six past it. */
     int seven = w2k_theme == THEME_BASIC7;
-    int inset = w2k_theme == THEME_CLASSIC ? 1 : seven ? 10 : 6;
-    int tx = inset + 1;
+    int inset = P(w2k_theme == THEME_CLASSIC ? 1 : seven ? 10 : 6);
+    int tx = inset + P(1);
     if (c->icon >= 0 && !c->is_dialog) {
         /* Measured off the artwork: the icon at (10,11), the title at 30. */
-        w2k_icon_draw(pm, inset, seven ? 11 : (cap.h - 16) / 2, c->icon);
-        tx = w2k_theme == THEME_CLASSIC ? inset + 16 + 3 : seven ? 30 : 27;
+        w2k_icon_draw(pm, inset, seven ? P(11) : (cap.h - P(16)) / 2, c->icon);
+        tx = w2k_theme == THEME_CLASSIC ? inset + P(16 + 3) : P(seven ? 30 : 27);
     }
     int tfont = seven ? F_UI : F_UI_BOLD;
 
-    int avail = mn.w ? mn.x - cap.x - tx - 2 : cl.x - cap.x - tx - 2;
-    if (avail > 8 && c->name) {
+    int avail = mn.w ? mn.x - cap.x - tx - P(2) : cl.x - cap.x - tx - P(2);
+    if (avail > P(8) && c->name) {
         char buf[256];
         w2k_ellipsis(tfont, c->name, avail, buf, sizeof buf);
-        int ty = (cap.h - w2k_font_height(tfont)) / 2 + 1;
-        if (seven) ty = 10 + (21 - w2k_font_height(tfont)) / 2;   /* centred below the outline */
+        int ty = (cap.h - w2k_font_height(tfont)) / 2 + P(1);
+        if (seven) ty = P(10) + (P(21) - w2k_font_height(tfont)) / 2;   /* centred below the outline */
         if (w2k_theme == THEME_XP) {
             /* Luna sets the title in white over a soft shadow. */
-            w2k_text_rgb(pm, F_UI_BOLD, tx + 1, ty + 1, buf,
+            w2k_text_rgb(pm, F_UI_BOLD, tx + P(1), ty + P(1), buf,
                          active ? 0 : 90, active ? 40 : 110,
                          active ? 120 : 160);
         }
@@ -212,7 +231,8 @@ void frame_shape(Client *c)
     static const int luna[5] = { 5, 3, 2, 1, 1 };
     static const int basic[5] = { 3, 2, 1, 1, 0 };
     const int *ins = w2k_theme == THEME_BASIC7 ? basic : luna;
-    int rad = 5;
+    /* On a scaled desktop each measured row stands for a band of rows. */
+    int rad = P(5);
     Pixmap mask = XCreatePixmap(w2k.dpy, c->frame, (unsigned)fw, (unsigned)fh,
                                 1);
     GC g = XCreateGC(w2k.dpy, mask, 0, NULL);
@@ -222,7 +242,7 @@ void frame_shape(Client *c)
     XFillRectangle(w2k.dpy, mask, g, 0, rad, (unsigned)fw,
                    (unsigned)(fh - rad));
     for (int i = 0; i < rad; i++) {
-        int off = ins[i];
+        int off = P(ins[i * 5 / rad]);
         if (2 * off < fw)
             XFillRectangle(w2k.dpy, mask, g, off, i, (unsigned)(fw - 2 * off), 1);
     }

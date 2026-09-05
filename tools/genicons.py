@@ -98,6 +98,7 @@ MAP = {
     "ICO_CP_SOUNDS":     ("cp_sounds_16.png", "cp_sounds_32.png"),
     "ICO_CP_USERS":      ("cp_users_16.png", "cp_users_32.png"),
     "ICO_CP_SYSTEM":     ("cp_system_16.png", "cp_system_32.png"),
+    "ICO_CP_POWER":      ("cp_power_16.png", "cp_power_32.png"),   # drawn: plug, bolt, battery
     "ICO_CP_PRINTERS":   "w2k_printers",
     "ICO_CP_SCHEDULED":  "w2k_scheduled_tasks",
     "ICO_TASKBAR":       "w2k_taskbar",

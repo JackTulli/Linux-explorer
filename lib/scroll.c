@@ -44,10 +44,10 @@ static void arrow(Drawable d, int x, int y, int dir, int color)
     for (int i = 0; i < 4; i++) {
         int n = 1 + 2 * i;
         switch (dir) {
-        case 0: XFillRectangle(w2k.dpy, d, w2k.gc, x + 3 - i, y + 5 - i + 1, n, 1); break;
-        case 1: XFillRectangle(w2k.dpy, d, w2k.gc, x + 3 - i, y + 2 + i + 1, n, 1); break;
-        case 2: XFillRectangle(w2k.dpy, d, w2k.gc, x + 5 - i + 1, y + 3 - i, 1, n); break;
-        case 3: XFillRectangle(w2k.dpy, d, w2k.gc, x + 2 + i + 1, y + 3 - i, 1, n); break;
+        case 0: w2k_fill_fg(d, x + 3 - i, y + 5 - i + 1, n, 1); break;
+        case 1: w2k_fill_fg(d, x + 3 - i, y + 2 + i + 1, n, 1); break;
+        case 2: w2k_fill_fg(d, x + 5 - i + 1, y + 3 - i, 1, n); break;
+        case 3: w2k_fill_fg(d, x + 2 + i + 1, y + 3 - i, 1, n); break;
         }
     }
 }

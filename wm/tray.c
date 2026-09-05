@@ -72,7 +72,8 @@ void tray_layout(int x, int y, int h)
     int iy = y + (h - TRAY_ICON) / 2;
     for (int i = 0; i < nicons; i++) {
         int ix = x + i * (TRAY_ICON + TRAY_GAP);
-        XMoveResizeWindow(w2k.dpy, icons[i].win, ix, iy, TRAY_ICON, TRAY_ICON);
+        XMoveResizeWindow(w2k.dpy, icons[i].win, w2k_px(ix), w2k_px(iy),
+                          (unsigned)w2k_px(TRAY_ICON), (unsigned)w2k_px(TRAY_ICON));
         if (!icons[i].mapped) {
             XMapRaised(w2k.dpy, icons[i].win);
             icons[i].mapped = 1;
@@ -85,7 +86,8 @@ void tray_layout_column(int x, int y)
 {
     for (int i = 0; i < nicons; i++) {
         int iy = y + i * (TRAY_ICON + TRAY_GAP);
-        XMoveResizeWindow(w2k.dpy, icons[i].win, x, iy, TRAY_ICON, TRAY_ICON);
+        XMoveResizeWindow(w2k.dpy, icons[i].win, w2k_px(x), w2k_px(iy),
+                          (unsigned)w2k_px(TRAY_ICON), (unsigned)w2k_px(TRAY_ICON));
         if (!icons[i].mapped) {
             XMapRaised(w2k.dpy, icons[i].win);
             icons[i].mapped = 1;
@@ -106,7 +108,7 @@ static void dock(Window w)
 
     XSelectInput(w2k.dpy, w, StructureNotifyMask | PropertyChangeMask);
     XReparentWindow(w2k.dpy, w, parent, 0, 0);
-    XResizeWindow(w2k.dpy, w, TRAY_ICON, TRAY_ICON);
+    XResizeWindow(w2k.dpy, w, (unsigned)w2k_px(TRAY_ICON), (unsigned)w2k_px(TRAY_ICON));
 
     /* Tell the client it is embedded; without this many toolkits never
      * draw anything. */
@@ -202,7 +204,8 @@ int tray_event(XEvent *e)
         /* Icons sometimes ask to resize; they get the slot they are given. */
         int i = tray_find(e->xconfigurerequest.window);
         if (i < 0) return 0;
-        XResizeWindow(w2k.dpy, icons[i].win, TRAY_ICON, TRAY_ICON);
+        XResizeWindow(w2k.dpy, icons[i].win, (unsigned)w2k_px(TRAY_ICON),
+                      (unsigned)w2k_px(TRAY_ICON));
         return 1;
     }
     case SelectionClear:

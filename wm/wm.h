@@ -8,11 +8,14 @@
 /* ------------------------------------------------------------------ *
  * Non-client metrics (the Windows 2000 defaults at 96 dpi)
  * ------------------------------------------------------------------ */
-#define FRAME_SIZE   W2K_FRAME_SIZE    /* resizable window border  */
-#define FRAME_FIXED  W2K_FRAME_FIXED   /* dialog border            */
-#define CAPTION_H    W2K_CAPTION_H     /* SM_CYCAPTION             */
-#define CAPBTN_W      16    /* SM_CXSIZE                                  */
-#define CAPBTN_H      14    /* SM_CYSIZE                                  */
+/* These are screen pixels: on a scaled desktop the frame is laid out
+ * physically, so the metrics carry the scale. The taskbar and the rest of
+ * the shell lay out in logical pixels (TASKBAR_ROW below is one). */
+#define FRAME_SIZE   w2k_px(W2K_FRAME_SIZE)    /* resizable window border  */
+#define FRAME_FIXED  w2k_px(W2K_FRAME_FIXED)   /* dialog border            */
+#define CAPTION_H    w2k_px(W2K_CAPTION_H)     /* SM_CYCAPTION             */
+#define CAPBTN_W     w2k_px(16)    /* SM_CXSIZE                             */
+#define CAPBTN_H     w2k_px(14)    /* SM_CYSIZE                             */
 /* One row of task buttons plus the bar's edge. Windows XP and 7 are two
  * pixels taller than Windows 2000, which is what their Start button
  * artwork is drawn for. */
@@ -20,9 +23,9 @@
                        w2k_theme == THEME_BASIC7 ? (w2k_taskbar_small ? 30 : 40) : 30)
 #define TASKBAR_H     (TASKBAR_ROW * w2k_taskbar_rows)
 int     taskbar_thickness(void);      /* height, or width when on a side */
-#define CORNER_GRAB   16    /* diagonal resize hot-zone at each corner    */
-#define MIN_CLIENT_W  64
-#define MIN_CLIENT_H  24
+#define CORNER_GRAB   w2k_px(16)  /* diagonal resize hot-zone at each corner */
+#define MIN_CLIENT_W  w2k_px(64)
+#define MIN_CLIENT_H  w2k_px(24)
 
 /* Hit-test results, mirroring WM_NCHITTEST. */
 enum {

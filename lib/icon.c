@@ -142,6 +142,9 @@ static void build(Cached *c, const unsigned char *rgba, int n, int dimmed)
     c->built = 1;
 }
 
+static void blit_cached(Drawable d, int x, int y, Cached *c, int size);
+static void draw_scaled(Drawable d, int x, int y, int id, int size, int dimmed);
+
 /* Masked copy, intersected with the toolkit's current clip rectangle so
  * icons inside scrolled views are cut off where the view is. */
 static void blit(Drawable d, int x, int y, int id, int size, int dimmed)
@@ -158,6 +161,19 @@ static void blit(Drawable d, int x, int y, int id, int size, int dimmed)
     }
     if (!c->built) build(c, rgba, size, dimmed);
 
+    if (w2k_ui_scale != 100) {
+        /* On a scaled desktop the 16-pixel icon is drawn from the 32-pixel
+         * art (exact at 200%), and the 32 from itself, enlarged. */
+        draw_scaled(d, x, y, id, size, dimmed);
+        return;
+    }
+    blit_cached(d, x, y, c, size);
+}
+
+/* Masked copy of a built pixmap at a physical position, intersected with
+ * the (physical) clip rectangle. */
+static void blit_cached(Drawable d, int x, int y, Cached *c, int size)
+{
     int sx = 0, sy = 0, w = size, h = size, dx = x, dy = y;
     if (w2k_clip_on) {
         int x0 = x > w2k_clip_x ? x : w2k_clip_x;
@@ -176,37 +192,52 @@ static void blit(Drawable d, int x, int y, int id, int size, int dimmed)
 
 /* Any size, from the 32-pixel art: for the 24-pixel icons Luna's Start
  * panel and its footer use. Kept per (icon, size) once built. */
-void w2k_icon_draw_scaled(Drawable d, int x, int y, int id, int size)
+/* `size` is logical; the pixmap built is w2k_px(size) wide and drawn at
+ * the mapped position. Kept per (icon, physical size, dimmed). */
+#define N_SCALED 256
+static void draw_scaled(Drawable d, int x, int y, int id, int size, int dimmed)
 {
-    if (size == 16 || size == 32) { blit(d, x, y, id, size, 0); return; }
     if (!w2k_icon_valid(id) || size < 4 || size > 128) return;
-    static struct { int id, size; Cached c; } scaled[48];
+    int ps = w2k_px(size);
+    if (ps < 1 || ps > 512) return;
+    static struct { int id, size, dimmed; Cached c; } scaled[N_SCALED];
     static int nscaled, next_slot;
     int slot = -1;
     for (int i = 0; i < nscaled; i++)
-        if (scaled[i].id == id && scaled[i].size == size) { slot = i; break; }
+        if (scaled[i].id == id && scaled[i].size == ps &&
+            scaled[i].dimmed == dimmed) { slot = i; break; }
     if (slot < 0) {
-        const unsigned char *src = rgba_for(id, 32);
+        /* From the 32-pixel art unless the wanted size is exactly the
+         * 16-pixel one, which has its own drawing. */
+        int from = ps == 16 ? 16 : 32;
+        const unsigned char *src = rgba_for(id, from);
+        if (!src) { from = 32; src = rgba_for(id, 32); }
         if (!src) return;
-        unsigned char *px = w2k_rgba_scale(src, 32, 32, size);
+        unsigned char *px = w2k_rgba_scale(src, from, from, ps);
         if (!px) return;
-        if (nscaled < 48) slot = nscaled++;
+        if (nscaled < N_SCALED) slot = nscaled++;
         else {
-            slot = next_slot++ % 48;
+            slot = next_slot++ % N_SCALED;
             w2k_free_pixmap(scaled[slot].c.pm);
             w2k_free_pixmap(scaled[slot].c.mask);
         }
         scaled[slot].id = id;
-        scaled[slot].size = size;
+        scaled[slot].size = ps;
+        scaled[slot].dimmed = dimmed;
         memset(&scaled[slot].c, 0, sizeof scaled[slot].c);
-        build(&scaled[slot].c, px, size, 0);
+        build(&scaled[slot].c, px, ps, dimmed);
         free(px);
     }
-    Cached *c = &scaled[slot].c;
-    XSetClipOrigin(w2k.dpy, w2k.gc_icon, x, y);
-    XSetClipMask(w2k.dpy, w2k.gc_icon, c->mask);
-    XCopyArea(w2k.dpy, c->pm, d, w2k.gc_icon, 0, 0, (unsigned)size, (unsigned)size, x, y);
-    XSetClipMask(w2k.dpy, w2k.gc_icon, None);
+    blit_cached(d, w2k_cx(x), w2k_cx(y), &scaled[slot].c, ps);
+}
+
+void w2k_icon_draw_scaled(Drawable d, int x, int y, int id, int size)
+{
+    if ((size == 16 || size == 32) && w2k_ui_scale == 100) {
+        blit(d, x, y, id, size, 0);
+        return;
+    }
+    draw_scaled(d, x, y, id, size, 0);
 }
 
 void w2k_icon_draw(Drawable d, int x, int y, int id)          { blit(d, x, y, id, 16, 0); }

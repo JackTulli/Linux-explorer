@@ -17,7 +17,8 @@ typedef struct W2kWin W2kWin;
 
 struct W2kWin {
     Window   win;
-    int      w, h;
+    int      w, h;                /* logical pixels */
+    int      pw, ph;              /* the X window's actual size */
     int      min_w, min_h;
     int      resizable;
     Pixmap   buf;                 /* backbuffer; recreated on resize */
@@ -38,6 +39,8 @@ struct W2kWin {
 W2kWin *w2k_win_new(const char *title, const char *cls,
                     int w, int h, int resizable);
 void    w2k_win_show(W2kWin *w);
+/* Resize to a logical size; the X window follows at the desktop scale. */
+void    w2k_win_resize(W2kWin *w, int width, int height);
 void    w2k_win_dirty(W2kWin *w);
 void    w2k_win_close(W2kWin *w, int result);
 void    w2k_win_title(W2kWin *w, const char *title);

@@ -65,6 +65,7 @@ W2kWin *w2k_win_new(const char *title, const char *cls, int w, int h,
 {
     W2kWin *o = w2k_alloc(sizeof *o);
     o->w = w; o->h = h;
+    o->pw = w2k_px(w); o->ph = w2k_px(h);
     o->alive = 1;
     o->dirty = 1;
     o->resizable = resizable;
@@ -83,7 +84,8 @@ W2kWin *w2k_win_new(const char *title, const char *cls, int w, int h,
                       PointerMotionMask | StructureNotifyMask |
                       FocusChangeMask
     };
-    o->win = XCreateWindow(w2k.dpy, w2k.root, 0, 0, w, h, 0, CopyFromParent,
+    o->win = XCreateWindow(w2k.dpy, w2k.root, 0, 0, (unsigned)o->pw,
+                           (unsigned)o->ph, 0, CopyFromParent,
                            InputOutput, CopyFromParent,
                            CWBackPixmap | CWBitGravity | CWEventMask, &a);
     /* Our own cursor, so the window never shows what the frame around it
@@ -96,12 +98,12 @@ W2kWin *w2k_win_new(const char *title, const char *cls, int w, int h,
 
     XSizeHints sh = { 0 };
     sh.flags = PMinSize;
-    sh.min_width = o->min_w;
-    sh.min_height = o->min_h;
+    sh.min_width = w2k_px(o->min_w);
+    sh.min_height = w2k_px(o->min_h);
     if (!resizable) {
         sh.flags |= PMaxSize;
-        sh.max_width = w;
-        sh.max_height = h;
+        sh.max_width = o->pw;
+        sh.max_height = o->ph;
     }
     XSetWMNormalHints(w2k.dpy, o->win, &sh);
 
@@ -111,6 +113,16 @@ W2kWin *w2k_win_new(const char *title, const char *cls, int w, int h,
     o->next = win_list;
     win_list = o;
     return o;
+}
+
+void w2k_win_resize(W2kWin *w, int width, int height)
+{
+    if (!w || width <= 0 || height <= 0) return;
+    w->w = width; w->h = height;
+    w->pw = w2k_px(width); w->ph = w2k_px(height);
+    if (w->buf) { w2k_free_pixmap(w->buf); w->buf = 0; }
+    XResizeWindow(w2k.dpy, w->win, (unsigned)w->pw, (unsigned)w->ph);
+    w->dirty = 1;
 }
 
 void w2k_win_title(W2kWin *w, const char *title)
@@ -134,8 +146,8 @@ void w2k_win_center(W2kWin *w, W2kWin *over)
     /* Centre the frame, not the client area: the window manager adds a
      * border and a caption above, so centring the client alone leaves the
      * window sitting low. The frame is what the eye sees. */
-    int b = w->resizable ? W2K_FRAME_SIZE : W2K_FRAME_FIXED;
-    int fw = w->w + 2 * b, fh = w->h + 2 * b + W2K_CAPTION_H;
+    int b = w2k_px(w->resizable ? W2K_FRAME_SIZE : W2K_FRAME_FIXED);
+    int fw = w->pw + 2 * b, fh = w->ph + 2 * b + w2k_px(W2K_CAPTION_H);
     int x = px + (pw - fw) / 2, y = py + (ph - fh) / 2;
     const W2kMonitor *t = w2k_monitor_at(x + fw / 2, y + fh / 2);
     if (x < t->x) x = t->x;
@@ -161,16 +173,17 @@ void w2k_win_center(W2kWin *w, W2kWin *over)
 static void render_and_exit(W2kWin *w, const char *path)
 {
     if (w->w <= 0 || w->h <= 0) exit(1);
-    Pixmap pm = XCreatePixmap(w2k.dpy, w->win, w->w, w->h, w2k.depth);
+    int pw = w2k_px(w->w), ph = w2k_px(w->h);
+    Pixmap pm = XCreatePixmap(w2k.dpy, w->win, (unsigned)pw, (unsigned)ph, w2k.depth);
     w2k_fill(pm, 0, 0, w->w, w->h, C_FACE);
     if (w->paint) w->paint(w, pm);
 
-    XImage *im = XGetImage(w2k.dpy, pm, 0, 0, w->w, w->h, AllPlanes, ZPixmap);
+    XImage *im = XGetImage(w2k.dpy, pm, 0, 0, (unsigned)pw, (unsigned)ph, AllPlanes, ZPixmap);
     FILE *f = fopen(path, "wb");
     if (f && im) {
-        fprintf(f, "P6\n%d %d\n255\n", w->w, w->h);
-        for (int y = 0; y < w->h; y++)
-            for (int x = 0; x < w->w; x++) {
+        fprintf(f, "P6\n%d %d\n255\n", pw, ph);
+        for (int y = 0; y < ph; y++)
+            for (int x = 0; x < pw; x++) {
                 unsigned long p = XGetPixel(im, x, y);
                 unsigned char rgb[3] = { (p >> 16) & 0xff, (p >> 8) & 0xff,
                                          p & 0xff };
@@ -218,11 +231,21 @@ void w2k_win_destroy(W2kWin *w)
 static void repaint(W2kWin *w)
 {
     if (!w->alive || w->w <= 0 || w->h <= 0) return;
+    if (w->pw <= 0) { w->pw = w2k_px(w->w); w->ph = w2k_px(w->h); }
     if (!w->buf)
-        w->buf = XCreatePixmap(w2k.dpy, w->win, w->w, w->h, w2k.depth);
-    w2k_fill(w->buf, 0, 0, w->w, w->h, C_FACE);
+        w->buf = XCreatePixmap(w2k.dpy, w->win, (unsigned)w->pw,
+                               (unsigned)w->ph, w2k.depth);
+    XSetForeground(w2k.dpy, w2k.gc, w2k.col[C_FACE]);
+    XFillRectangle(w2k.dpy, w->buf, w2k.gc, 0, 0, (unsigned)w->pw,
+                   (unsigned)w->ph);
+    /* Programs paint in logical pixels whatever the caller's mode: the
+     * window manager's own dialogs go through here too. */
+    int raw = w2k_scale_raw;
+    w2k_scale_raw = 0;
     if (w->paint) w->paint(w, w->buf);
-    XCopyArea(w2k.dpy, w->buf, w->win, w2k.gc, 0, 0, w->w, w->h, 0, 0);
+    w2k_scale_raw = raw;
+    XCopyArea(w2k.dpy, w->buf, w->win, w2k.gc, 0, 0, (unsigned)w->pw,
+              (unsigned)w->ph, 0, 0);
     w->dirty = 0;
 }
 /* Repaint now rather than at the next turn of the loop -- for animations,
@@ -249,6 +272,8 @@ int w2k_win_owns(Window win)
         if (w->win == win) return 1;
     return 0;
 }
+
+static void dispatch_win(W2kWin *w, XEvent *e);
 
 static void dispatch(XEvent *e)
 {
@@ -288,6 +313,37 @@ static void dispatch(XEvent *e)
         if (w2k_win_foreign_event) w2k_win_foreign_event(e);
         return;
     }
+    /* Pointer positions arrive in the window's physical pixels; the
+     * program's controls are laid out in logical ones. Root coordinates
+     * are left alone: they name screen positions (menus, tooltips). */
+    if (w2k_ui_scale != 100) {
+        switch (e->type) {
+        case ButtonPress: case ButtonRelease:
+            e->xbutton.x = w2k_lp(e->xbutton.x);
+            e->xbutton.y = w2k_lp(e->xbutton.y);
+            break;
+        case MotionNotify:
+            e->xmotion.x = w2k_lp(e->xmotion.x);
+            e->xmotion.y = w2k_lp(e->xmotion.y);
+            break;
+        case EnterNotify: case LeaveNotify:
+            e->xcrossing.x = w2k_lp(e->xcrossing.x);
+            e->xcrossing.y = w2k_lp(e->xcrossing.y);
+            break;
+        case KeyPress: case KeyRelease:
+            e->xkey.x = w2k_lp(e->xkey.x);
+            e->xkey.y = w2k_lp(e->xkey.y);
+            break;
+        }
+    }
+    int raw = w2k_scale_raw;
+    w2k_scale_raw = 0;
+    dispatch_win(w, e);
+    w2k_scale_raw = raw;
+}
+
+static void dispatch_win(W2kWin *w, XEvent *e)
+{
 
     /* The window manager's resize border is a few pixels wide, and the size
      * grip in the corner of a status bar is inside the client area, where
@@ -323,9 +379,11 @@ static void dispatch(XEvent *e)
         XEvent next;
         while (XCheckTypedWindowEvent(w2k.dpy, w->win, ConfigureNotify, &next))
             *e = next;
-        if (e->xconfigure.width != w->w || e->xconfigure.height != w->h) {
-            w->w = e->xconfigure.width;
-            w->h = e->xconfigure.height;
+        if (e->xconfigure.width != w->pw || e->xconfigure.height != w->ph) {
+            w->pw = e->xconfigure.width;
+            w->ph = e->xconfigure.height;
+            w->w = w2k_lp(w->pw);
+            w->h = w2k_lp(w->ph);
             if (w->buf) { w2k_free_pixmap(w->buf); w->buf = 0; }
             if (w->resized) w->resized(w);
             /* Painted now, not at the next turn: nothing is shown between
@@ -472,7 +530,7 @@ static void check_glyph(Drawable d, int x, int y, int checked, int disabled)
     for (int r = 0; r < 6; r++)
         for (int c = 0; tick[r][c]; c++)
             if (tick[r][c] == '#')
-                XFillRectangle(w2k.dpy, d, w2k.gc, x + 3 + c, y + 3 + r, 1, 1);
+                w2k_fill_fg(d, x + 3 + c, y + 3 + r, 1, 1);
 }
 
 void w2k_draw_checkbox(Drawable d, int x, int y, const char *text,
@@ -506,7 +564,7 @@ static void radio_glyph(Drawable d, int x, int y, int checked, int disabled)
             else if (r2 <= 36.0)  col = (dx + dy < 0) ? C_SHADOW : C_HILIGHT;
             if (col >= 0) {
                 XSetForeground(w2k.dpy, w2k.gc, w2k.col[col]);
-                XFillRectangle(w2k.dpy, d, w2k.gc, x + i, y + j, 1, 1);
+                w2k_fill_fg(d, x + i, y + j, 1, 1);
             }
         }
     }
@@ -517,7 +575,7 @@ static void radio_glyph(Drawable d, int x, int y, int checked, int disabled)
         for (int i = 0; i < 12; i++) {
             double dx = i - cx, dy = j - cy;
             if (dx * dx + dy * dy <= 4.0)
-                XFillRectangle(w2k.dpy, d, w2k.gc, x + i, y + j, 1, 1);
+                w2k_fill_fg(d, x + i, y + j, 1, 1);
         }
 }
 

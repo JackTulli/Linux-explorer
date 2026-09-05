@@ -29,7 +29,7 @@ int client_border(Client *c)
 {
     if (!c->decorate || c->fullscreen) return 0;
     /* Windows 7 Basic frames are ten pixels all round, dialogs included. */
-    if (w2k_theme == THEME_BASIC7) return 10;
+    if (w2k_theme == THEME_BASIC7) return w2k_px(10);
     return c->resizable ? FRAME_SIZE : FRAME_FIXED;
 }
 
@@ -39,7 +39,7 @@ int client_caption_h(Client *c)
     /* Luna's caption is taller than the classic one: its buttons are 19
      * pixels square where Windows 2000's are 16 by 14. */
     return w2k_theme == THEME_CLASSIC ? CAPTION_H
-                                      : w2k_theme_caption_h(w2k_theme);
+                                      : w2k_px(w2k_theme_caption_h(w2k_theme));
 }
 
 int client_frame_w(Client *c) { return c->w + 2 * client_border(c); }

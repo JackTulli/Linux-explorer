@@ -53,7 +53,7 @@ static void down_arrow(Drawable d, int x, int y, int color)
 {
     XSetForeground(w2k.dpy, w2k.gc, w2k.col[color]);
     for (int i = 0; i < 4; i++)
-        XFillRectangle(w2k.dpy, d, w2k.gc, x + i, y + 3 - i, 1, 1 + 2 * i);
+        w2k_fill_fg(d, x + i, y + 3 - i, 1, 1 + 2 * i);
 }
 
 void w2k_combo_draw(Drawable d, W2kCombo *c)
@@ -118,10 +118,11 @@ int w2k_color_popup(int rx, int ry, int *r, int *g, int *b)
 {
     const int cell = 18, gap = 2, cols = 8, rows = 6;
     int w = cols * (cell + gap) + gap + 4, h = rows * (cell + gap) + gap + 4;
+    int pw = w2k_px(w), ph = w2k_px(h);          /* on the screen */
     const W2kMonitor *m = w2k_monitor_at(rx, ry);
     int x = rx, y = ry;
-    if (x + w > m->x + m->w) x = m->x + m->w - w;
-    if (y + h > m->y + m->h) y = ry - h - 22;
+    if (x + pw > m->x + m->w) x = m->x + m->w - pw;
+    if (y + ph > m->y + m->h) y = ry - ph - w2k_px(22);
     if (y < m->y) y = m->y;
 
     XSetWindowAttributes a = {
@@ -130,7 +131,7 @@ int w2k_color_popup(int rx, int ry, int *r, int *g, int *b)
         .event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
                       PointerMotionMask | KeyPressMask
     };
-    Window win = XCreateWindow(w2k.dpy, w2k.root, x, y, (unsigned)w, (unsigned)h, 0,
+    Window win = XCreateWindow(w2k.dpy, w2k.root, x, y, (unsigned)pw, (unsigned)ph, 0,
                                CopyFromParent, InputOutput, CopyFromParent,
                                CWOverrideRedirect | CWSaveUnder | CWBackPixel |
                                CWEventMask, &a);
@@ -151,28 +152,26 @@ int w2k_color_popup(int rx, int ry, int *r, int *g, int *b)
     long opened = w2k_now_ms();
     while (!done) {
         if (repaint) {
-            Pixmap pm = XCreatePixmap(w2k.dpy, win, (unsigned)w, (unsigned)h, w2k.depth);
+            Pixmap pm = XCreatePixmap(w2k.dpy, win, (unsigned)pw, (unsigned)ph, w2k.depth);
             w2k_fill(pm, 0, 0, w, h, C_FACE);
             w2k_edge(pm, 0, 0, w, h, EDGE_RAISED, BF_RECT);
             for (int i = 0; i < 48; i++) {
                 int cx = 2 + gap + (i % cols) * (cell + gap);
                 int cy = 2 + gap + (i / cols) * (cell + gap);
-                XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(basic_colors[i][0],
-                               basic_colors[i][1], basic_colors[i][2]));
-                XFillRectangle(w2k.dpy, pm, w2k.gc, cx + 1, cy + 1, (unsigned)cell - 2,
-                               (unsigned)cell - 2);
+                w2k_fill_rgb(pm, cx + 1, cy + 1, cell - 2, cell - 2,
+                             basic_colors[i][0], basic_colors[i][1], basic_colors[i][2]);
                 w2k_edge(pm, cx, cy, cell, cell, EDGE_SUNKEN_THIN, BF_RECT);
                 if (i == hot) w2k_focus_rect(pm, cx - 1, cy - 1, cell + 2, cell + 2);
             }
-            XCopyArea(w2k.dpy, pm, win, w2k.gc, 0, 0, (unsigned)w, (unsigned)h, 0, 0);
+            XCopyArea(w2k.dpy, pm, win, w2k.gc, 0, 0, (unsigned)pw, (unsigned)ph, 0, 0);
             w2k_free_pixmap(pm);
             repaint = 0;
         }
         XEvent e;
         XNextEvent(w2k.dpy, &e);
         if (e.type == MotionNotify || e.type == ButtonRelease || e.type == ButtonPress) {
-            int lx = (e.type == MotionNotify ? e.xmotion.x_root : e.xbutton.x_root) - x;
-            int ly = (e.type == MotionNotify ? e.xmotion.y_root : e.xbutton.y_root) - y;
+            int lx = w2k_lp((e.type == MotionNotify ? e.xmotion.x_root : e.xbutton.x_root) - x);
+            int ly = w2k_lp((e.type == MotionNotify ? e.xmotion.y_root : e.xbutton.y_root) - y);
             int i = -1;
             if (lx >= 2 + gap && ly >= 2 + gap && lx < w - 2 && ly < h - 2) {
                 int c = (lx - 2 - gap) / (cell + gap), rr = (ly - 2 - gap) / (cell + gap);
@@ -215,11 +214,12 @@ static int combo_dropdown(W2kCombo *c, int rx, int ry)
     int rows = c->n < 12 ? c->n : 12;
     if (rows < 1) return -1;
     int h = rows * row + 4, w = c->r.w;
+    int pw = w2k_px(w), ph = w2k_px(h);          /* on the screen */
     int y = ry;
     /* Flip above the box when there is no room below -- measured against the
      * monitor the combo is on, not the whole desktop. */
     const W2kMonitor *m = w2k_monitor_at(rx, ry);
-    if (y + h > m->y + m->h) y = ry - c->r.h - h;
+    if (y + ph > m->y + m->h) y = ry - w2k_px(c->r.h) - ph;
     if (y < m->y) y = m->y;
 
     XSetWindowAttributes a = {
@@ -228,7 +228,7 @@ static int combo_dropdown(W2kCombo *c, int rx, int ry)
         .event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
                       PointerMotionMask | KeyPressMask
     };
-    Window win = XCreateWindow(w2k.dpy, w2k.root, rx, y, w, h, 0,
+    Window win = XCreateWindow(w2k.dpy, w2k.root, rx, y, (unsigned)pw, (unsigned)ph, 0,
                                CopyFromParent, InputOutput, CopyFromParent,
                                CWOverrideRedirect | CWSaveUnder | CWBackPixel |
                                CWEventMask, &a);
@@ -237,12 +237,12 @@ static int combo_dropdown(W2kCombo *c, int rx, int ry)
     if (w2k_effects[FX_SLIDE_COMBO] && h > 20) {
         XMapRaised(w2k.dpy, win);
         for (int step = 1; step < 4; step++) {
-            int sh = h * step / 4;
-            XResizeWindow(w2k.dpy, win, w, sh < 4 ? 4 : sh);
+            int sh = ph * step / 4;
+            XResizeWindow(w2k.dpy, win, (unsigned)pw, sh < 4 ? 4 : sh);
             XFlush(w2k.dpy);
             usleep(8000);
         }
-        XResizeWindow(w2k.dpy, win, w, h);
+        XResizeWindow(w2k.dpy, win, (unsigned)pw, (unsigned)ph);
     }
     XMapRaised(w2k.dpy, win);
     /* Without the pointer grab a click outside would never arrive and the
@@ -263,7 +263,7 @@ static int combo_dropdown(W2kCombo *c, int rx, int ry)
 
     while (!done) {
         if (repaint) {
-            Pixmap pm = XCreatePixmap(w2k.dpy, win, w, h, w2k.depth);
+            Pixmap pm = XCreatePixmap(w2k.dpy, win, (unsigned)pw, (unsigned)ph, w2k.depth);
             w2k_fill(pm, 0, 0, w, h, C_WINDOW);
             w2k_frame(pm, 0, 0, w, h, C_WINDOWFRAME);
             for (int i = 0; i < rows && top + i < c->n; i++) {
@@ -275,21 +275,21 @@ static int combo_dropdown(W2kCombo *c, int rx, int ry)
                 w2k_text(pm, F_UI, 4, iy + 1, b2,
                          sel ? C_HIGHLIGHTTEXT : C_WINDOWTEXT);
             }
-            XCopyArea(w2k.dpy, pm, win, w2k.gc, 0, 0, w, h, 0, 0);
+            XCopyArea(w2k.dpy, pm, win, w2k.gc, 0, 0, (unsigned)pw, (unsigned)ph, 0, 0);
             w2k_free_pixmap(pm);
             repaint = 0;
         }
         XEvent e;
         XNextEvent(w2k.dpy, &e);
         if (e.type == MotionNotify) {
-            int lx = e.xmotion.x_root - rx, ly = e.xmotion.y_root - y;
+            int lx = w2k_lp(e.xmotion.x_root - rx), ly = w2k_lp(e.xmotion.y_root - y);
             if (lx >= 0 && lx < w && ly >= 2 && ly < h - 2) {
                 int i = top + (ly - 2) / row;
                 if (i < c->n && i != hot) { hot = i; repaint = 1; }
             }
         } else if (e.type == ButtonRelease || e.type == ButtonPress) {
             if (e.type == ButtonRelease && w2k_now_ms() - opened < 250) continue;
-            int lx = e.xbutton.x_root - rx, ly = e.xbutton.y_root - y;
+            int lx = w2k_lp(e.xbutton.x_root - rx), ly = w2k_lp(e.xbutton.y_root - y);
             if (lx < 0 || lx >= w || ly < 0 || ly >= h) { done = 1; continue; }
             if (e.type == ButtonRelease) {
                 int i = top + (ly - 2) / row;

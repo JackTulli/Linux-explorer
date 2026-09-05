@@ -145,7 +145,8 @@ void volume_draw(Drawable d, int x, int y)
 
 static void popup_paint(Window win)
 {
-    Pixmap pm = XCreatePixmap(w2k.dpy, win, VP_W, VP_H, w2k.depth);
+    Pixmap pm = XCreatePixmap(w2k.dpy, win, (unsigned)w2k_px(VP_W),
+                              (unsigned)w2k_px(VP_H), w2k.depth);
     w2k_fill(pm, 0, 0, VP_W, VP_H, C_FACE);
     w2k_edge(pm, 0, 0, VP_W, VP_H, EDGE_RAISED, BF_RECT);
 
@@ -164,7 +165,8 @@ static void popup_paint(Window win)
 
     w2k_draw_checkbox(pm, 6, VP_H - 22, "Mute", volume_is_muted(), 0, 0);
 
-    XCopyArea(w2k.dpy, pm, win, w2k.gc, 0, 0, VP_W, VP_H, 0, 0);
+    XCopyArea(w2k.dpy, pm, win, w2k.gc, 0, 0, (unsigned)w2k_px(VP_W),
+              (unsigned)w2k_px(VP_H), 0, 0);
     w2k_free_pixmap(pm);
 }
 
@@ -175,9 +177,10 @@ void volume_popup(int bx, int by)
     volume_poll();
 
     const W2kMonitor *m = w2k_monitor_at(bx, by);
-    int x = bx - VP_W / 2 + 8, y = by - VP_H;
+    int pw = w2k_px(VP_W), ph = w2k_px(VP_H);
+    int x = bx - pw / 2 + w2k_px(8), y = by - ph;
     if (x < m->x) x = m->x;
-    if (x + VP_W > m->x + m->w) x = m->x + m->w - VP_W;
+    if (x + pw > m->x + m->w) x = m->x + m->w - pw;
     if (y < m->y) y = m->y;
 
     XSetWindowAttributes a = {
@@ -186,7 +189,7 @@ void volume_popup(int bx, int by)
         .event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
                       PointerMotionMask
     };
-    Window win = XCreateWindow(w2k.dpy, w2k.root, x, y, VP_W, VP_H, 0,
+    Window win = XCreateWindow(w2k.dpy, w2k.root, x, y, (unsigned)pw, (unsigned)ph, 0,
                                CopyFromParent, InputOutput, CopyFromParent,
                                CWOverrideRedirect | CWSaveUnder | CWBackPixel |
                                CWEventMask, &a);
@@ -214,8 +217,8 @@ void volume_popup(int bx, int by)
             /* The grab reports events on our other windows relative to
              * them (owner_events): those are outside by definition. */
             Window on = (e.type == ButtonPress) ? e.xbutton.window : e.xmotion.window;
-            int ex = (e.type == ButtonPress) ? e.xbutton.x : e.xmotion.x;
-            int ey = (e.type == ButtonPress) ? e.xbutton.y : e.xmotion.y;
+            int ex = w2k_lp((e.type == ButtonPress) ? e.xbutton.x : e.xmotion.x);
+            int ey = w2k_lp((e.type == ButtonPress) ? e.xbutton.y : e.xmotion.y);
             int inside = on == win && ex >= 0 && ex < VP_W && ey >= 0 && ey < VP_H;
             if (e.type == MotionNotify && on != win) break;
             if (e.type == ButtonPress && !inside) { done = 1; break; }

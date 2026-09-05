@@ -231,7 +231,7 @@ static int read_and_deliver(Window w, int x, int y, int move)
             /* An INCR transfer, or something that is not text: refused
              * rather than parsed as a list of files. */
         } else if (w2k_dnd_on_drop) {
-            w2k_dnd_on_drop(w, x, y, (const char *)data, move);
+            w2k_dnd_on_drop(w, w2k_lp(x), w2k_lp(y), (const char *)data, move);
             ok = 1;
         }
         XFree(data);
@@ -330,7 +330,8 @@ int w2k_dnd_event(XEvent *e)
         XTranslateCoordinates(w2k.dpy, w2k.root, w, rx, ry, &wx, &wy, &child);
 
         int accept = in_ok;
-        if (accept && w2k_dnd_will_accept) accept = w2k_dnd_will_accept(w, wx, wy);
+        if (accept && w2k_dnd_will_accept)
+            accept = w2k_dnd_will_accept(w, w2k_lp(wx), w2k_lp(wy));
         in_window = w;
         in_x = wx;
         in_y = wy;

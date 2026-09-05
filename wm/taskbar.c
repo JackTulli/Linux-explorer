@@ -32,7 +32,15 @@
 static Window tb;
 static int    start_hot;          /* pointer over the Start button */
 static Window tb_trigger;          /* the strip that brings it back */
+/* tb_x, tb_y are screen positions; tb_w, tb_h the bar's logical size,
+ * which the layout below works in. tb_pw, tb_ph is the window's size. */
 static int    tb_x, tb_y, tb_w, tb_h;
+static int    tb_pw, tb_ph;
+/* The battery, beside the speaker on a laptop; polled every half minute. */
+static W2kPower bat;
+static int    bat_x, bat_y;
+static long   next_power_poll;
+#define POWER_POLL_MS 30000
 
 /* The bar occupies one edge of the primary monitor. On the left or right
  * it is a column: the same buttons, laid out down instead of across. */
@@ -41,15 +49,15 @@ int taskbar_thickness(void)
     /* A column has to be wide enough for a task button's icon and a word
      * or two of its title, so it is measured differently from a row. */
     if (w2k_taskbar_edge == TB_LEFT || w2k_taskbar_edge == TB_RIGHT)
-        return 64 + (w2k_taskbar_rows - 1) * 24;
-    return TASKBAR_ROW * w2k_taskbar_rows;
+        return w2k_px(64 + (w2k_taskbar_rows - 1) * 24);
+    return w2k_px(TASKBAR_ROW * w2k_taskbar_rows);        /* screen pixels */
 }
 
 /* Where the Start menu should hang from: the Start button's outer corner. */
 void taskbar_start_origin(int *x, int *y)
 {
-    *x = tb_x + TB_PAD;
-    *y = (w2k_taskbar_edge == TB_TOP) ? tb_y + tb_h : tb_y;
+    *x = tb_x + w2k_px(TB_PAD);
+    *y = (w2k_taskbar_edge == TB_TOP) ? tb_y + tb_ph : tb_y;
 }
 
 static void taskbar_geometry(int *x, int *y, int *w, int *h)
@@ -308,10 +316,10 @@ int taskbar_button_rect(Client *c, int *x, int *y, int *w, int *h)
 {
     for (int i = 0; i < ntasks; i++) {
         if (tasks[i].c != c) continue;
-        *x = tb_x + tasks[i].x;
-        *y = tb_y + tasks[i].y;
-        *w = tasks[i].w;
-        *h = tasks[i].h;
+        *x = tb_x + w2k_px(tasks[i].x);
+        *y = tb_y + w2k_px(tasks[i].y);
+        *w = w2k_px(tasks[i].w);
+        *h = w2k_px(tasks[i].h);
         return 1;
     }
     return 0;
@@ -323,6 +331,7 @@ static int drag_task = -1;
 static int hover_task = -1;
 static long hover_since;
 static int tip_up;
+static int tip_kind;              /* 1 the clock's date, 2 the battery */
 
 /* The auto-hide trigger strip, or None. It is InputOnly, but stacking still
  * decides who gets the pointer, so the restacking code has to keep it on
@@ -368,8 +377,9 @@ static void layout_vertical(void)
     int bottom = tb_h - TB_PAD;
     tray_y = bottom - (w2k_taskbar_showclock ? BTN_H : 0);
     vol_y = tray_y - 4 - 16;
+    bat_y = bat.present ? vol_y - 4 - 16 : vol_y;
     notify_w = tray_width();
-    notify_y = vol_y - (notify_w ? notify_w + 4 : 0);
+    notify_y = bat_y - (notify_w ? notify_w + 4 : 0);
     tray_layout_column(TB_PAD + (tb_w - 2 * TB_PAD - 16) / 2, notify_y);
 
     ql_y = TB_PAD + BTN_H + START_GAP + GRIP_W;
@@ -444,8 +454,9 @@ static void layout(void)
     tray_x  = tb_w - (seven ? W7_SLIVER + 6 : TB_PAD) - tray_w;
 
     vol_x = tray_x - 4 - 16;
+    bat_x = bat.present ? vol_x - 4 - 16 : vol_x;
     notify_w = tray_width();
-    notify_x = vol_x - (notify_w ? notify_w + 4 : 0);
+    notify_x = bat_x - (notify_w ? notify_w + 4 : 0);
     tray_layout(notify_x, (TASKBAR_H - BTN_H) / 2 + (BTN_H < TASKBAR_ROW ? 1 : 0) + (BTN_H - 16) / 2, 16);
 
     ntasks = 0;
@@ -502,6 +513,40 @@ static void layout(void)
 }
 
 /* The two-line vertical gripper that separates taskbar sections. */
+/* The 16-pixel battery: a case with its terminal, filled to the charge
+ * -- red when it is nearly gone -- and a bolt over it on the mains. */
+static void battery_draw(Drawable d, int x, int y)
+{
+    int c = C_TEXT;
+    w2k_frame(d, x + 1, y + 4, 12, 8, c);
+    w2k_fill(d, x + 13, y + 6, 2, 4, c);
+    int pct = bat.percent < 0 ? 0 : bat.percent;
+    int w = (pct * 8 + 50) / 100;
+    if (pct > 0 && w < 1) w = 1;
+    if (w > 8) w = 8;
+    if (pct <= 10 && bat.charging == 0) w2k_fill_rgb(d, x + 3, y + 6, w, 4, 255, 0, 0);
+    else w2k_fill(d, x + 3, y + 6, w, 4, c);
+    if (bat.ac_online == 1) {
+        /* a small yellow bolt, rimmed so it reads on any fill */
+        static const char *bolt[] = { "  #", " ##", "###", " # ", "#  ", NULL };
+        for (int r = 0; bolt[r]; r++)
+            for (int i = 0; bolt[r][i]; i++)
+                if (bolt[r][i] == '#') {
+                    w2k_fill(d, x + 5 + i, y + 5 + r, 1, 1, C_WINDOWFRAME);
+                }
+        w2k_fill_rgb(d, x + 6, y + 6, 1, 1, 255, 255, 0);
+        w2k_fill_rgb(d, x + 6, y + 7, 1, 1, 255, 255, 0);
+        w2k_fill_rgb(d, x + 5, y + 8, 1, 1, 255, 255, 0);
+    }
+}
+
+static int battery_hit(int x, int y)
+{
+    if (!bat.present) return 0;
+    return vertical() ? (y >= bat_y - 2 && y < bat_y + 18)
+                      : (x >= bat_x - 2 && x < bat_x + 18);
+}
+
 static void draw_grip(Drawable d, int x, int y, int h)
 {
     w2k_vline(d, x + 1, y, h, C_HILIGHT);
@@ -645,6 +690,7 @@ static void taskbar_draw(Pixmap pm, int h)
         else if (w2k_theme != THEME_BASIC7)
             w2k_theme_taskbutton(pm, wx, wy, ww, wh, W2K_TB_DOWN, w2k_theme);
         volume_draw(pm, TB_PAD + (ww - 16) / 2, vol_y);
+        if (bat.present) battery_draw(pm, TB_PAD + (ww - 16) / 2, bat_y);
         if (w2k_taskbar_showclock) {
             int tw = w2k_text_width(F_UI, clock_text, -1);
             int cx = TB_PAD + (ww - tw) / 2, cy = tray_y + (BTN_H - w2k_font_height(F_UI)) / 2;
@@ -665,6 +711,7 @@ static void taskbar_draw(Pixmap pm, int h)
         w2k_theme_taskbutton(pm, well_x, by, tw, BTN_H, W2K_TB_DOWN, w2k_theme);
     }
     volume_draw(pm, vol_x, by + (BTN_H - 16) / 2);
+    if (bat.present) battery_draw(pm, bat_x, by + (BTN_H - 16) / 2);
     if (w2k_taskbar_showclock && w2k_theme == THEME_BASIC7 && !w2k_taskbar_small) {
         /* Time over date, white and centred: the tops of the two lines
          * are at rows 6 and 21 of the bar in the screenshot. A small bar
@@ -702,12 +749,12 @@ void taskbar_paint(void)
     static int pm_h;
     if (pm && (pm_w != tb_w || pm_h != h)) { w2k_free_pixmap(pm); pm = 0; }
     if (!pm) {
-        pm = XCreatePixmap(w2k.dpy, tb, tb_w, h, w2k.depth);
+        pm = XCreatePixmap(w2k.dpy, tb, (unsigned)tb_pw, (unsigned)tb_ph, w2k.depth);
         pm_w = tb_w;
         pm_h = h;
     }
     taskbar_draw(pm, h);
-    XCopyArea(w2k.dpy, pm, tb, w2k.gc, 0, 0, tb_w, h, 0, 0);
+    XCopyArea(w2k.dpy, pm, tb, w2k.gc, 0, 0, (unsigned)tb_pw, (unsigned)tb_ph, 0, 0);
 }
 
 /* W2K_RENDER aid: the bar as it would be painted `w` wide, to a PPM. */
@@ -715,6 +762,9 @@ int taskbar_render(const char *path, int w)
 {
     tb_w = w;
     tb_h = TASKBAR_H;
+    tb_pw = w2k_px(w);
+    tb_ph = w2k_px(tb_h);
+    w2k_power_read(&bat);
     layout();
     /* W2K_RENDER_ORB=n paints the orb part way through its glow. */
     if (getenv("W2K_RENDER_ORB") && theme_start_skin() && orb_frames[0]) {
@@ -722,16 +772,16 @@ int taskbar_render(const char *path, int w)
         if (orb_frame < 0) orb_frame = 0;
         if (orb_frame >= ORB_FRAMES) orb_frame = ORB_FRAMES - 1;
     }
-    Pixmap pm = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)w, (unsigned)tb_h,
+    Pixmap pm = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)tb_pw, (unsigned)tb_ph,
                               w2k.depth);
     taskbar_draw(pm, tb_h);
-    XImage *im = XGetImage(w2k.dpy, pm, 0, 0, (unsigned)w, (unsigned)tb_h,
+    XImage *im = XGetImage(w2k.dpy, pm, 0, 0, (unsigned)tb_pw, (unsigned)tb_ph,
                            AllPlanes, ZPixmap);
     FILE *f = fopen(path, "wb");
     if (f && im) {
-        fprintf(f, "P6\n%d %d\n255\n", w, tb_h);
-        for (int y = 0; y < tb_h; y++)
-            for (int x = 0; x < w; x++) {
+        fprintf(f, "P6\n%d %d\n255\n", tb_pw, tb_ph);
+        for (int y = 0; y < tb_ph; y++)
+            for (int x = 0; x < tb_pw; x++) {
                 unsigned long v = XGetPixel(im, x, y);
                 unsigned char rgb[3] = { (v >> 16) & 0xff, (v >> 8) & 0xff,
                                          v & 0xff };
@@ -751,14 +801,14 @@ void taskbar_tray_anchor(int *x, int *y, int *top)
     int vert = vertical();
     *top = w2k_taskbar_edge == TB_TOP;
     if (vert) {
-        *x = tb_x + tb_w / 2;
-        *y = tb_y + notify_y;
+        *x = tb_x + tb_pw / 2;
+        *y = tb_y + w2k_px(notify_y);
         *top = 0;
         return;
     }
     /* The first docked icon, or the speaker when nothing is docked. */
-    *x = tb_x + (notify_w ? notify_x + 8 : vol_x + 8);
-    *y = *top ? tb_y + tb_h : tb_y;
+    *x = tb_x + w2k_px(notify_w ? notify_x + 8 : vol_x + 8);
+    *y = *top ? tb_y + tb_ph : tb_y;
 }
 
 /* Polling the mixer means running pactl, which means forking a shell.
@@ -781,7 +831,18 @@ void taskbar_tick(void)
         next_volume_poll = now + VOLUME_POLL_MS;
         volume_poll();
     }
-    if (strcmp(old, clock_text) || vol_before != volume_level() ||
+    int changed = 0;
+    if (now >= next_power_poll) {
+        next_power_poll = now + POWER_POLL_MS;
+        W2kPower np;
+        w2k_power_read(&np);
+        if (np.present != bat.present || np.percent != bat.percent ||
+            np.charging != bat.charging || np.ac_online != bat.ac_online) {
+            bat = np;
+            changed = 1;
+        }
+    }
+    if (changed || strcmp(old, clock_text) || vol_before != volume_level() ||
         mute_before != volume_is_muted())
         taskbar_paint();
 }
@@ -795,6 +856,10 @@ int taskbar_next_tick_ms(void)
     int wait = 60000;
     if (volume_available())
         wait = (int)(next_volume_poll > now ? next_volume_poll - now : 0);
+    {
+        int to_power = (int)(next_power_poll > now ? next_power_poll - now : 0);
+        if (to_power < wait) wait = to_power;
+    }
 
     if (w2k_taskbar_showclock) {
         /* The clock shows minutes, so it only has to wake for one. */
@@ -897,11 +962,13 @@ void taskbar_init(void)
      * on a multi-head desktop -- the clock ended up on the far right-hand
      * panel and the task buttons were kilometres wide. */
     const W2kMonitor *m = w2k_monitor_primary();
-    taskbar_geometry(&tb_x, &tb_y, &tb_w, &tb_h);
+    taskbar_geometry(&tb_x, &tb_y, &tb_pw, &tb_ph);
+    tb_w = w2k_lp(tb_pw);
+    tb_h = w2k_lp(tb_ph);
     (void)m;
 
     if (tb) {
-        XMoveResizeWindow(w2k.dpy, tb, tb_x, tb_y, tb_w, tb_h);
+        XMoveResizeWindow(w2k.dpy, tb, tb_x, tb_y, (unsigned)tb_pw, (unsigned)tb_ph);
         if (w2k_taskbar_ontop) XRaiseWindow(w2k.dpy, tb);
         taskbar_place();
         taskbar_trigger_place();
@@ -914,7 +981,7 @@ void taskbar_init(void)
         .event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
                       PointerMotionMask | EnterWindowMask | LeaveWindowMask
     };
-    tb = XCreateWindow(w2k.dpy, w2k.root, tb_x, tb_y, tb_w, tb_h, 0,
+    tb = XCreateWindow(w2k.dpy, w2k.root, tb_x, tb_y, (unsigned)tb_pw, (unsigned)tb_ph, 0,
                        CopyFromParent, InputOutput, CopyFromParent,
                        CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
     XMapRaised(w2k.dpy, tb);
@@ -923,6 +990,8 @@ void taskbar_init(void)
     taskbar_trigger_place();
     tray_init(tb);              /* applications can dock from now on */
     volume_poll();
+    w2k_power_read(&bat);
+    next_power_poll = w2k_now_ms() + POWER_POLL_MS;
     taskbar_paint();
 }
 
@@ -1153,12 +1222,38 @@ int taskbar_event(XEvent *e)
     if (!tb) return 0;
     if (w2k_tooltip_event(e)) return 1;
 
+    /* Positions on the bar arrive in screen pixels; the layout is logical.
+     * Root coordinates are left alone: menus and tooltips want those. */
+    if (w2k_ui_scale != 100) {
+        if (e->type == MotionNotify && e->xmotion.window == tb) {
+            e->xmotion.x = w2k_lp(e->xmotion.x);
+            e->xmotion.y = w2k_lp(e->xmotion.y);
+        } else if ((e->type == ButtonPress || e->type == ButtonRelease) &&
+                   e->xbutton.window == tb) {
+            e->xbutton.x = w2k_lp(e->xbutton.x);
+            e->xbutton.y = w2k_lp(e->xbutton.y);
+        }
+    }
+
+    /* The battery's tooltip is what is left in it, as in Windows. */
+    if (e->type == MotionNotify && e->xmotion.window == tb && drag_task < 0 &&
+        battery_hit(e->xmotion.x, e->xmotion.y)) {
+        if (hover_task >= 0) hover_clear();
+        if (!tip_up || tip_kind != 2) {
+            char text[96];
+            w2k_power_describe(&bat, text, sizeof text);
+            w2k_tooltip_show(text, e->xmotion.x_root + 12, e->xmotion.y_root - 34);
+            tip_up = 1;
+            tip_kind = 2;
+        }
+        return 1;
+    }
     /* The clock's tooltip is the full date, as in Windows. */
     if (e->type == MotionNotify && e->xmotion.window == tb &&
         w2k_taskbar_showclock && drag_task < 0 &&
         (vertical() ? e->xmotion.y >= tray_y : e->xmotion.x >= tray_x)) {
         if (hover_task >= 0) hover_clear();      /* off a button, on to the clock */
-        if (!tip_up) {
+        if (!tip_up || tip_kind != 1) {
             time_t t = time(NULL);
             struct tm tm;
             char date[96];
@@ -1166,6 +1261,7 @@ int taskbar_event(XEvent *e)
             strftime(date, sizeof date, "%A, %d %B %Y", &tm);
             w2k_tooltip_show(date, e->xmotion.x_root + 12, e->xmotion.y_root - 34);
             tip_up = 1;
+            tip_kind = 1;
         }
         return 1;
     }
@@ -1347,10 +1443,14 @@ int taskbar_event(XEvent *e)
             return 1;
         }
     }
+    if (battery_hit(x, y)) {
+        wm_spawn("l2kcontrol power");   /* Power Options: the meter and brightness */
+        return 1;
+    }
     if (vertical() ? (y >= vol_y - 2 && y < vol_y + 18)
                    : (x >= vol_x - 2 && x < vol_x + 18)) {
-        volume_popup(vertical() ? tb_x + tb_w : tb_x + vol_x,
-                     vertical() ? tb_y + vol_y : tb_y);
+        volume_popup(vertical() ? tb_x + tb_pw : tb_x + w2k_px(vol_x),
+                     vertical() ? tb_y + w2k_px(vol_y) : tb_y);
         return 1;
     }
     for (int i = 0; i < ntasks; i++) {

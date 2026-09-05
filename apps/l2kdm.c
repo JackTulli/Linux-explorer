@@ -572,7 +572,7 @@ static int quiet_xio(Display *d)
 static int logon_screen(const char *last_user, char *user_out, int n)
 {
     memset(&lg, 0, sizeof lg);
-    lg.win = w2k_win_new("Log On to Windows", "l2kdm", w2k.sw, w2k.sh, 0);
+    lg.win = w2k_win_new("Log On to Windows", "l2kdm", w2k_lp(w2k.sw), w2k_lp(w2k.sh), 0);
     lg.win->paint = paint;
     lg.win->event = event;
     lg.win->resized = layout;

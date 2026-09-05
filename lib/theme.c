@@ -149,22 +149,30 @@ static void stop_rgb(const Stop *st, int n, int at, int *r, int *g, int *b)
     *b = a->b + (c->b - a->b) * t / 255;
 }
 
+/* The window manager calls into this file in raw mode (frame chrome, in
+ * screen pixels) and the taskbar in logical mode; S() turns a measured
+ * constant into whichever the caller is working in. */
+static int S(int v) { return w2k_scale_raw ? w2k_px(v) : v; }
+
 static void grad_fill(Drawable d, int x, int y, int w, int h,
                       const Stop *st, int n, const int *inset, int scale)
 {
-    for (int i = 0; i < h; i++) {
-        int at = h > 1 ? i * 1000 / (h - 1) : 0;
+    /* One row per screen pixel; `inset` is indexed by the caller's row. */
+    int px = w2k_cx(x), py = w2k_cx(y), pw = w2k_cw(x, w), ph = w2k_cw(y, h);
+    for (int i = 0; i < ph; i++) {
+        int at = ph > 1 ? i * 1000 / (ph - 1) : 0;
         int r, g, b;
         stop_rgb(st, n, at, &r, &g, &b);
         r = r * scale / 256; g = g * scale / 256; b = b * scale / 256;
         if (r > 255) r = 255;
         if (g > 255) g = 255;
         if (b > 255) b = 255;
-        int off = inset ? inset[i] : 0;
-        if (w - 2 * off <= 0) continue;
+        int li = h > 0 ? (int)((long)i * h / ph) : 0;
+        int off = inset ? w2k_cw(x, inset[li]) : 0;
+        if (pw - 2 * off <= 0) continue;
         XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r, g, b));
-        XFillRectangle(w2k.dpy, d, w2k.gc, x + off, y + i,
-                       (unsigned)(w - 2 * off), 1);
+        XFillRectangle(w2k.dpy, d, w2k.gc, px + off, py + i,
+                       (unsigned)(pw - 2 * off), 1);
     }
 }
 
@@ -189,19 +197,23 @@ static int *corner_insets(int h, int rad, int bottom_too)
 static void strip_draw(Drawable d, W2kSkin *s, int sy, int sh, int lcap,
                        int rcap, int x, int y, int w, int h)
 {
+    /* Source rectangles are in the sheet's own pixels; the destination
+     * is in the caller's. */
     int sw = w2k_skin_w(s);
-    int hh = h < sh ? h : sh;
-    int midw = w - lcap - rcap;
+    int hl = w2k_scale_raw ? w2k_lp(h) : h;      /* rows wanted, in sheet pixels */
+    int hh = hl < sh ? hl : sh;
+    int lc = S(lcap), rc = S(rcap), shp = S(sh);
+    int midw = w - lc - rc;
     /* Three requests: the caps copied, the column between them tiled. */
     w2k_skin_draw(d, s, x, y, 0, sy, lcap, hh);
-    if (midw > 0) w2k_skin_tile(d, s, x + lcap, y, midw, hh, lcap, sy, 1, hh);
-    w2k_skin_draw(d, s, x + w - rcap, y, sw - rcap, sy, rcap, hh);
-    if (h > sh) {
+    if (midw > 0) w2k_skin_tile(d, s, x + lc, y, midw, S(hh), lcap, sy, 1, hh);
+    w2k_skin_draw(d, s, x + w - rc, y, sw - rcap, sy, rcap, hh);
+    if (h > shp) {
         int ly = sy + sh - 1;
-        w2k_skin_tile(d, s, x, y + sh, lcap, h - sh, 0, ly, lcap, 1);
+        w2k_skin_tile(d, s, x, y + shp, lc, h - shp, 0, ly, lcap, 1);
         if (midw > 0)
-            w2k_skin_tile(d, s, x + lcap, y + sh, midw, h - sh, lcap, ly, 1, 1);
-        w2k_skin_tile(d, s, x + w - rcap, y + sh, rcap, h - sh, sw - rcap, ly,
+            w2k_skin_tile(d, s, x + lc, y + shp, midw, h - shp, lcap, ly, 1, 1);
+        w2k_skin_tile(d, s, x + w - rc, y + shp, rc, h - shp, sw - rcap, ly,
                       rcap, 1);
     }
 }
@@ -239,7 +251,7 @@ void w2k_theme_caption(Drawable d, int x, int y, int w, int h, int active,
     if (theme == THEME_BASIC7) {
         W2kSkin *s = skin("w7-caption.png", 256);
         if (s && w2k_skin_w(s) == W7_CAP_LCAP + 1 + W7_CAP_RCAP &&
-            w2k_skin_h(s) == 2 * W7_CAP_H && w >= W7_CAP_LCAP + W7_CAP_RCAP) {
+            w2k_skin_h(s) == 2 * W7_CAP_H && w >= S(W7_CAP_LCAP + W7_CAP_RCAP)) {
             strip_draw(d, s, active ? 0 : W7_CAP_H, W7_CAP_H, W7_CAP_LCAP,
                        W7_CAP_RCAP, x, y, w, h);
             return;
@@ -247,7 +259,7 @@ void w2k_theme_caption(Drawable d, int x, int y, int w, int h, int active,
     }
     if (theme == THEME_XP) {
         W2kSkin *s = skin("xp-caption.png", 256);
-        if (s && w2k_skin_w(s) == 59 && w2k_skin_h(s) == 2 * XP_CAP_H && w >= 58) {
+        if (s && w2k_skin_w(s) == 59 && w2k_skin_h(s) == 2 * XP_CAP_H && w >= S(58)) {
             /* The caps are 28 wide: the caption's gradient fades over its
              * last 27 columns at each end. Tiling one column at a time is
              * a lot of tiny copies for a wide caption; the server handles
@@ -267,7 +279,7 @@ void w2k_theme_caption(Drawable d, int x, int y, int w, int h, int active,
         n = active ? (int)(sizeof cap_xp_active / sizeof *cap_xp_active)
                    : (int)(sizeof cap_xp_inactive / sizeof *cap_xp_inactive);
     }
-    int *ins = corner_insets(h, theme == THEME_BASIC7 ? 4 : 6, 0);
+    int *ins = corner_insets(h, S(theme == THEME_BASIC7 ? 4 : 6), 0);
     grad_fill(d, x, y, w, h, st, n, ins, 256);
     free(ins);
 }
@@ -287,19 +299,20 @@ int w2k_theme_caption_h(int theme)
 void w2k_theme_frame_edges(Drawable d, int fw, int fh, int b, int active,
                            int theme)
 {
-    if (theme == THEME_BASIC7 && b == W7_BORDER) {
+    if (theme == THEME_BASIC7 && b == S(W7_BORDER)) {
         W2kSkin *fr = skin("w7-frame.png", 256), *bt = skin("w7-bottom.png", 256);
         if (fr && bt && w2k_skin_w(fr) == 20 && w2k_skin_h(fr) == 2 &&
             w2k_skin_w(bt) == 1 && w2k_skin_h(bt) == 20) {
             /* The bottom first, then the sides over its ends, so the
              * outline turns the corner squarely. */
             int row = active ? 0 : 1;
-            w2k_skin_tile(d, bt, 0, fh - W7_BORDER, fw, W7_BORDER, 0,
+            int bd = S(W7_BORDER), ch = S(W7_CAP_H);
+            w2k_skin_tile(d, bt, 0, fh - bd, fw, bd, 0,
                           active ? 0 : W7_BORDER, 1, W7_BORDER);
-            int sh = fh - W7_CAP_H;
+            int sh = fh - ch;
             if (sh > 0) {
-                w2k_skin_tile(d, fr, 0, W7_CAP_H, W7_BORDER, sh, 0, row, W7_BORDER, 1);
-                w2k_skin_tile(d, fr, fw - W7_BORDER, W7_CAP_H, W7_BORDER, sh,
+                w2k_skin_tile(d, fr, 0, ch, bd, sh, 0, row, W7_BORDER, 1);
+                w2k_skin_tile(d, fr, fw - bd, ch, bd, sh,
                               W7_BORDER, row, W7_BORDER, 1);
             }
             return;
@@ -308,27 +321,27 @@ void w2k_theme_frame_edges(Drawable d, int fw, int fh, int b, int active,
     W2kSkin *s = theme == THEME_XP ? skin("xp-frame.png", 256) : NULL;
     W2kSkin *bt = theme == THEME_XP ? skin("xp-bottom.png", 256) : NULL;
     W2kSkin *rs = theme == THEME_XP ? skin("xp-rightshade.png", 256) : NULL;
-    if (s && bt && w2k_skin_w(s) == 36 && w2k_skin_h(s) == 16 && b == 4) {
+    if (s && bt && w2k_skin_w(s) == 36 && w2k_skin_h(s) == 16 && b == S(4)) {
         int sy = active ? 0 : 8;
         /* Sides: the corner block's top row, repeated down. The right side
          * carries seventeen rows of shading just under the caption -- the
          * corner's shadow -- which come from their own strip. */
-        int side_h = fh - 8;
+        int side_h = fh - S(8);
         if (side_h > 0) {
-            w2k_skin_tile(d, s, 0, 0, 4, side_h, 0, sy, 4, 1);
-            w2k_skin_tile(d, s, fw - 4, 0, 4, side_h, 32, sy, 4, 1);
-            int n = side_h - XP_CAP_H;
+            w2k_skin_tile(d, s, 0, 0, S(4), side_h, 0, sy, 4, 1);
+            w2k_skin_tile(d, s, fw - S(4), 0, S(4), side_h, 32, sy, 4, 1);
+            int n = w2k_scale_raw ? w2k_lp(side_h) - XP_CAP_H : side_h - XP_CAP_H;
             if (n > 17) n = 17;
             if (rs && n > 0)
-                w2k_skin_draw(d, rs, fw - 4, XP_CAP_H, 0, active ? 0 : 17, 4, n);
+                w2k_skin_draw(d, rs, fw - S(4), S(XP_CAP_H), 0, active ? 0 : 17, 4, n);
         }
         /* Bottom: four rows sampled well away from the corners. */
-        if (fw - 36 > 0)
-            w2k_skin_tile(d, bt, 28, fh - 4, fw - 36, 4, 0, active ? 0 : 4, 1, 4);
+        if (fw - S(36) > 0)
+            w2k_skin_tile(d, bt, S(28), fh - S(4), fw - S(36), S(4), 0, active ? 0 : 4, 1, 4);
         /* The bottom-left curve is a long one -- 26 columns -- so that
          * corner block is 28 wide; the right one is 8. */
-        w2k_skin_draw(d, s, 0, fh - 8, 0, sy, 28, 8);
-        w2k_skin_draw(d, s, fw - 8, fh - 8, 28, sy, 8, 8);
+        w2k_skin_draw(d, s, 0, fh - S(8), 0, sy, 28, 8);
+        w2k_skin_draw(d, s, fw - S(8), fh - S(8), 28, sy, 8, 8);
         return;
     }
     int side = active ? C_ACTIVETITLE : C_INACTIVETITLE;
@@ -358,16 +371,16 @@ void w2k_theme_capbtn_place(int theme, int fw, int *y, int *close_x,
 {
     if (theme == THEME_BASIC7) {
         /* Measured: 32 wide, two apart, Close ten pixels in from the edge. */
-        *y = W7_BTN_Y;
-        *close_x = fw - W7_BTN_INSET - W7_BTN_W;
-        *max_x = *close_x - W7_BTN_GAP - W7_BTN_W;
-        *min_x = *max_x - W7_BTN_GAP - W7_BTN_W;
+        *y = S(W7_BTN_Y);
+        *close_x = fw - S(W7_BTN_INSET + W7_BTN_W);
+        *max_x = *close_x - S(W7_BTN_GAP + W7_BTN_W);
+        *min_x = *max_x - S(W7_BTN_GAP + W7_BTN_W);
         return;
     }
-    *y = 6;
-    *close_x = fw - 27;
-    *max_x = fw - 50;
-    *min_x = fw - 73;
+    *y = S(6);
+    *close_x = fw - S(27);
+    *max_x = fw - S(50);
+    *min_x = fw - S(73);
 }
 
 void w2k_theme_capbtn(Drawable d, int x, int y, int w, int h, int kind,
@@ -376,7 +389,7 @@ void w2k_theme_capbtn(Drawable d, int x, int y, int w, int h, int kind,
     if (theme == THEME_BASIC7) {
         W2kSkin *s = skin("w7-capbtn.png", pressed ? 200 : 256);
         if (s && w2k_skin_w(s) == 134 && w2k_skin_h(s) == 2 * W7_BTN_H &&
-            w == W7_BTN_W && h == W7_BTN_H) {
+            w == S(W7_BTN_W) && h == S(W7_BTN_H)) {
             /* Four cells: Minimise, Maximise, Close from the artwork, and
              * Restore built from the Maximise cell -- its frame glyph
              * drawn twice, one behind the other. */
@@ -389,24 +402,23 @@ void w2k_theme_capbtn(Drawable d, int x, int y, int w, int h, int kind,
     }
     if (theme == THEME_XP) {
         W2kSkin *s = skin("xp-capbtn.png", pressed ? 200 : 256);
-        if (s && w2k_skin_w(s) == 63 && w2k_skin_h(s) == 44 && w == 21 && h == 21) {
+        if (s && w2k_skin_w(s) == 63 && w2k_skin_h(s) == 44 && w == S(21) && h == S(21)) {
             /* Cells are 21 by 22: the last row is the button's shadow. */
             int cell = kind == W2K_CAP_CLOSE ? 2 : kind == W2K_CAP_MIN ? 0 : 1;
             w2k_skin_draw(d, s, x, y, cell * 21, active ? 0 : 22, 21, 22);
             if (kind == W2K_CAP_RESTORE) {
                 /* No restore button in the screenshots: the maximise
                  * button with the two-frames glyph over its own. */
-                int cx = x + 10, cy = y + 10;
-                w2k_fill(d, cx - 4, cy - 5, 11, 11, C_HIGHLIGHT);
-                XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(28, 93, 236));
-                XFillRectangle(w2k.dpy, d, w2k.gc, cx - 3, cy - 4, 9, 9);
+                int cx = x + S(10), cy = y + S(10);
+                w2k_fill(d, cx - S(4), cy - S(5), S(11), S(11), C_HIGHLIGHT);
+                w2k_fill_rgb(d, cx - S(3), cy - S(4), S(9), S(9), 28, 93, 236);
                 XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(255, 255, 255));
-                XFillRectangle(w2k.dpy, d, w2k.gc, cx - 1, cy - 5, 7, 2);
-                XFillRectangle(w2k.dpy, d, w2k.gc, cx + 5, cy - 5, 1, 5);
-                XFillRectangle(w2k.dpy, d, w2k.gc, cx - 5, cy - 1, 7, 2);
-                XFillRectangle(w2k.dpy, d, w2k.gc, cx - 5, cy - 1, 1, 6);
-                XFillRectangle(w2k.dpy, d, w2k.gc, cx - 5, cy + 4, 7, 1);
-                XFillRectangle(w2k.dpy, d, w2k.gc, cx + 1, cy - 1, 1, 6);
+                w2k_fill_fg(d, cx - S(1), cy - S(5), S(7), S(2));
+                w2k_fill_fg(d, cx + S(5), cy - S(5), S(1), S(5));
+                w2k_fill_fg(d, cx - S(5), cy - S(1), S(7), S(2));
+                w2k_fill_fg(d, cx - S(5), cy - S(1), S(1), S(6));
+                w2k_fill_fg(d, cx - S(5), cy + S(4), S(7), S(1));
+                w2k_fill_fg(d, cx + S(1), cy - S(1), S(1), S(6));
             }
             return;
         }
@@ -422,7 +434,7 @@ void w2k_theme_capbtn(Drawable d, int x, int y, int w, int h, int kind,
     else
         n = seven ? (int)(sizeof btn_7_blue / sizeof *btn_7_blue)
                   : (int)(sizeof btn_xp_blue / sizeof *btn_xp_blue);
-    int *ins = corner_insets(h, 3, 1);
+    int *ins = corner_insets(h, S(3), 1);
     grad_fill(d, x, y, w, h, st, n, ins, active ? 256 : 200);
     free(ins);
 
@@ -432,19 +444,20 @@ void w2k_theme_capbtn(Drawable d, int x, int y, int w, int h, int kind,
     else       edge = kind == W2K_CAP_CLOSE ? w2k_rgb(255, 236, 230)
                                             : w2k_rgb(160, 195, 252);
     XSetForeground(w2k.dpy, w2k.gc, edge);
-    int *eins = corner_insets(h, 3, 1);
+    int *eins = corner_insets(h, S(3), 1);
+    int t = S(1);
     for (int i = 0; i < h; i++) {
         int off = eins ? eins[i] : 0;
         if (i == 0 || i == h - 1 || (eins && i > 0 && eins[i] != eins[i - 1]))
-            XFillRectangle(w2k.dpy, d, w2k.gc, x + off, y + i, (unsigned)(w - 2 * off), 1);
+            w2k_fill_fg(d, x + off, y + i, w - 2 * off, 1);
         else {
-            XFillRectangle(w2k.dpy, d, w2k.gc, x + off, y + i, 1, 1);
-            XFillRectangle(w2k.dpy, d, w2k.gc, x + w - 1 - off, y + i, 1, 1);
+            w2k_fill_fg(d, x + off, y + i, t, 1);
+            w2k_fill_fg(d, x + w - t - off, y + i, t, 1);
         }
     }
     free(eins);
 
-    int o = pressed ? 1 : 0;
+    int o = pressed ? S(1) : 0;
     int cx = x + w / 2 + o, cy = y + h / 2 + o;
     if (seven && kind != W2K_CAP_CLOSE)
         XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(45, 55, 70));
@@ -453,26 +466,26 @@ void w2k_theme_capbtn(Drawable d, int x, int y, int w, int h, int kind,
     switch (kind) {
     case W2K_CAP_CLOSE:
         for (int i = 0; i < 7; i++) {
-            XFillRectangle(w2k.dpy, d, w2k.gc, cx - 4 + i, cy - 3 + i, 2, 1);
-            XFillRectangle(w2k.dpy, d, w2k.gc, cx + 3 - i, cy - 3 + i, 2, 1);
+            w2k_fill_fg(d, cx - S(4) + i * t, cy - S(3) + i * t, S(2), t);
+            w2k_fill_fg(d, cx + S(3) - i * t, cy - S(3) + i * t, S(2), t);
         }
         break;
     case W2K_CAP_MIN:
-        XFillRectangle(w2k.dpy, d, w2k.gc, cx - 3, cy + 2, 7, 2);
+        w2k_fill_fg(d, cx - S(3), cy + S(2), S(7), S(2));
         break;
     case W2K_CAP_MAX:
-        XFillRectangle(w2k.dpy, d, w2k.gc, cx - 4, cy - 4, 9, 2);
-        XFillRectangle(w2k.dpy, d, w2k.gc, cx - 4, cy - 4, 1, 8);
-        XFillRectangle(w2k.dpy, d, w2k.gc, cx + 4, cy - 4, 1, 8);
-        XFillRectangle(w2k.dpy, d, w2k.gc, cx - 4, cy + 3, 9, 1);
+        w2k_fill_fg(d, cx - S(4), cy - S(4), S(9), S(2));
+        w2k_fill_fg(d, cx - S(4), cy - S(4), S(1), S(8));
+        w2k_fill_fg(d, cx + S(4), cy - S(4), S(1), S(8));
+        w2k_fill_fg(d, cx - S(4), cy + S(3), S(9), S(1));
         break;
     default:
-        XFillRectangle(w2k.dpy, d, w2k.gc, cx - 1, cy - 5, 7, 2);
-        XFillRectangle(w2k.dpy, d, w2k.gc, cx + 5, cy - 5, 1, 5);
-        XFillRectangle(w2k.dpy, d, w2k.gc, cx - 5, cy - 1, 7, 2);
-        XFillRectangle(w2k.dpy, d, w2k.gc, cx - 5, cy - 1, 1, 6);
-        XFillRectangle(w2k.dpy, d, w2k.gc, cx - 5, cy + 4, 7, 1);
-        XFillRectangle(w2k.dpy, d, w2k.gc, cx + 1, cy - 1, 1, 6);
+        w2k_fill_fg(d, cx - S(1), cy - S(5), S(7), S(2));
+        w2k_fill_fg(d, cx + S(5), cy - S(5), S(1), S(5));
+        w2k_fill_fg(d, cx - S(5), cy - S(1), S(7), S(2));
+        w2k_fill_fg(d, cx - S(5), cy - S(1), S(1), S(6));
+        w2k_fill_fg(d, cx - S(5), cy + S(4), S(7), S(1));
+        w2k_fill_fg(d, cx + S(1), cy - S(1), S(1), S(6));
         break;
     }
 }
@@ -501,16 +514,14 @@ void w2k_theme_taskbutton(Drawable d, int x, int y, int w, int h, int state,
                                                   : w2k_rgb(179, 211, 241);
         int bx = x, by = y + 1, bw = w, bh = h - 2;   /* under the bar's top line */
         XSetForeground(w2k.dpy, w2k.gc, fill);
-        XFillRectangle(w2k.dpy, d, w2k.gc, bx + 1, by + 1, (unsigned)(bw - 2),
-                       (unsigned)(bh - 2));
+        w2k_fill_fg(d, bx + 1, by + 1, bw - 2, bh - 2);
         XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(200, 218, 238));
-        XDrawRectangle(w2k.dpy, d, w2k.gc, bx + 1, by + 1, (unsigned)(bw - 3),
-                       (unsigned)(bh - 3));
+        w2k_frame_fg(d, bx + 1, by + 1, bw - 2, bh - 2);
         XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(51, 79, 109));
-        XDrawLine(w2k.dpy, d, w2k.gc, bx + 1, by, bx + bw - 2, by);
-        XDrawLine(w2k.dpy, d, w2k.gc, bx + 1, by + bh - 1, bx + bw - 2, by + bh - 1);
-        XDrawLine(w2k.dpy, d, w2k.gc, bx, by + 1, bx, by + bh - 2);
-        XDrawLine(w2k.dpy, d, w2k.gc, bx + bw - 1, by + 1, bx + bw - 1, by + bh - 2);
+        w2k_fill_fg(d, bx + 1, by, bw - 2, 1);
+        w2k_fill_fg(d, bx + 1, by + bh - 1, bw - 2, 1);
+        w2k_fill_fg(d, bx, by + 1, 1, bh - 2);
+        w2k_fill_fg(d, bx + bw - 1, by + 1, 1, bh - 2);
         return;
     }
     if (theme == THEME_XP) {
@@ -528,7 +539,7 @@ void w2k_theme_taskbutton(Drawable d, int x, int y, int w, int h, int state,
     int n = theme == THEME_BASIC7 ? (int)(sizeof task_7 / sizeof *task_7)
                                   : (int)(sizeof task_xp / sizeof *task_xp);
     int scale = state == W2K_TB_DOWN ? 200 : state == W2K_TB_HOT ? 292 : 256;
-    int *ins = corner_insets(h, 3, 1);
+    int *ins = corner_insets(h, S(3), 1);
     grad_fill(d, x, y, w, h, st, n, ins, scale);
     free(ins);
 }
@@ -539,12 +550,9 @@ void w2k_theme_bar(Drawable d, int x, int y, int w, int h, int theme)
         /* The theme's own taskbar texture, both sizes of it, is one flat
          * colour: (167,192,220), every pixel. The Show Desktop sliver at
          * the far end is marked off with a line. */
-        XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(167, 192, 220));
-        XFillRectangle(w2k.dpy, d, w2k.gc, x, y, (unsigned)w, (unsigned)h);
-        XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(126, 152, 182));
-        XFillRectangle(w2k.dpy, d, w2k.gc, x + w - 16, y + 3, 1, (unsigned)(h - 6));
-        XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(214, 228, 242));
-        XFillRectangle(w2k.dpy, d, w2k.gc, x + w - 15, y + 3, 1, (unsigned)(h - 6));
+        w2k_fill_rgb(d, x, y, w, h, 167, 192, 220);
+        w2k_fill_rgb(d, x + w - 16, y + 3, 1, h - 6, 126, 152, 182);
+        w2k_fill_rgb(d, x + w - 15, y + 3, 1, h - 6, 214, 228, 242);
         return;
     }
     if (theme == THEME_XP) {

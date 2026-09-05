@@ -209,8 +209,8 @@ W2kFolderWin *w2k_folderwin_new(const char *title, const char *cls, int icon,
     snprintf(f->title, sizeof f->title, "%s", title);
 
     /* The window opens at the reference's size, or what the screen has. */
-    if (w > w2k.sw - 40) w = w2k.sw - 40;
-    if (h > w2k.sh - 80) h = w2k.sh - 80;
+    if (w > w2k_lp(w2k.sw) - 40) w = w2k_lp(w2k.sw) - 40;
+    if (h > w2k_lp(w2k.sh) - 80) h = w2k_lp(w2k.sh) - 80;
     f->win = w2k_win_new(title, cls, w, h, 1);
     f->win->min_w = 420;
     f->win->min_h = 260;
@@ -464,7 +464,7 @@ static void draw_pane(W2kFolderWin *f, Drawable d)
     }
     /* The rule: two rows of (102,153,204) across the pane. */
     XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(102, 153, 204));
-    XFillRectangle(w2k.dpy, d, w2k.gc, p->x, y, (unsigned)p->w, 2);
+    w2k_fill_fg(d, p->x, y, p->w, 2);
     y += 2 + 15;
 
     /* Tahoma 8 is set 13 pixels apart in the pane, as in the shell. */
@@ -487,9 +487,7 @@ static void draw_pane(W2kFolderWin *f, Drawable d)
             int lr = dark ? 120 : 0, lg = dark ? 170 : 0, lb = 255;
             int tw = w2k_text_width(F_UI, s, -1);
             w2k_text_rgb(d, F_UI, tx, y, s, lr, lg, lb);
-            XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(lr, lg, lb));
-            XFillRectangle(w2k.dpy, d, w2k.gc, tx, y + w2k_font_px_ascent(F_UI) + 1,
-                           (unsigned)tw, 1);
+            w2k_fill_rgb(d, tx, y + w2k_font_ascent(F_UI) + 1, tw, 1, lr, lg, lb);
             f->line[i].r = (W2kRect){ tx, y, tw, fh };
             y += fh + 4;
             continue;

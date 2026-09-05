@@ -240,11 +240,19 @@ Window desktop_window(void) { return dw; }
 /* Icons sit on the primary monitor in a grid of cells. An icon that has
  * never been placed takes the first free cell, filling down then across --
  * the order Windows uses. */
+/* The icon grid is laid out in logical pixels over the primary monitor's
+ * work area; this is that area in the same units. */
+static void workarea_l(int *x, int *y, int *w, int *h)
+{
+    int wx, wy, ww, wh;
+    wm_workarea_of(w2k_monitor_primary(), &wx, &wy, &ww, &wh);
+    *x = w2k_lp(wx); *y = w2k_lp(wy); *w = w2k_lp(ww); *h = w2k_lp(wh);
+}
+
 static int grid_rows(void)
 {
-    const W2kMonitor *m = w2k_monitor_primary();
     int wx, wy, ww, wh;
-    wm_workarea_of(m, &wx, &wy, &ww, &wh);
+    workarea_l(&wx, &wy, &ww, &wh);
     int rows = (wh - ICON_TOP) / ICON_CELL_H;
     (void)wx; (void)wy; (void)ww;
     return rows < 1 ? 1 : rows;
@@ -277,7 +285,7 @@ static void place_unplaced(void)
 static void icon_rect(int i, int *x, int *y)
 {
     int wx, wy, ww, wh;
-    wm_workarea_of(w2k_monitor_primary(), &wx, &wy, &ww, &wh);
+    workarea_l(&wx, &wy, &ww, &wh);
     (void)ww; (void)wh;
     *x = wx + ICON_LEFT + icons[i].col * ICON_CELL_W;
     *y = wy + ICON_TOP  + icons[i].row * ICON_CELL_H;
@@ -287,7 +295,7 @@ static void icon_rect(int i, int *x, int *y)
 static void cell_at(int px, int py, int except, int *col, int *row)
 {
     int wx, wy, ww, wh;
-    wm_workarea_of(w2k_monitor_primary(), &wx, &wy, &ww, &wh);
+    workarea_l(&wx, &wy, &ww, &wh);
     (void)ww; (void)wh;
     int c = (px - wx - ICON_LEFT + ICON_CELL_W / 2) / ICON_CELL_W;
     int r = (py - wy - ICON_TOP + ICON_CELL_H / 2) / ICON_CELL_H;
@@ -462,20 +470,27 @@ void desktop_paint(void)
         pm_h = h;
     }
     if (wall) XCopyArea(w2k.dpy, wall, pm, w2k.gc, wx, wy, w, h, 0, 0);
-    else      w2k_fill(pm, 0, 0, w, h, C_DESKTOP);
+    else {
+        XSetForeground(w2k.dpy, w2k.gc, w2k.col[C_DESKTOP]);
+        XFillRectangle(w2k.dpy, pm, w2k.gc, 0, 0, (unsigned)w, (unsigned)h);
+    }
 
+    /* From here on in logical pixels, relative to the work area. */
+    int lx, ly, lw, lh;
+    workarea_l(&lx, &ly, &lw, &lh);
     place_unplaced();
     for (int i = 0; i < NICONS; i++) {
         int x, y;
         icon_rect(i, &x, &y);
-        x -= wx; y -= wy;                 /* into the buffer's coordinates */
+        x -= lx; y -= ly;                 /* into the buffer's coordinates */
         int ix = x + (ICON_CELL_W - 32) / 2;
         if (picked[i]) {
             /* Selected desktop icons are tinted, not boxed. */
             w2k_bigicon_draw(pm, ix, y, icons[i].icon);
             XSetForeground(w2k.dpy, w2k.gc_dither, w2k.col[C_HIGHLIGHT]);
             XSetTSOrigin(w2k.dpy, w2k.gc_dither, 0, 0);
-            XFillRectangle(w2k.dpy, pm, w2k.gc_dither, ix, y, 32, 32);
+            XFillRectangle(w2k.dpy, pm, w2k.gc_dither, w2k_cx(ix), w2k_cx(y),
+                           (unsigned)w2k_cw(ix, 32), (unsigned)w2k_cw(y, 32));
         } else {
             w2k_bigicon_draw(pm, ix, y, icons[i].icon);
         }
@@ -486,15 +501,16 @@ void desktop_paint(void)
      * highlight colour -- the closest an 8-bit-era desktop gets to alpha,
      * and what the effect meant before compositing. */
     if (band_on) {
-        int x0 = (band_x0 < band_x1 ? band_x0 : band_x1) - wx;
-        int y0 = (band_y0 < band_y1 ? band_y0 : band_y1) - wy;
+        int x0 = (band_x0 < band_x1 ? band_x0 : band_x1) - lx;
+        int y0 = (band_y0 < band_y1 ? band_y0 : band_y1) - ly;
         int bw = band_x0 < band_x1 ? band_x1 - band_x0 : band_x0 - band_x1;
         int bh = band_y0 < band_y1 ? band_y1 - band_y0 : band_y0 - band_y1;
         if (bw > 1 && bh > 1) {
             if (w2k_effects[FX_TRANSLUCENT_SEL]) {
                 XSetForeground(w2k.dpy, w2k.gc_dither, w2k.col[C_HIGHLIGHT]);
                 XSetTSOrigin(w2k.dpy, w2k.gc_dither, 0, 0);
-                XFillRectangle(w2k.dpy, pm, w2k.gc_dither, x0, y0, bw, bh);
+                XFillRectangle(w2k.dpy, pm, w2k.gc_dither, w2k_cx(x0), w2k_cx(y0),
+                               (unsigned)w2k_cw(x0, bw), (unsigned)w2k_cw(y0, bh));
                 w2k_frame(pm, x0, y0, bw, bh, C_HIGHLIGHT);
             } else {
                 w2k_focus_rect(pm, x0, y0, bw, bh);
@@ -975,6 +991,19 @@ void desktop_hover_tick(void)
 int desktop_event(XEvent *e)
 {
     if (w2k_tooltip_event(e)) return 1;
+
+    /* The desktop window sits at the root's origin, so its positions are
+     * screen positions: the grid wants them logical. */
+    if (w2k_ui_scale != 100 && dw) {
+        if (e->type == MotionNotify && e->xmotion.window == dw) {
+            e->xmotion.x = w2k_lp(e->xmotion.x);
+            e->xmotion.y = w2k_lp(e->xmotion.y);
+        } else if ((e->type == ButtonPress || e->type == ButtonRelease) &&
+                   e->xbutton.window == dw) {
+            e->xbutton.x = w2k_lp(e->xbutton.x);
+            e->xbutton.y = w2k_lp(e->xbutton.y);
+        }
+    }
 
     if (e->type == MotionNotify && e->xmotion.window == dw &&
         drag_icon < 0 && !band_on) {

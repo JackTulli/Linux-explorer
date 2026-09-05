@@ -252,7 +252,14 @@ static void fill(Drawable d, int x, int y, int w, int h, unsigned long px)
 {
     if (w <= 0 || h <= 0) return;
     XSetForeground(w2k.dpy, w2k.gc, px);
-    XFillRectangle(w2k.dpy, d, w2k.gc, x, y, (unsigned)w, (unsigned)h);
+    w2k_fill_fg(d, x, y, w, h);
+}
+
+/* The panel is measured in logical pixels and drawn through the
+ * primitives, which scale it; the few direct X calls map their own. */
+static void rect_fg(Drawable d, int x, int y, int w, int h)
+{
+    w2k_frame_fg(d, x, y, w, h);
 }
 
 static void hgradient(Drawable d, int x, int y, int w, int h,
@@ -261,13 +268,15 @@ static void hgradient(Drawable d, int x, int y, int w, int h,
     XColor ca = { .pixel = a }, cb = { .pixel = b };
     XQueryColor(w2k.dpy, w2k.cmap, &ca);
     XQueryColor(w2k.dpy, w2k.cmap, &cb);
+    int px = w2k_cx(x), py = w2k_cx(y), ph = w2k_cw(y, h);
+    w = w2k_cw(x, w);
     for (int i = 0; i < w; i++) {
         int t = w > 1 ? i * 255 / (w - 1) : 0;
         int r = (ca.red >> 8) + ((cb.red >> 8) - (ca.red >> 8)) * t / 255;
         int g = (ca.green >> 8) + ((cb.green >> 8) - (ca.green >> 8)) * t / 255;
         int bl = (ca.blue >> 8) + ((cb.blue >> 8) - (ca.blue >> 8)) * t / 255;
         XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r, g, bl));
-        XFillRectangle(w2k.dpy, d, w2k.gc, x + i, y, 1, (unsigned)h);
+        XFillRectangle(w2k.dpy, d, w2k.gc, px + i, py, 1, (unsigned)ph);
     }
 }
 
@@ -288,15 +297,14 @@ static void draw_row(Drawable d, const Row *r, int x, int y, int w, int rh,
             int sx = left ? 24 : 220, sw = left ? 148 : 133;
             XSetForeground(w2k.dpy, w2k.gc, left ? w2k_rgb(213, 213, 213)
                                                  : w2k_rgb(159, 183, 216));
-            XFillRectangle(w2k.dpy, d, w2k.gc, sx, y + SEP_H / 2, (unsigned)sw, 1);
+            w2k_fill_fg(d, sx, y + SEP_H / 2, sw, 1);
             XSetForeground(w2k.dpy, w2k.gc, left ? w2k_rgb(255, 255, 255)
                                                  : w2k_rgb(214, 241, 255));
-            XFillRectangle(w2k.dpy, d, w2k.gc, sx, y + SEP_H / 2 + 1, (unsigned)sw, 1);
+            w2k_fill_fg(d, sx, y + SEP_H / 2 + 1, sw, 1);
             return;
         }
         XSetForeground(w2k.dpy, w2k.gc, rule);
-        XFillRectangle(w2k.dpy, d, w2k.gc, x + 8, y + SEP_H / 2,
-                       (unsigned)(w - 16), 1);
+        w2k_fill_fg(d, x + 8, y + SEP_H / 2, w - 16, 1);
         return;
     }
 
@@ -329,8 +337,7 @@ static void draw_row(Drawable d, const Row *r, int x, int y, int w, int rh,
         int ax = x + w - 12, ay = y + rh / 2 - 4;
         XSetForeground(w2k.dpy, w2k.gc, w2k.col[col]);
         for (int i = 0; i < 5; i++)
-            XFillRectangle(w2k.dpy, d, w2k.gc, ax + i, ay + 4 - i, 1,
-                           (unsigned)(2 * i + 1));
+            w2k_fill_fg(d, ax + i, ay + 4 - i, 1, 2 * i + 1);
     }
 }
 
@@ -377,15 +384,14 @@ static void hover7(Drawable d, int x, int y, int w, int h, int light)
     fill(d, x, y, w, h, light ? w2k_rgb(229, 240, 252) : w2k_rgb(96, 140, 184));
     XSetForeground(w2k.dpy, w2k.gc,
                    light ? w2k_rgb(153, 188, 230) : w2k_rgb(150, 185, 220));
-    XDrawRectangle(w2k.dpy, d, w2k.gc, x, y, (unsigned)(w - 1), (unsigned)(h - 1));
+    rect_fg(d, x, y, w, h);
 }
 
 static void arrow7(Drawable d, int x, int cy, int r, int g, int b)
 {
     XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r, g, b));
     for (int i = 0; i < 5; i++)
-        XFillRectangle(w2k.dpy, d, w2k.gc, x + i, cy - 4 + i, 1,
-                       (unsigned)(2 * (4 - i) + 1));
+        w2k_fill_fg(d, x + i, cy - 4 + i, 1, 2 * (4 - i) + 1);
 }
 
 /* The panel's ground: one vertical gradient, light at the top and the
@@ -420,14 +426,14 @@ static void panel7_ground(Drawable pm, int x0, int y0, int w)
             b = st[k].b + (st[k + 1].b - st[k].b) * t / 256;
         }
         XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r, g, b));
-        XFillRectangle(w2k.dpy, pm, w2k.gc, x0 + 1, y0 + y, (unsigned)(w - 2), 1);
+        w2k_fill_fg(pm, x0 + 1, y0 + y, w - 2, 1);
     }
     /* The outline and the light line inside it. */
     XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(69, 78, 85));
-    XDrawRectangle(w2k.dpy, pm, w2k.gc, x0, y0, (unsigned)(w - 1), P7_H - 1);
+    rect_fg(pm, x0, y0, w, P7_H);
     XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(113, 132, 151));
-    XDrawLine(w2k.dpy, pm, w2k.gc, x0 + 1, y0 + 1, x0 + 1, y0 + P7_H - 2);
-    XDrawLine(w2k.dpy, pm, w2k.gc, x0 + w - 2, y0 + 1, x0 + w - 2, y0 + P7_H - 2);
+    w2k_fill_fg(pm, x0 + 1, y0 + 1, 1, P7_H - 2);
+    w2k_fill_fg(pm, x0 + w - 2, y0 + 1, 1, P7_H - 2);
 }
 
 static void panel7_draw(Drawable pm)
@@ -442,8 +448,8 @@ static void panel7_draw(Drawable pm)
     fill(pm, P7_LEFT_X, oy + P7_LEFT_TOP, P7_LEFT_W, P7_LEFT_BOT - P7_LEFT_TOP + 1,
          w2k_rgb(255, 255, 255));
     XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(101, 120, 138));
-    XDrawRectangle(w2k.dpy, pm, w2k.gc, P7_LEFT_X - 1, oy + P7_LEFT_TOP - 1,
-                   P7_LEFT_W + 1, P7_LEFT_BOT - P7_LEFT_TOP + 2);
+    rect_fg(pm, P7_LEFT_X - 1, oy + P7_LEFT_TOP - 1,
+            P7_LEFT_W + 2, P7_LEFT_BOT - P7_LEFT_TOP + 3);
     if (tile) w2k_skin_draw(pm, tile, P7_TILE_X, 0, 0, 0, P7_TILE_W, P7_TILE_H);
     w2k_bigicon_draw(pm, P7_TILE_X + (P7_TILE_W - 32) / 2, (P7_TILE_H - 32) / 2,
                      ICO_MYCOMPUTER);
@@ -483,15 +489,19 @@ static void panel7_draw(Drawable pm)
     int sy = oy + P7_SEARCH_Y;
     fill(pm, P7_SEARCH_X, sy, P7_SEARCH_W, P7_SEARCH_H, w2k_rgb(255, 255, 255));
     XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(74, 88, 101));
-    XDrawRectangle(w2k.dpy, pm, w2k.gc, P7_SEARCH_X, sy, P7_SEARCH_W - 1,
-                   P7_SEARCH_H - 1);
+    rect_fg(pm, P7_SEARCH_X, sy, P7_SEARCH_W, P7_SEARCH_H);
     w2k_text_rgb(pm, F_UI, P7_SEARCH_X + 6, sy + (P7_SEARCH_H - fh) / 2,
                  "Search programs and files", 109, 109, 109);
     int mx = P7_SEARCH_X + P7_SEARCH_W - 14, my = sy + P7_SEARCH_H / 2 - 2;
     XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(58, 96, 140));
-    XDrawArc(w2k.dpy, pm, w2k.gc, mx - 4, my - 4, 7, 7, 0, 360 * 64);
-    XDrawLine(w2k.dpy, pm, w2k.gc, mx + 2, my + 2, mx + 6, my + 6);
-    XDrawLine(w2k.dpy, pm, w2k.gc, mx + 3, my + 2, mx + 7, my + 6);
+    XSetLineAttributes(w2k.dpy, w2k.gc, (unsigned)w2k_th(1), LineSolid, CapButt, JoinMiter);
+    XDrawArc(w2k.dpy, pm, w2k.gc, w2k_cx(mx - 4), w2k_cx(my - 4),
+             (unsigned)w2k_cw(mx - 4, 7), (unsigned)w2k_cw(my - 4, 7), 0, 360 * 64);
+    XSetLineAttributes(w2k.dpy, w2k.gc, 0, LineSolid, CapButt, JoinMiter);
+    for (int i = 0; i < 5; i++) {                 /* the handle */
+        w2k_fill_fg(pm, mx + 2 + i, my + 2 + i, 1, 1);
+        w2k_fill_fg(pm, mx + 3 + i, my + 2 + i, 1, 1);
+    }
 
     /* The blue column: white text, 35 pixels a row. */
     y = oy + P7_RIGHT_Y;
@@ -518,13 +528,10 @@ static void panel7_draw(Drawable pm)
     fill(pm, P7_SHUT_X, shy, P7_SHUT_W + P7_ARROW_W, P7_SHUT_H,
          hot_col == 2 ? w2k_rgb(190, 210, 232) : w2k_rgb(164, 187, 211));
     XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(101, 120, 138));
-    XDrawRectangle(w2k.dpy, pm, w2k.gc, P7_SHUT_X, shy,
-                   P7_SHUT_W + P7_ARROW_W - 1, P7_SHUT_H - 1);
-    XDrawLine(w2k.dpy, pm, w2k.gc, P7_SHUT_X + P7_SHUT_W, shy,
-              P7_SHUT_X + P7_SHUT_W, shy + P7_SHUT_H - 1);
+    rect_fg(pm, P7_SHUT_X, shy, P7_SHUT_W + P7_ARROW_W, P7_SHUT_H);
+    w2k_fill_fg(pm, P7_SHUT_X + P7_SHUT_W, shy, 1, P7_SHUT_H);
     XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(214, 226, 240));
-    XDrawRectangle(w2k.dpy, pm, w2k.gc, P7_SHUT_X + 1, shy + 1,
-                   P7_SHUT_W - 3, P7_SHUT_H - 3);
+    rect_fg(pm, P7_SHUT_X + 1, shy + 1, P7_SHUT_W - 2, P7_SHUT_H - 2);
     w2k_text_rgb(pm, F_UI, P7_SHUT_X + 7, shy + (P7_SHUT_H - fh) / 2,
                  "Shut down", 255, 255, 255);
     arrow7(pm, P7_SHUT_X + P7_SHUT_W + 10, shy + P7_SHUT_H / 2, 255, 255, 255);
@@ -614,7 +621,7 @@ static void panel_draw(Drawable d)
         fill(pm, 0, body_y, LEFT_W, body_h, w2k.col[C_WINDOW]);
         fill(pm, LEFT_W, body_y, PANEL_W - LEFT_W, body_h, right_bg);
         XSetForeground(w2k.dpy, w2k.gc, rule);
-        XFillRectangle(w2k.dpy, pm, w2k.gc, LEFT_W, body_y, 1, (unsigned)body_h);
+        w2k_fill_fg(pm, LEFT_W, body_y, 1, body_h);
     }
     int fhb = w2k_font_height(F_UI_BOLD);
     int name_x = skinned ? 68 : 52;
@@ -648,7 +655,7 @@ static void panel_draw(Drawable d)
         int hot = hot_col == 0 && hot_row == nleft;
         if (hot) fill(pm, lx, ap_y, lw, ALLPROG_H, w2k.col[C_HIGHLIGHT]);
         XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(213, 213, 213));
-        XFillRectangle(w2k.dpy, pm, w2k.gc, 24, fb - 35, 148, 1);
+        w2k_fill_fg(pm, 24, fb - 35, 148, 1);
         w2k_text_mnemonic(pm, F_UI_BOLD, 46, fb - 23 - (w2k_font_height(F_UI_BOLD) - 13) / 2,
                           "All &Programs", hot ? C_HIGHLIGHTTEXT : C_TEXT, 1);
         /* The arrow: a green triangle 16 by 22 with a dark rim; its face
@@ -665,15 +672,15 @@ static void panel_draw(Drawable d)
             int top = ay + 11 - half, h = 2 * half;
             if (h < 1) h = 1;
             XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(41, 112, 42));
-            XFillRectangle(w2k.dpy, pm, w2k.gc, ax + i, top, 1, (unsigned)h);
+            w2k_fill_fg(pm, ax + i, top, 1, h);
             if (h > 2) {
                 XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(face[i][0], face[i][1], face[i][2]));
-                XFillRectangle(w2k.dpy, pm, w2k.gc, ax + i, top + 1, 1, (unsigned)(h - 2));
+                w2k_fill_fg(pm, ax + i, top + 1, 1, h - 2);
             }
         }
     } else {
         XSetForeground(w2k.dpy, w2k.gc, rule);
-        XFillRectangle(w2k.dpy, pm, w2k.gc, lx + 34, ap_y - 5, (unsigned)(lw - 60), 1);
+        w2k_fill_fg(pm, lx + 34, ap_y - 5, lw - 60, 1);
         Row ap = { .kind = R_SUB, .id = SM_ALLPROGRAMS, .icon = ICO_NONE, .bold = 1 };
         snprintf(ap.label, sizeof ap.label, "All Programs");
         draw_row(pm, &ap, lx, ap_y, lw, ALLPROG_H,
@@ -726,9 +733,10 @@ static void panel_draw(Drawable d)
 
 static void panel_paint(void)
 {
-    Pixmap pm = XCreatePixmap(w2k.dpy, panel, PANEL_W, panel_h, w2k.depth);
+    int pw = w2k_px(PANEL_W), ph = w2k_px(panel_h);
+    Pixmap pm = XCreatePixmap(w2k.dpy, panel, (unsigned)pw, (unsigned)ph, w2k.depth);
     panel_draw(pm);
-    XCopyArea(w2k.dpy, pm, panel, w2k.gc, 0, 0, PANEL_W, panel_h, 0, 0);
+    XCopyArea(w2k.dpy, pm, panel, w2k.gc, 0, 0, (unsigned)pw, (unsigned)ph, 0, 0);
     w2k_free_pixmap(pm);
 }
 
@@ -750,20 +758,21 @@ int startpanel_render(const char *path)
 {
     build_rows();
     panel_measure();
-    Pixmap pm = XCreatePixmap(w2k.dpy, w2k.root, PANEL_W, panel_h, w2k.depth);
+    int pw = w2k_px(PANEL_W), ph = w2k_px(panel_h);
+    Pixmap pm = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)pw, (unsigned)ph, w2k.depth);
     hot_col = hot_row = -1;
     /* W2K_RENDER_HOT=col,row paints that item as the pointer's. */
     if (getenv("W2K_RENDER_HOT"))
         sscanf(getenv("W2K_RENDER_HOT"), "%d,%d", &hot_col, &hot_row);
     panel_draw(pm);
 
-    XImage *im = XGetImage(w2k.dpy, pm, 0, 0, PANEL_W, panel_h, AllPlanes,
+    XImage *im = XGetImage(w2k.dpy, pm, 0, 0, (unsigned)pw, (unsigned)ph, AllPlanes,
                            ZPixmap);
     FILE *f = fopen(path, "wb");
     if (f && im) {
-        fprintf(f, "P6\n%d %d\n255\n", PANEL_W, panel_h);
-        for (int y = 0; y < panel_h; y++)
-            for (int x = 0; x < PANEL_W; x++) {
+        fprintf(f, "P6\n%d %d\n255\n", pw, ph);
+        for (int y = 0; y < ph; y++)
+            for (int x = 0; x < pw; x++) {
                 unsigned long v = XGetPixel(im, x, y);
                 unsigned char rgb[3] = { (v >> 16) & 0xff, (v >> 8) & 0xff,
                                          v & 0xff };
@@ -869,11 +878,12 @@ int startpanel_run(int bx, int by)
     panel_measure();
 
     const W2kMonitor *m = w2k_monitor_at(bx, by);
+    int pw = w2k_px(PANEL_W), ph = w2k_px(panel_h);   /* on the screen */
     panel_x = m->x + 0;
-    panel_y = by - panel_h;
+    panel_y = by - ph;
     if (w2k_taskbar_edge == TB_TOP) panel_y = by;
     if (panel_y < m->y) panel_y = m->y;
-    if (panel_x + PANEL_W > m->x + m->w) panel_x = m->x + m->w - PANEL_W;
+    if (panel_x + pw > m->x + m->w) panel_x = m->x + m->w - pw;
 
     XSetWindowAttributes a = {
         .override_redirect = True,
@@ -882,8 +892,8 @@ int startpanel_run(int bx, int by)
         .event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
                       PointerMotionMask | KeyPressMask | LeaveWindowMask
     };
-    panel = XCreateWindow(w2k.dpy, w2k.root, panel_x, panel_y, PANEL_W,
-                          panel_h, 0, CopyFromParent, InputOutput,
+    panel = XCreateWindow(w2k.dpy, w2k.root, panel_x, panel_y, (unsigned)pw,
+                          (unsigned)ph, 0, CopyFromParent, InputOutput,
                           CopyFromParent,
                           CWOverrideRedirect | CWBackPixel | CWSaveUnder |
                           CWEventMask, &a);
@@ -891,10 +901,13 @@ int startpanel_run(int bx, int by)
         /* Rounded top corners, measured: five, three, two, one, one. */
         static const int ins[5] = { 5, 3, 2, 1, 1 };
         XRectangle rs[6];
-        for (int i = 0; i < 5; i++)
-            rs[i] = (XRectangle){ (short)ins[i], (short)i,
-                                  (unsigned short)(PANEL_W - 2 * ins[i]), 1 };
-        rs[5] = (XRectangle){ 0, 5, (unsigned short)PANEL_W, (unsigned short)(panel_h - 5) };
+        for (int i = 0; i < 5; i++) {
+            int in = w2k_px(ins[i]), y0 = w2k_px(i), y1 = w2k_px(i + 1);
+            rs[i] = (XRectangle){ (short)in, (short)y0,
+                                  (unsigned short)(pw - 2 * in), (unsigned short)(y1 - y0) };
+        }
+        rs[5] = (XRectangle){ 0, (short)w2k_px(5), (unsigned short)pw,
+                              (unsigned short)(ph - w2k_px(5)) };
         XShapeCombineRectangles(w2k.dpy, panel, ShapeBounding, 0, 0, rs, 6,
                                 ShapeSet, Unsorted);
     }
@@ -904,19 +917,19 @@ int startpanel_run(int bx, int by)
         static const int ins[4] = { 3, 2, 1, 1 };   /* the corners' curve */
         XRectangle rs[14];
         int n = 0;
+        #define R(x, y, w, h) (XRectangle){ (short)w2k_px(x), (short)w2k_px(y), \
+                                (unsigned short)(w2k_px((x) + (w)) - w2k_px(x)), \
+                                (unsigned short)(w2k_px((y) + (h)) - w2k_px(y)) }
         for (int i = 0; i < 4; i++) {
-            rs[n++] = (XRectangle){ (short)ins[i], (short)(P7_OVER + i),
-                                    (unsigned short)(P7_W - 2 * ins[i]), 1 };
-            rs[n++] = (XRectangle){ (short)ins[i],
-                                    (short)(P7_OVER + P7_H - 1 - i),
-                                    (unsigned short)(P7_W - 2 * ins[i]), 1 };
+            rs[n++] = R(ins[i], P7_OVER + i, P7_W - 2 * ins[i], 1);
+            rs[n++] = R(ins[i], P7_OVER + P7_H - 1 - i, P7_W - 2 * ins[i], 1);
         }
-        rs[n++] = (XRectangle){ 0, P7_OVER + 4, P7_W, P7_H - 8 };
+        rs[n++] = R(0, P7_OVER + 4, P7_W, P7_H - 8);
         /* The tile above the panel, its top corners cut like the skin's. */
         for (int i = 0; i < 3; i++)
-            rs[n++] = (XRectangle){ (short)(P7_TILE_X + ins[i]), (short)i,
-                                    (unsigned short)(P7_TILE_W - 2 * ins[i]), 1 };
-        rs[n++] = (XRectangle){ P7_TILE_X, 3, P7_TILE_W, P7_OVER - 3 };
+            rs[n++] = R(P7_TILE_X + ins[i], i, P7_TILE_W - 2 * ins[i], 1);
+        rs[n++] = R(P7_TILE_X, 3, P7_TILE_W, P7_OVER - 3);
+        #undef R
         XShapeCombineRectangles(w2k.dpy, panel, ShapeBounding, 0, 0, rs, n,
                                 ShapeSet, Unsorted);
     }
@@ -947,7 +960,7 @@ int startpanel_run(int bx, int by)
             break;
         case MotionNotify: {
             int col, row;
-            int x = e.xmotion.x_root - panel_x, y = e.xmotion.y_root - panel_y;
+            int x = w2k_lp(e.xmotion.x_root - panel_x), y = w2k_lp(e.xmotion.y_root - panel_y);
             hit_test(x, y, &col, &row);
             if (col != hot_col || row != hot_row) {
                 hot_col = col;
@@ -957,8 +970,8 @@ int startpanel_run(int bx, int by)
             break;
         }
         case ButtonPress: {
-            if (e.xbutton.x_root < panel_x || e.xbutton.x_root >= panel_x + PANEL_W ||
-                e.xbutton.y_root < panel_y || e.xbutton.y_root >= panel_y + panel_h) {
+            if (e.xbutton.x_root < panel_x || e.xbutton.x_root >= panel_x + pw ||
+                e.xbutton.y_root < panel_y || e.xbutton.y_root >= panel_y + ph) {
                 done = 1;                      /* click-away dismisses */
                 break;
             }
@@ -968,7 +981,7 @@ int startpanel_run(int bx, int by)
              * rebuilt in case a pin went. */
             if (e.xbutton.button == Button3) {
                 int col, row;
-                int x = e.xbutton.x_root - panel_x, y = e.xbutton.y_root - panel_y;
+                int x = w2k_lp(e.xbutton.x_root - panel_x), y = w2k_lp(e.xbutton.y_root - panel_y);
                 if (hit_test(x, y, &col, &row) && col == 0) {
                     int id = row_id(col, row);
                     if (id >= SM_PIN_BASE && id < SM_PIN_BASE + PIN_MAX) {
@@ -987,7 +1000,7 @@ int startpanel_run(int bx, int by)
             if (w2k_now_ms() - opened < 250) break;   /* the opening click */
             if (e.xbutton.button != Button1) break;
             int col, row;
-            int x = e.xbutton.x_root - panel_x, y = e.xbutton.y_root - panel_y;
+            int x = w2k_lp(e.xbutton.x_root - panel_x), y = w2k_lp(e.xbutton.y_root - panel_y);
             /* Letting go over nothing -- a rule, the margin, the picture --
              * leaves the panel up, as Windows does. */
             if (!hit_test(x, y, &col, &row)) break;
@@ -995,9 +1008,9 @@ int startpanel_run(int bx, int by)
             if (!id) break;
             if (id == SM_ALLPROGRAMS || id == SM_RECENTSUB) {
                 /* The submenu takes the grab; take it back afterwards. */
-                int chosen = open_submenu(id, panel_x + PANEL_W,
-                                          seven() ? panel_y + P7_OVER + P7_AP_Y + P7_AP_H
-                                                  : panel_y + panel_h - FOOTER_H);
+                int chosen = open_submenu(id, panel_x + pw,
+                                          seven() ? panel_y + w2k_px(P7_OVER + P7_AP_Y + P7_AP_H)
+                                                  : panel_y + w2k_px(panel_h - FOOTER_H));
                 if (chosen) { result = chosen; done = 1; break; }
                 panel_regrab();
                 opened = w2k_now_ms();

@@ -384,7 +384,8 @@ void w2k_list_draw(Drawable d, W2kList *l)
             if (w2k_effects[FX_TRANSLUCENT_SEL]) {
                 XSetForeground(w2k.dpy, w2k.gc_dither, w2k.col[C_HIGHLIGHT]);
                 XSetTSOrigin(w2k.dpy, w2k.gc_dither, 0, 0);
-                XFillRectangle(w2k.dpy, d, w2k.gc_dither, x0, y0, bw, bh);
+                XFillRectangle(w2k.dpy, d, w2k.gc_dither, w2k_cx(x0), w2k_cx(y0),
+                               (unsigned)w2k_cw(x0, bw), (unsigned)w2k_cw(y0, bh));
                 w2k_frame(d, x0, y0, bw, bh, C_HIGHLIGHT);
             } else {
                 w2k_focus_rect(d, x0, y0, bw, bh);

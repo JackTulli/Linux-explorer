@@ -25,14 +25,20 @@ static const char *glyph_close[] = {
     NULL
 };
 
+/* The window manager draws these in raw mode, where the glyph's pixels
+ * have to be enlarged by hand; a program drawing them in logical mode
+ * gets the enlargement from the primitives. */
+static int S(int v) { return w2k_scale_raw ? w2k_px(v) : v; }
+
 static void draw_glyph(Drawable d, int x, int y, const char *const *rows,
                        int color)
 {
+    int t = w2k_scale_raw ? w2k_th(1) : 1;
     XSetForeground(w2k.dpy, w2k.gc, w2k.col[color]);
     for (int r = 0; rows[r]; r++)
         for (int c = 0; rows[r][c]; c++)
             if (rows[r][c] == '#')
-                XFillRectangle(w2k.dpy, d, w2k.gc, x + c, y + r, 1, 1);
+                w2k_fill_fg(d, x + c * t, y + r * t, t, t);
 }
 
 /* The title-bar box: an outline whose top bar is two pixels thick, standing
@@ -40,29 +46,29 @@ static void draw_glyph(Drawable d, int x, int y, const char *const *rows,
 static void maxbox(Drawable d, int x, int y, int w, int h, int color)
 {
     w2k_frame(d, x, y, w, h, color);
-    w2k_hline(d, x, y + 1, w, color);
+    w2k_hline(d, x, y + S(1), w, color);
 }
 
 void w2k_capglyph_min(Drawable d, int x, int y, int color)
 {
-    w2k_fill(d, x + 4, y + 9, 6, 2, color);
+    w2k_fill(d, x + S(4), y + S(9), S(6), S(2), color);
 }
 
 void w2k_capglyph_max(Drawable d, int x, int y, int color)
 {
-    maxbox(d, x + 3, y + 2, 9, 9, color);
+    maxbox(d, x + S(3), y + S(2), S(9), S(9), color);
 }
 
 /* Restore: a small box behind and above, a second one in front of it. Both
  * sit inside the same 9x9 area the maximise box uses. */
 void w2k_capglyph_restore(Drawable d, int x, int y, int color, int face)
 {
-    maxbox(d, x + 5, y + 2, 7, 7, color);
-    w2k_fill(d, x + 3, y + 4, 8, 8, face);      /* punch out the overlap */
-    maxbox(d, x + 3, y + 4, 7, 7, color);
+    maxbox(d, x + S(5), y + S(2), S(7), S(7), color);
+    w2k_fill(d, x + S(3), y + S(4), S(8), S(8), face);      /* punch out the overlap */
+    maxbox(d, x + S(3), y + S(4), S(7), S(7), color);
 }
 
 void w2k_capglyph_close(Drawable d, int x, int y, int color)
 {
-    draw_glyph(d, x + 4, y + 3, glyph_close, color);
+    draw_glyph(d, x + S(4), y + S(3), glyph_close, color);
 }

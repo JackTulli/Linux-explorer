@@ -305,9 +305,7 @@ static void resize_window(void)
     sh.min_width = sh.max_width = w;
     sh.min_height = sh.max_height = h;
     XSetWMNormalHints(w2k.dpy, cal.win->win, &sh);
-    XResizeWindow(w2k.dpy, cal.win->win, (unsigned)w, (unsigned)h);
-    cal.win->w = w;
-    cal.win->h = h;
+    w2k_win_resize(cal.win, w, h);
     if (cal.win->buf) { w2k_free_pixmap(cal.win->buf); cal.win->buf = 0; }
     cal.mb->r = (W2kRect){ 0, 0, w, MENUBAR_H };
     build_buttons();

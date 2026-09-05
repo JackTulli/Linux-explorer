@@ -9,6 +9,11 @@
 #include <sys/stat.h>
 #include <time.h>
 
+int w2k_ui_scale = 100;
+int w2k_scale_raw = 0;
+int w2k_ui_scale_pref = 100;
+int w2k_scale_mode = SCALE_XRANDR;
+
 W2k w2k;
 
 /* The Windows 2000 "Windows Standard" appearance scheme, verbatim. */
@@ -644,6 +649,15 @@ int w2k_scheme_load(const char *path)
             snprintf(w2k_icon_set, sizeof w2k_icon_set, "%.31s", val);
             continue;
         }
+        if (!strcasecmp(line, "UiScale")) {
+            int v = atoi(val);
+            if (v >= 100 && v <= 400) w2k_ui_scale_pref = v;
+            continue;
+        }
+        if (!strcasecmp(line, "ScaleMode")) {
+            w2k_scale_mode = strcasecmp(val, "desktop") == 0 ? SCALE_DESKTOP : SCALE_XRANDR;
+            continue;
+        }
         if (!strcasecmp(line, "SoundPack"))   { snprintf(w2k_sound_pack, sizeof w2k_sound_pack, "%.31s", val); continue; }
         if (!strcasecmp(line, "SoundVolume")) { w2k_sound_volume = atoi(val); if (w2k_sound_volume < 0) w2k_sound_volume = 0; if (w2k_sound_volume > 100) w2k_sound_volume = 100; continue; }
         if (!strncasecmp(line, "Sound.", 6)) {
@@ -727,6 +741,8 @@ int w2k_scheme_save(const char *path)
     fprintf(f, "Theme=%s\n", w2k_theme == THEME_XP ? "xp" :
             w2k_theme == THEME_BASIC7 ? "basic7" : "classic");
     fprintf(f, "IconSet=%s\n", w2k_icon_set);
+    fprintf(f, "UiScale=%d\n", w2k_ui_scale_pref);
+    fprintf(f, "ScaleMode=%s\n", w2k_scale_mode == SCALE_DESKTOP ? "desktop" : "xrandr");
     fprintf(f, "SoundPack=%s\n", w2k_sound_pack);
     fprintf(f, "SoundVolume=%d\n", w2k_sound_volume);
     for (int i = 0; i < N_SOUNDS; i++)
@@ -896,6 +912,16 @@ int w2k_init(const char *appname)
     w2k.sh     = DisplayHeight(d, w2k.screen);
 
     w2k_scheme_load(NULL);
+
+    /* The desktop scale is fixed for the life of the process: every
+     * program opens its fonts and lays its windows out against it, so a
+     * change takes a fresh logon. W2K_UI_SCALE overrides for the render
+     * harnesses. */
+    {
+        const char *env = getenv("W2K_UI_SCALE");
+        int v = env ? atoi(env) : (w2k_scale_mode == SCALE_DESKTOP ? w2k_ui_scale_pref : 100);
+        w2k_ui_scale = (v >= 100 && v <= 400) ? v : 100;
+    }
 
     /* Xft first -- the right typeface, UTF-8 and a smoothing switch. The
      * core bitmap fonts stay as the fallback for a system without any

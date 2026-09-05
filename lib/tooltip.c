@@ -25,18 +25,29 @@ static void tip_paint(int w, int h)
 
 /* Show `text` near (x, y) in root coordinates -- below and right of the
  * pointer, nudged back onto the monitor if it would hang off. */
+static void tooltip_show(const char *text, int x, int y);
+
 void w2k_tooltip_show(const char *text, int x, int y)
+{
+    int raw = w2k_scale_raw;
+    w2k_scale_raw = 0;                 /* laid out in logical pixels */
+    tooltip_show(text, x, y);
+    w2k_scale_raw = raw;
+}
+
+static void tooltip_show(const char *text, int x, int y)
 {
     if (!text || !*text) { w2k_tooltip_hide(); return; }
     if (!strcmp(text, tip_text) && tip) return;      /* already up */
 
     snprintf(tip_text, sizeof tip_text, "%s", text);
-    int w = w2k_text_width(F_UI, tip_text, -1) + 2 * TIP_PAD_X + 1;
-    int h = w2k_font_height(F_UI) + 2 * TIP_PAD_Y + 1;
+    int lw = w2k_text_width(F_UI, tip_text, -1) + 2 * TIP_PAD_X + 1;
+    int lh = w2k_font_height(F_UI) + 2 * TIP_PAD_Y + 1;
+    int w = w2k_px(lw), h = w2k_px(lh);
 
     const W2kMonitor *m = w2k_monitor_at(x, y);
     if (x + w > m->x + m->w) x = m->x + m->w - w;
-    if (y + h > m->y + m->h) y = y - h - 22;
+    if (y + h > m->y + m->h) y = y - h - w2k_px(22);
     if (x < m->x) x = m->x;
     if (y < m->y) y = m->y;
 
@@ -54,7 +65,7 @@ void w2k_tooltip_show(const char *text, int x, int y)
         XMoveResizeWindow(w2k.dpy, tip, x, y, w, h);
     }
     XMapRaised(w2k.dpy, tip);
-    tip_paint(w, h);
+    tip_paint(lw, lh);
     XFlush(w2k.dpy);
 }
 
@@ -72,7 +83,12 @@ int w2k_tooltip_event(XEvent *e)
 {
     if (!tip || e->type != Expose || e->xexpose.window != tip) return 0;
     XWindowAttributes wa;
-    if (XGetWindowAttributes(w2k.dpy, tip, &wa)) tip_paint(wa.width, wa.height);
+    if (XGetWindowAttributes(w2k.dpy, tip, &wa)) {
+        int raw = w2k_scale_raw;
+        w2k_scale_raw = 0;
+        tip_paint(w2k_lp(wa.width), w2k_lp(wa.height));
+        w2k_scale_raw = raw;
+    }
     return 1;
 }
 

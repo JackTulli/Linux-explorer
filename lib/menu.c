@@ -213,7 +213,7 @@ static void draw_check(Drawable d, int x, int y, int color)
     for (int r = 0; rows[r]; r++)
         for (int c = 0; rows[r][c]; c++)
             if (rows[r][c] == '#')
-                XFillRectangle(w2k.dpy, d, w2k.gc, x + c + ox[r], y + r, 1, 1);
+                w2k_fill_fg(d, x + c + ox[r], y + r, 1, 1);
 }
 
 static void draw_bullet(Drawable d, int x, int y, int color)
@@ -227,7 +227,7 @@ static void draw_arrow(Drawable d, int x, int y, int color)
 {
     XSetForeground(w2k.dpy, w2k.gc, w2k.col[color]);
     for (int i = 0; i < 4; i++)
-        XFillRectangle(w2k.dpy, d, w2k.gc, x + i, y + 3 - i, 1, 1 + 2 * i);
+        w2k_fill_fg(d, x + i, y + 3 - i, 1, 1 + 2 * i);
 }
 
 /* The Start menu banner gradient.
@@ -265,6 +265,10 @@ static unsigned long banner_shade(int t)
 
 void w2k_menu_banner_fill(Drawable d, int x, int y, int w, int h)
 {
+    if (h < 1 || w < 1) return;
+    /* Worked in screen pixels: the ramp is one row per shade. */
+    int pw = w2k_cw(x, w), ph = w2k_cw(y, h);
+    x = w2k_cx(x); y = w2k_cx(y); w = pw; h = ph;
     if (h < 1 || w < 1) return;
 
     if (!w2k_start_banner_dither) {
@@ -338,7 +342,7 @@ static void menu_buffer_drop(Window win)
 
 static void menu_paint(W2kMenu *m, Window win, int w, int h, int sel)
 {
-    Pixmap pm = menu_buffer(win, w, h);
+    Pixmap pm = menu_buffer(win, w2k_px(w), w2k_px(h));
     int owned = 1;
     for (int i = 0; i < 8; i++) if (menu_buf[i].pm == pm) owned = 0;
 
@@ -414,7 +418,8 @@ static void menu_paint(W2kMenu *m, Window win, int w, int h, int sel)
             draw_arrow(pm, w - 9, iy + ih / 2 - 3, tcol);
     }
 
-    XCopyArea(w2k.dpy, pm, win, w2k.gc, 0, 0, w, h, 0, 0);
+    XCopyArea(w2k.dpy, pm, win, w2k.gc, 0, 0, (unsigned)w2k_px(w),
+              (unsigned)w2k_px(h), 0, 0);
     if (owned) w2k_free_pixmap(pm);     /* an uncached, deep level */
 }
 
@@ -427,7 +432,8 @@ typedef struct {
     W2kMenu *m;
     Window   win;
     Window   shadow;             /* 0 when the effect is off */
-    int      x, y, w, h;
+    int      x, y, w, h;         /* x, y on the screen; w, h logical */
+    int      pw, ph;             /* the window's size on the screen */
     int      sel;
 } Level;
 
@@ -495,14 +501,15 @@ static void open_level(Level *lv, W2kMenu *m, int px, int py, int flags,
 {
     const W2kMonitor *mon0 =
         w2k_monitor_at(parent_right >= 0 ? parent_left : px, py);
-    menu_max_h = mon0->h;
+    menu_max_h = w2k_lp(mon0->h);
 
     int w, h;
     menu_size(m, &w, &h);
+    int pw = w2k_px(w), ph = w2k_px(h);      /* on the screen */
     int x = px, y = py;
 
-    if (flags & MPOP_RIGHTALIGN) x -= w;
-    if (flags & MPOP_BOTTOMUP)   y -= h;
+    if (flags & MPOP_RIGHTALIGN) x -= pw;
+    if (flags & MPOP_BOTTOMUP)   y -= ph;
 
     /* Keep the menu on the monitor it was invoked from. Clamping to the
      * virtual screen instead lets a menu near the right edge of one panel
@@ -517,26 +524,28 @@ static void open_level(Level *lv, W2kMenu *m, int px, int py, int flags,
                                            py);
     int mx = mon->x, my = mon->y, mw = mon->w, mh = mon->h;
 
+    int lap = w2k_px(SUBMENU_LAP), sh_off = w2k_px(4);
     if (parent_right >= 0) {                       /* submenu placement */
-        x = parent_right - SUBMENU_LAP;
-        if (x + w > mx + mw) {
-            x = parent_left - w + SUBMENU_LAP;
-            if (x < mx) x = mx + mw - w;
+        x = parent_right - lap;
+        if (x + pw > mx + mw) {
+            x = parent_left - pw + lap;
+            if (x < mx) x = mx + mw - pw;
         }
     } else {
-        if (x + w > mx + mw) x = mx + mw - w;
+        if (x + pw > mx + mw) x = mx + mw - pw;
         if (x < mx) x = mx;
     }
-    if (y + h > my + mh) y = my + mh - h;
+    if (y + ph > my + mh) y = my + mh - ph;
     if (y < my) y = my;
 
     lv->m = m;
     lv->x = x; lv->y = y; lv->w = w; lv->h = h;
+    lv->pw = pw; lv->ph = ph;
     lv->sel = -1;
     /* The shadow is created first so it stacks underneath. */
     lv->shadow = w2k_effects[FX_MENU_SHADOW]
-               ? make_shadow_window(x + 4, y + 4, w, h) : 0;
-    lv->win = make_menu_window(x, y, w, h);
+               ? make_shadow_window(x + sh_off, y + sh_off, pw, ph) : 0;
+    lv->win = make_menu_window(x, y, pw, ph);
 
     /* "Fade or slide menus into view": the menu slides out from the edge
      * it is anchored to. Nothing fades -- without a compositor a fade is
@@ -554,22 +563,22 @@ static void open_level(Level *lv, W2kMenu *m, int px, int py, int flags,
     }
     if (slide) {
         int up = (flags & MPOP_BOTTOMUP) != 0;
-        Pixmap pm = menu_buffer(lv->win, w, h);
+        Pixmap pm = menu_buffer(lv->win, pw, ph);
         for (int step = 1; step <= 6; step++) {
-            int sh = h * step / 6;
+            int sh = ph * step / 6;
             if (sh < 4) sh = 4;
-            int wy = up ? y + h - sh : y;
-            XMoveResizeWindow(w2k.dpy, lv->win, x, wy, (unsigned)w, (unsigned)sh);
+            int wy = up ? y + ph - sh : y;
+            XMoveResizeWindow(w2k.dpy, lv->win, x, wy, (unsigned)pw, (unsigned)sh);
             if (lv->shadow)
-                XMoveResizeWindow(w2k.dpy, lv->shadow, x + 4, wy + 4, (unsigned)w,
-                                  (unsigned)sh);
+                XMoveResizeWindow(w2k.dpy, lv->shadow, x + sh_off, wy + sh_off,
+                                  (unsigned)pw, (unsigned)sh);
             if (step == 1) XMapRaised(w2k.dpy, lv->win);
-            XCopyArea(w2k.dpy, pm, lv->win, w2k_copy_gc(), 0, up ? h - sh : 0,
-                      (unsigned)w, (unsigned)sh, 0, 0);
+            XCopyArea(w2k.dpy, pm, lv->win, w2k_copy_gc(), 0, up ? ph - sh : 0,
+                      (unsigned)pw, (unsigned)sh, 0, 0);
             XFlush(w2k.dpy);
             usleep(12000);
         }
-        XMoveResizeWindow(w2k.dpy, lv->win, x, y, (unsigned)w, (unsigned)h);
+        XMoveResizeWindow(w2k.dpy, lv->win, x, y, (unsigned)pw, (unsigned)ph);
     } else
         XMapRaised(w2k.dpy, lv->win);
 }
@@ -577,8 +586,8 @@ static void open_level(Level *lv, W2kMenu *m, int px, int py, int flags,
 static int level_at(Level *lv, int n, int rx, int ry)
 {
     for (int i = n - 1; i >= 0; i--)
-        if (rx >= lv[i].x && rx < lv[i].x + lv[i].w &&
-            ry >= lv[i].y && ry < lv[i].y + lv[i].h)
+        if (rx >= lv[i].x && rx < lv[i].x + lv[i].pw &&
+            ry >= lv[i].y && ry < lv[i].y + lv[i].ph)
             return i;
     return -1;
 }
@@ -619,7 +628,20 @@ static int match_mnemonic(W2kMenu *m, KeySym ks)
  * the Start menu does, for pinned entries and program entries. */
 int (*w2k_menu_on_context)(int id, int root_x, int root_y);
 
+static int menu_popup(W2kMenu *m, int x, int y, int flags);
+
+/* Menus are laid out in logical pixels even when the window manager,
+ * which draws its chrome raw, opens them. */
 int w2k_menu_popup(W2kMenu *m, int x, int y, int flags)
+{
+    int raw = w2k_scale_raw;
+    w2k_scale_raw = 0;
+    int r = menu_popup(m, x, y, flags);
+    w2k_scale_raw = raw;
+    return r;
+}
+
+static int menu_popup(W2kMenu *m, int x, int y, int flags)
 {
     if (!m || m->n == 0) return 0;
 
@@ -662,7 +684,7 @@ int w2k_menu_popup(W2kMenu *m, int x, int y, int flags)
             int rx = e.xmotion.x_root, ry = e.xmotion.y_root;
             int li = level_at(lv, n, rx, ry);
             if (li < 0) break;
-            int idx = item_at(lv[li].m, rx - lv[li].x, ry - lv[li].y);
+            int idx = item_at(lv[li].m, w2k_lp(rx - lv[li].x), w2k_lp(ry - lv[li].y));
             /* Moving back into a shallower menu closes everything below it. */
             if (li < n - 1 && (idx < 0 || idx != lv[li].sel)) {
                 for (int k = li + 1; k < n; k++) level_destroy(&lv[k]);
@@ -674,10 +696,10 @@ int w2k_menu_popup(W2kMenu *m, int x, int y, int flags)
                 repaint = 1;
                 Item *it = (idx >= 0) ? &lv[li].m->items[idx] : NULL;
                 if (it && it->sub && !it->disabled && n < MAXLEVEL) {
-                    int iy = lv[li].y + item_y(lv[li].m, idx);
+                    int iy = lv[li].y + w2k_px(item_y(lv[li].m, idx));
                     open_level(&lv[n], it->sub, 0, iy, 0,
-                               lv[li].x + lv[li].m->ix[idx] + lv[li].m->col_w,
-                               lv[li].x + lv[li].m->ix[idx]);
+                               lv[li].x + w2k_px(lv[li].m->ix[idx] + lv[li].m->col_w),
+                               lv[li].x + w2k_px(lv[li].m->ix[idx]));
                     n++;
                 }
             }
@@ -692,8 +714,8 @@ int w2k_menu_popup(W2kMenu *m, int x, int y, int flags)
              * a context menu of its own up. That menu takes the pointer
              * grab, so this one takes it back afterwards. */
             if (e.xbutton.button == Button3 && w2k_menu_on_context) {
-                int idx = item_at(lv[li].m, e.xbutton.x_root - lv[li].x,
-                                  e.xbutton.y_root - lv[li].y);
+                int idx = item_at(lv[li].m, w2k_lp(e.xbutton.x_root - lv[li].x),
+                                  w2k_lp(e.xbutton.y_root - lv[li].y));
                 if (idx < 0) break;
                 Item *it = &lv[li].m->items[idx];
                 if (it->disabled || it->sub || !it->id) break;
@@ -717,8 +739,8 @@ int w2k_menu_popup(W2kMenu *m, int x, int y, int flags)
             if (w2k_now_ms() - opened < 250) break;
             int li = level_at(lv, n, e.xbutton.x_root, e.xbutton.y_root);
             if (li < 0) { done = 1; break; }
-            int idx = item_at(lv[li].m, e.xbutton.x_root - lv[li].x,
-                              e.xbutton.y_root - lv[li].y);
+            int idx = item_at(lv[li].m, w2k_lp(e.xbutton.x_root - lv[li].x),
+                              w2k_lp(e.xbutton.y_root - lv[li].y));
             if (idx < 0) break;
             Item *it = &lv[li].m->items[idx];
             if (it->disabled || it->sub) break;
@@ -741,8 +763,8 @@ int w2k_menu_popup(W2kMenu *m, int x, int y, int flags)
             } else if (ks == XK_Right) {
                 Item *it = (top->sel >= 0) ? &top->m->items[top->sel] : NULL;
                 if (it && it->sub && !it->disabled && n < MAXLEVEL) {
-                    int iy = top->y + item_y(top->m, top->sel);
-                    open_level(&lv[n], it->sub, 0, iy, 0, top->x + top->w, top->x);
+                    int iy = top->y + w2k_px(item_y(top->m, top->sel));
+                    open_level(&lv[n], it->sub, 0, iy, 0, top->x + top->pw, top->x);
                     lv[n].sel = next_selectable(it->sub, -1, 1);
                     n++;
                     repaint = 1;
@@ -753,8 +775,8 @@ int w2k_menu_popup(W2kMenu *m, int x, int y, int flags)
                 Item *it = (top->sel >= 0) ? &top->m->items[top->sel] : NULL;
                 if (it && !it->disabled) {
                     if (it->sub && n < MAXLEVEL) {
-                        int iy = top->y + item_y(top->m, top->sel);
-                        open_level(&lv[n], it->sub, 0, iy, 0, top->x + top->w, top->x);
+                        int iy = top->y + w2k_px(item_y(top->m, top->sel));
+                        open_level(&lv[n], it->sub, 0, iy, 0, top->x + top->pw, top->x);
                         lv[n].sel = next_selectable(it->sub, -1, 1);
                         n++;
                         repaint = 1;

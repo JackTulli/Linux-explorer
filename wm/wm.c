@@ -698,6 +698,27 @@ int main(int argc, char **argv)
     /* The Start menu's folder tree exists from the first run, so there is
      * somewhere to put shortcuts before anyone opens the menu. */
     startdir_ensure();
+    /* On a scaled desktop the toolkits of other programs are told the
+     * scale the same way a real desktop tells them, so a GTK or Qt window
+     * comes up the size of ours. Xft.dpi covers the rest. */
+    if (w2k_ui_scale != 100) {
+        char buf[64];
+        int whole = w2k_ui_scale / 100;
+        snprintf(buf, sizeof buf, "%d", whole);
+        setenv("GDK_SCALE", buf, 1);
+        snprintf(buf, sizeof buf, "%.3f", (double)w2k_ui_scale / (100.0 * whole));
+        setenv("GDK_DPI_SCALE", buf, 1);
+        snprintf(buf, sizeof buf, "%.2f", w2k_ui_scale / 100.0);
+        setenv("QT_SCALE_FACTOR", buf, 1);
+        setenv("QT_AUTO_SCREEN_SCALE_FACTOR", "0", 1);
+        setenv("QT_ENABLE_HIGHDPI_SCALING", "0", 1);
+        snprintf(buf, sizeof buf, "%d", w2k_px(32));
+        setenv("XCURSOR_SIZE", buf, 1);
+        char cmd[128];
+        snprintf(cmd, sizeof cmd, "printf 'Xft.dpi: %d\\n' | xrdb -merge - 2>/dev/null",
+                 96 * w2k_ui_scale / 100);
+        if (system(cmd) != 0) { /* no xrdb: the environment still carries it */ }
+    }
     w2k_dnd_on_drop = shell_dnd_drop;
     w2k_dnd_will_accept = shell_dnd_accept;
 

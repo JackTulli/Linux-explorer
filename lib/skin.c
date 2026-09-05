@@ -16,6 +16,12 @@ struct W2kSkin {
     Pixmap pm, mask;
     int    w, h;
     int    opaque;               /* no transparent pixel: drawn without the mask */
+    /* The artwork, kept so a scaled desktop can build an enlarged copy of
+     * the sheet (nearest neighbour: the chrome stays crisp, and at 200%
+     * it is exact). */
+    unsigned char *rgba;
+    Pixmap spm, smask;           /* the enlarged sheet, once built */
+    int    sscale, spw, sph;
     /* Pieces of the sheet kept as tiles for w2k_skin_tile(), so a column
      * repeated across a caption is one filled rectangle, not one copy per
      * pixel. */
@@ -47,14 +53,12 @@ W2kSkin *w2k_skin_load_scaled(const char *path, int scale)
     return s;
 }
 
-W2kSkin *w2k_skin_from_rgba(const unsigned char *rgba, int w, int h)
+/* Server pixmap and 1-bit mask from straight RGBA. */
+static void make_pixmaps(const unsigned char *rgba, int w, int h,
+                         Pixmap *pm, Pixmap *mask, int *opaque)
 {
-    if (!rgba || w <= 0 || h <= 0) return NULL;
-    W2kSkin *s = w2k_alloc(sizeof *s);
-    s->w = w;
-    s->h = h;
-    s->pm = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)w, (unsigned)h,
-                          w2k.depth);
+    *pm = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)w, (unsigned)h,
+                        w2k.depth);
 
     char *pixels = malloc((size_t)w * h * 4);
     XImage *im = pixels ? XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap,
@@ -64,24 +68,70 @@ W2kSkin *w2k_skin_from_rgba(const unsigned char *rgba, int w, int h)
 
     int stride = (w + 7) / 8;
     unsigned char *bits = w2k_alloc((size_t)stride * h);
-    s->opaque = 1;
+    int op = 1;
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++) {
             const unsigned char *p = rgba + ((size_t)y * w + x) * 4;
             if (im) XPutPixel(im, x, y, w2k_rgb(p[0], p[1], p[2]));
             if (p[3] >= 128) bits[y * stride + (x >> 3)] |= 1 << (x & 7);
-            else s->opaque = 0;
+            else op = 0;
         }
 
     if (im) {
-        XPutImage(w2k.dpy, s->pm, w2k.gc_icon, im, 0, 0, 0, 0,
+        XPutImage(w2k.dpy, *pm, w2k.gc_icon, im, 0, 0, 0, 0,
                   (unsigned)w, (unsigned)h);
         XDestroyImage(im);
     }
-    s->mask = XCreateBitmapFromData(w2k.dpy, w2k.root, (char *)bits,
-                                    (unsigned)w, (unsigned)h);
+    *mask = XCreateBitmapFromData(w2k.dpy, w2k.root, (char *)bits,
+                                  (unsigned)w, (unsigned)h);
     free(bits);
+    if (opaque) *opaque = op;
+}
+
+W2kSkin *w2k_skin_from_rgba(const unsigned char *rgba, int w, int h)
+{
+    if (!rgba || w <= 0 || h <= 0) return NULL;
+    W2kSkin *s = w2k_alloc(sizeof *s);
+    s->w = w;
+    s->h = h;
+    make_pixmaps(rgba, w, h, &s->pm, &s->mask, &s->opaque);
+    if (w2k_ui_scale != 100) {
+        s->rgba = malloc((size_t)w * h * 4);
+        if (s->rgba) memcpy(s->rgba, rgba, (size_t)w * h * 4);
+    }
     return s;
+}
+
+/* The enlarged sheet for the current scale, built on first use. Source
+ * rectangles are mapped with w2k_px() at both ends, so neighbouring
+ * pieces of the sheet stay neighbours. Returns 0 without artwork. */
+static int ensure_scaled(W2kSkin *s)
+{
+    if (s->sscale == w2k_ui_scale && s->spm) return 1;
+    if (!s->rgba) return 0;
+    if (s->spm) { XFreePixmap(w2k.dpy, s->spm); s->spm = 0; }
+    if (s->smask) { XFreePixmap(w2k.dpy, s->smask); s->smask = 0; }
+    for (int i = 0; i < s->ntiles; i++)
+        if (s->tiles[i].pm) { XFreePixmap(w2k.dpy, s->tiles[i].pm); s->tiles[i].pm = 0; }
+    s->ntiles = s->next_tile = 0;
+
+    int pw = w2k_px(s->w), ph = w2k_px(s->h);
+    if (pw < 1 || ph < 1) return 0;
+    unsigned char *big = malloc((size_t)pw * ph * 4);
+    if (!big) return 0;
+    for (int y = 0; y < ph; y++) {
+        int sy = (int)((long)y * s->h / ph);
+        for (int x = 0; x < pw; x++) {
+            int sx = (int)((long)x * s->w / pw);
+            memcpy(big + ((size_t)y * pw + x) * 4,
+                   s->rgba + ((size_t)sy * s->w + sx) * 4, 4);
+        }
+    }
+    make_pixmaps(big, pw, ph, &s->spm, &s->smask, NULL);
+    free(big);
+    s->sscale = w2k_ui_scale;
+    s->spw = pw; s->sph = ph;
+    return 1;
 }
 
 void w2k_skin_free(W2kSkin *s)
@@ -89,6 +139,9 @@ void w2k_skin_free(W2kSkin *s)
     if (!s) return;
     if (s->pm) XFreePixmap(w2k.dpy, s->pm);
     if (s->mask) XFreePixmap(w2k.dpy, s->mask);
+    if (s->spm) XFreePixmap(w2k.dpy, s->spm);
+    if (s->smask) XFreePixmap(w2k.dpy, s->smask);
+    free(s->rgba);
     for (int i = 0; i < s->ntiles; i++)
         if (s->tiles[i].pm) XFreePixmap(w2k.dpy, s->tiles[i].pm);
     free(s);
@@ -110,11 +163,29 @@ GC w2k_copy_gc(void)
 int w2k_skin_w(const W2kSkin *s) { return s ? s->w : 0; }
 int w2k_skin_h(const W2kSkin *s) { return s ? s->h : 0; }
 
-void w2k_skin_draw(Drawable d, const W2kSkin *s, int x, int y,
+void w2k_skin_draw(Drawable d, const W2kSkin *s0, int x, int y,
                    int sx, int sy, int sw, int sh)
 {
+    W2kSkin *s = (W2kSkin *)s0;
     if (!s || sw <= 0 || sh <= 0) return;
     if (sx < 0 || sy < 0 || sx + sw > s->w || sy + sh > s->h) return;
+    if (w2k_ui_scale != 100 && ensure_scaled(s)) {
+        int px = w2k_cx(x), py = w2k_cx(y);
+        int sx0 = w2k_px(sx), sy0 = w2k_px(sy);
+        int pw = w2k_px(sx + sw) - sx0, ph = w2k_px(sy + sh) - sy0;
+        if (pw <= 0 || ph <= 0) return;
+        if (s->opaque) {
+            XCopyArea(w2k.dpy, s->spm, d, w2k_copy_gc(), sx0, sy0,
+                      (unsigned)pw, (unsigned)ph, px, py);
+            return;
+        }
+        XSetClipOrigin(w2k.dpy, w2k.gc_icon, px - sx0, py - sy0);
+        XSetClipMask(w2k.dpy, w2k.gc_icon, s->smask);
+        XCopyArea(w2k.dpy, s->spm, d, w2k.gc_icon, sx0, sy0, (unsigned)pw,
+                  (unsigned)ph, px, py);
+        XSetClipMask(w2k.dpy, w2k.gc_icon, None);
+        return;
+    }
     if (s->opaque) {
         /* Most skins are solid: one copy, and no clip mask to set up and
          * take down around it. */
@@ -144,6 +215,20 @@ void w2k_skin_tile(Drawable d, W2kSkin *s, int x, int y, int w, int h,
     if (!s || w <= 0 || h <= 0 || sw <= 0 || sh <= 0) return;
     if (sx < 0 || sy < 0 || sx + sw > s->w || sy + sh > s->h) return;
 
+    Pixmap sheet = s->pm;
+    if (w2k_ui_scale != 100 && ensure_scaled(s)) {
+        /* Both rectangles in physical pixels; the tile cache below is
+         * keyed by the mapped source, and was emptied when the sheet was
+         * rebuilt. */
+        int pw = w2k_cw(x, w), ph = w2k_cw(y, h);
+        x = w2k_cx(x); y = w2k_cx(y); w = pw; h = ph;
+        int sx0 = w2k_px(sx), sy0 = w2k_px(sy);
+        sw = w2k_px(sx + sw) - sx0; sh = w2k_px(sy + sh) - sy0;
+        sx = sx0; sy = sy0;
+        sheet = s->spm;
+        if (w <= 0 || h <= 0 || sw <= 0 || sh <= 0) return;
+    }
+
     Pixmap t = 0;
     for (int i = 0; i < s->ntiles; i++)
         if (s->tiles[i].sx == sx && s->tiles[i].sy == sy &&
@@ -154,7 +239,7 @@ void w2k_skin_tile(Drawable d, W2kSkin *s, int x, int y, int w, int h,
     if (!t) {
         t = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)sw, (unsigned)sh,
                           w2k.depth);
-        XCopyArea(w2k.dpy, s->pm, t, w2k_copy_gc(), sx, sy, (unsigned)sw,
+        XCopyArea(w2k.dpy, sheet, t, w2k_copy_gc(), sx, sy, (unsigned)sw,
                   (unsigned)sh, 0, 0);
         int i;
         if (s->ntiles < 8) i = s->ntiles++;
