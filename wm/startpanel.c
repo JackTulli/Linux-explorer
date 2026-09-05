@@ -179,13 +179,11 @@ static void build_rows(void)
         push(right_rows, &nright, R_ITEM, SM_RUN, "Run...", ICO_RUN, 0);
         return;
     }
-    push(right_rows, &nright, R_ITEM, SM_MYDOCS, "My Documents", ICO_MYDOCS, 0)->bold = 1;
-    push(right_rows, &nright, R_ITEM, SM_MYPICS, "My Pictures",
-         ICO_FILE_BITMAP, 0)->bold = 1;
-    push(right_rows, &nright, R_ITEM, SM_MYMUSIC, "My Music",
-         ICO_FILE_MEDIA, 0)->bold = 1;
-    push(right_rows, &nright, R_ITEM, SM_MYCOMPUTER, "My Computer",
-         ICO_MYCOMPUTER, 0)->bold = 1;
+    Row *r;
+    if ((r = push(right_rows, &nright, R_ITEM, SM_MYDOCS, "My Documents", ICO_MYDOCS, 0))) r->bold = 1;
+    if ((r = push(right_rows, &nright, R_ITEM, SM_MYPICS, "My Pictures", ICO_FILE_BITMAP, 0))) r->bold = 1;
+    if ((r = push(right_rows, &nright, R_ITEM, SM_MYMUSIC, "My Music", ICO_FILE_MEDIA, 0))) r->bold = 1;
+    if ((r = push(right_rows, &nright, R_ITEM, SM_MYCOMPUTER, "My Computer", ICO_MYCOMPUTER, 0))) r->bold = 1;
     push(right_rows, &nright, R_SUB, SM_RECENTSUB, "My Recent &Documents",
          ICO_DOCUMENTS, 0);
     push(right_rows, &nright, R_SEP, 0, NULL, ICO_NONE, 0);

@@ -476,6 +476,9 @@ static void do_logon(void)
     XDefineCursor(w2k.dpy, lg.win->win, w2k.cur_wait);
     w2k_win_repaint_now(lg.win);
     int ok = authenticate(user);
+    /* The password has done its work: it does not stay in memory for the
+     * rest of the session. */
+    w2k_edit_wipe(lg.pass);
     XDefineCursor(w2k.dpy, lg.win->win, w2k.cur_arrow);
     if (ok) { lg.want = 0; w2k_win_close(lg.win, ID_OK); }
     else {

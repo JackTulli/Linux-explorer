@@ -66,8 +66,11 @@ void w2k_list_add_col(W2kList *l, const char *title, int w, int right)
 int w2k_list_add(W2kList *l, int icon, void *data)
 {
     if (l->n == l->cap) {
-        l->cap = l->cap ? l->cap * 2 : 64;
-        l->items = realloc(l->items, l->cap * sizeof *l->items);
+        int cap = l->cap ? l->cap * 2 : 64;
+        W2kListItem *grown = realloc(l->items, (size_t)cap * sizeof *l->items);
+        if (!grown) return -1;
+        l->items = grown;
+        l->cap = cap;
         if (!l->items) abort();
     }
     W2kListItem *it = &l->items[l->n];
@@ -221,13 +224,21 @@ static void icon_label(Drawable d, int cx, int y, const char *text, int sel,
     int maxw = ICON_CW - 8;
     int n = 1;
     if (w2k_text_width(F_UI, text, -1) > maxw) {
-        int cut = 0;
+        /* Break at the last space that still fits, measuring at the
+         * spaces only: measuring every prefix made a folder of a hundred
+         * long names cost thousands of text measurements per repaint. */
+        int cut = -1;
         for (int i = 0; text[i]; i++)
-            if (w2k_text_width(F_UI, text, i) <= maxw) cut = i;
-        if (cut < 1) cut = 1;
-        int sp = -1;
-        for (int i = 0; i < cut; i++) if (text[i] == ' ') sp = i;
-        if (sp > 0) cut = sp;
+            if (text[i] == ' ' && w2k_text_width(F_UI, text, i) <= maxw) cut = i;
+        if (cut < 1) {
+            /* One long word: binary search for the widest prefix. */
+            int lo = 1, hi = (int)strlen(text);
+            while (lo < hi) {
+                int mid = (lo + hi + 1) / 2;
+                if (w2k_text_width(F_UI, text, mid) <= maxw) lo = mid; else hi = mid - 1;
+            }
+            cut = lo;
+        }
         snprintf(l1, sizeof l1, "%.*s", cut, text);
         char rest[64];
         snprintf(rest, sizeof rest, "%s", text + cut + (text[cut] == ' ' ? 1 : 0));
@@ -810,6 +821,7 @@ void w2k_tree_select(W2kTree *t, W2kTreeNode *n) { t->sel = n; }
 /* Depth-first walk over the currently visible rows. */
 static W2kTreeNode *tree_next_visible(W2kTreeNode *n)
 {
+    if (!n) return NULL;
     if (n->expanded && n->child) return n->child;
     while (n) {
         if (n->sibling) return n->sibling;

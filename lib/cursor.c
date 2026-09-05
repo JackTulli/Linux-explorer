@@ -404,7 +404,7 @@ void w2k_cursors_init(void)
      * is there before replacing it. */
     for (int r = 0; r < N_ROLES; r++) {
         Cursor *slot = role_slot(r);
-        if (*slot) {
+        if (slot && *slot) {
             XFreeCursor(w2k.dpy, *slot);
             *slot = None;
         }

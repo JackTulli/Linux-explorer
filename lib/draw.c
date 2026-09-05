@@ -303,7 +303,14 @@ void w2k_ellipsis(int font, const char *s, int maxw, char *buf, int bufsz)
     if (w2k_text_width(font, buf, n) <= maxw) return;
 
     int dots = w2k_text_width(font, "...", 3);
-    while (n > 0 && w2k_text_width(font, buf, n) + dots > maxw) n--;
+    /* The longest prefix that fits with the dots, by bisection: a report
+     * view of long names measured each one a character at a time. */
+    int lo = 0, hi = n;
+    while (lo < hi) {
+        int mid = (lo + hi + 1) / 2;
+        if (w2k_text_width(font, buf, mid) + dots <= maxw) lo = mid; else hi = mid - 1;
+    }
+    n = lo;
     if (n + 3 < bufsz) { memcpy(buf + n, "...", 4); }
     else buf[n > 0 ? n : 0] = '\0';
 }

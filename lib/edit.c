@@ -103,7 +103,9 @@ static void ensure_cap(W2kEdit *e, int need)
     if (need + 1 <= e->cap) return;
     int cap = e->cap ? e->cap : 256;
     while (cap < need + 1) cap *= 2;
-    e->text = realloc(e->text, cap);
+    char *grown = realloc(e->text, (size_t)cap);
+    if (!grown) return;                    /* keep what there is */
+    e->text = grown;
     if (!e->text) abort();
     e->cap = cap;
 }
@@ -184,8 +186,11 @@ static int chars_for_width(W2kEdit *e, int from, int maxn, int px)
 static void vl_push(W2kEdit *e, int off)
 {
     if (e->nvl == e->vlcap) {
-        e->vlcap = e->vlcap ? e->vlcap * 2 : 128;
-        e->vls = realloc(e->vls, e->vlcap * sizeof *e->vls);
+        int cap = e->vlcap ? e->vlcap * 2 : 128;
+        void *grown = realloc(e->vls, (size_t)cap * sizeof *e->vls);
+        if (!grown) return;
+        e->vls = grown;
+        e->vlcap = cap;
         if (!e->vls) abort();
     }
     e->vls[e->nvl++] = off;
@@ -351,6 +356,17 @@ static void ensure_caret_visible(W2kEdit *e)
 /* ------------------------------------------------------------------ *
  * Editing
  * ------------------------------------------------------------------ */
+/* Forget the text and scrub the memory it sat in: for a password box
+ * once the password has been used. */
+void w2k_edit_wipe(W2kEdit *e)
+{
+    if (e->text && e->cap > 0) memset(e->text, 0, (size_t)e->cap);
+    e->len = 0;
+    e->caret = e->sel = 0;
+    e->vsb.pos = e->hsb.pos = e->scroll_x = 0;
+    changed(e);
+}
+
 void w2k_edit_set(W2kEdit *e, const char *text)
 {
     int n = text ? (int)strlen(text) : 0;

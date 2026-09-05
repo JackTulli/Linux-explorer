@@ -76,7 +76,7 @@ unsigned char *w2k_png_load(const char *path, int *out_w, int *out_h)
     int w = 0, h = 0, depth = 0, color = -1, interlace = 0;
     unsigned char *idat = NULL;
     size_t idat_len = 0;
-    unsigned char pal[256 * 3];
+    unsigned char pal[256 * 3] = { 0 };       /* black where a PLTE is short */
     int npal = 0;
     unsigned char alpha[256];
     int nalpha = 0;

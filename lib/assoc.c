@@ -210,8 +210,9 @@ int w2k_assoc_apply_folder_default(void)
     } else {
         snprintf(desktop, sizeof desktop, "%.200s.desktop", base);
     }
-    char run[1200];
+    char run[1600], q[700];
+    w2k_shell_quote(desktop, q, sizeof q);
     snprintf(run, sizeof run,
-             "xdg-mime default '%s' inode/directory x-directory/normal >/dev/null 2>&1", desktop);
+             "xdg-mime default %s inode/directory x-directory/normal >/dev/null 2>&1", q);
     return system(run) == 0;
 }

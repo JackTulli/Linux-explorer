@@ -204,6 +204,14 @@ turned into the `Windows2000` Xcursor theme by `tools/gencursortheme.py`.
     tools/           icon and cursor-theme baking, development helpers
     install.sh       the installer; bootstrap.sh the one-command form
 
+## Audits
+
+`docs/AUDIT.md` records the September 2026 pass over the whole tree:
+what was run (a wide warning set, GCC's static analyzer, the sanitizers
+over every render harness in three looks, fuzzing of the image and
+cursor decoders, leak checks, a visual sweep), what was found, and what
+changed, with how to repeat it.
+
 ## Trademarks and copyright
 
 Linux 2000 is not affiliated with, endorsed by or sponsored by Microsoft

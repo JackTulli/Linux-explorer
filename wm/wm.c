@@ -840,6 +840,12 @@ int main(int argc, char **argv)
         struct timeval tv = { .tv_sec = wait / 1000,
                               .tv_usec = (wait % 1000) * 1000 };
         int rc = select((nfd > fd ? nfd : fd) + 1, &r, NULL, NULL, &tv);
+        if (rc < 0 && errno == EBADF && nfd >= 0) {
+            /* The notification service's connection has gone bad; drop
+             * it rather than treat a lost D-Bus as the end of the session. */
+            notifyd_fini();
+            continue;
+        }
         if (rc < 0 && errno != EINTR) break;
         if (nfd >= 0) notifyd_dispatch();
         taskbar_tick();

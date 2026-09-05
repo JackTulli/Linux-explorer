@@ -350,10 +350,21 @@ static void link_add(const char *text, int x, int y)
     l->r = (W2kRect){ x, y, w2k_text_width(F_UI, text, -1), 13 };
 }
 
+/* Links in the page's blue, lightened when the window colour is dark
+ * (the Windows Classic Dark scheme) so they still read. */
+static void link_rgb(int *r, int *g, int *b)
+{
+    const unsigned char *wc = w2k_scheme_rgb(C_WINDOW);
+    int dark = (wc[0] * 299 + wc[1] * 587 + wc[2] * 114) / 1000 < 128;
+    *r = dark ? 120 : 0; *g = dark ? 170 : 0; *b = dark ? 255 : 204;
+}
+
 static void draw_link(Drawable d, const Line *l)
 {
-    w2k_text_rgb(d, F_UI, l->r.x, l->r.y, l->text, 0, 0, 204);
-    XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(0, 0, 204));
+    int r, g, b;
+    link_rgb(&r, &g, &b);
+    w2k_text_rgb(d, F_UI, l->r.x, l->r.y, l->text, r, g, b);
+    XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r, g, b));
     XFillRectangle(w2k.dpy, d, w2k.gc, l->r.x, l->r.y + w2k_font_px_ascent(F_UI) + 1,
                    (unsigned)l->r.w, 1);
 }
@@ -403,8 +414,8 @@ static void paint(W2kWin *w, Drawable d)
     } else {
         w2k_text(d, F_UI_BOLD, 58, 20, "Linux 2000 Update", C_WINDOWTEXT);
     }
-    w2k_text_rgb(d, F_UI, w->w - 12 - w2k_text_width(F_UI, "Updates only when you ask", -1),
-                 BANNER_H - 20, "Updates only when you ask", 96, 96, 96);
+    w2k_text(d, F_UI, w->w - 12 - w2k_text_width(F_UI, "Updates only when you ask", -1),
+             BANNER_H - 20, "Updates only when you ask", C_GRAYTEXT);
     XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(0, 0, 128));
     XFillRectangle(w2k.dpy, d, w2k.gc, 0, BANNER_H - 3, (unsigned)w->w, 3);
 

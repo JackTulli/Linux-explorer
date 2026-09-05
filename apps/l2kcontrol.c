@@ -187,7 +187,7 @@ static void open_defaults(void)
         w2k_edit_set(dd.edit[i], cmd);
         w2k_add_timer(w2k_caret_blink, blink, dd.edit[i]);
     }
-    dd.edit[0]->focused = 1;
+    if (dd.n) dd.edit[0]->focused = 1;
     int by = chh - 12 - 23;
     dd.cancel = (W2kRect){ cw - 12 - 75, by, 75, 23 };
     dd.ok     = (W2kRect){ cw - 12 - 75 * 2 - 6, by, 75, 23 };

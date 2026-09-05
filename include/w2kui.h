@@ -158,6 +158,8 @@ W2kEdit *w2k_edit_new(int multiline);
 void     w2k_edit_bind(W2kEdit *e, W2kWin *w);
 void     w2k_edit_free(W2kEdit *e);
 void     w2k_edit_set(W2kEdit *e, const char *text);
+/* Clear a box and scrub its memory (a password once it has been used). */
+void     w2k_edit_wipe(W2kEdit *e);
 const char *w2k_edit_text(W2kEdit *e);
 void     w2k_edit_draw(Drawable d, W2kEdit *e);
 int      w2k_edit_key(W2kEdit *e, XKeyEvent *k);   /* 1 if consumed */
