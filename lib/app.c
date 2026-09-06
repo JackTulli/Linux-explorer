@@ -196,6 +196,7 @@ int  w2k_start_search = 1;
  * classic single column of Windows 2000. */
 int  w2k_start_panel;
 int  w2k_start_small_icons;
+int w2k_start_width = 1;         /* Windows 2000 columns */
 int  w2k_start_personalized;
 int  w2k_taskbar_ontop = 1;
 int  w2k_taskbar_autohide;
@@ -237,6 +238,11 @@ int w2k_key_delay = 500;        /* auto-repeat delay, ms */
 int w2k_key_rate = 30;          /* auto-repeat rate, characters/second */
 int w2k_caret_blink = 530;      /* caret blink half-period, ms */
 int w2k_bell_on = 1;
+/* Power scheme: minutes of idleness before the monitor is turned off,
+ * the machine stands by, the machine hibernates; 0 is never. */
+int w2k_monitor_off_min = 20;
+int w2k_standby_min = 0;
+int w2k_hibernate_min = 0;
 int w2k_bell_volume = 50;       /* percent */
 int w2k_bell_pitch = 400;       /* Hz */
 int w2k_bell_duration = 100;    /* ms */
@@ -588,6 +594,9 @@ int w2k_scheme_load(const char *path)
                 { "ViewToolbar",     &w2k_view_toolbar,    0,    1 },
                 { "ViewAddress",     &w2k_view_address,    0,    1 },
                 { "ViewStatusBar",   &w2k_view_status,     0,    1 },
+                { "MonitorOff",      &w2k_monitor_off_min, 0, 1440 },
+                { "StandBy",         &w2k_standby_min,     0, 1440 },
+                { "Hibernate",       &w2k_hibernate_min,   0, 1440 },
             };
             int done = 0;
             for (int i = 0; i < (int)(sizeof ints / sizeof *ints); i++)
@@ -664,6 +673,7 @@ int w2k_scheme_load(const char *path)
             w2k_start_panel = atoi(val) != 0;
             continue;
         }
+        if (!strcasecmp(line, "StartWidth")) { w2k_start_width = atoi(val) != 0; continue; }
         if (!strcasecmp(line, "StartSmallIcons")) {
             w2k_start_small_icons = atoi(val) != 0;
             continue;
@@ -771,6 +781,7 @@ int w2k_scheme_save(const char *path)
     fprintf(f, "StartSearch=%d\n", w2k_start_search);
     fprintf(f, "StartPanel=%d\n", w2k_start_panel);
     fprintf(f, "StartSmallIcons=%d\n", w2k_start_small_icons);
+    fprintf(f, "StartWidth=%d\n", w2k_start_width);
     fprintf(f, "StartPersonalized=%d\n", w2k_start_personalized);
     char fx[N_EFFECTS + 1];
     for (int i = 0; i < N_EFFECTS; i++) fx[i] = w2k_effects[i] ? '1' : '0';
@@ -804,6 +815,9 @@ int w2k_scheme_save(const char *path)
     fprintf(f, "BellVolume=%d\n", w2k_bell_volume);
     fprintf(f, "BellPitch=%d\n", w2k_bell_pitch);
     fprintf(f, "BellDuration=%d\n", w2k_bell_duration);
+    fprintf(f, "MonitorOff=%d\n", w2k_monitor_off_min);
+    fprintf(f, "StandBy=%d\n", w2k_standby_min);
+    fprintf(f, "Hibernate=%d\n", w2k_hibernate_min);
     fprintf(f, "FolderHidden=%d\n", w2k_folder_hidden);
     fprintf(f, "FolderHideExt=%d\n", w2k_folder_hide_ext);
     fprintf(f, "FolderFullPath=%d\n", w2k_folder_fullpath);

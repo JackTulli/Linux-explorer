@@ -13,6 +13,42 @@
 #include <sys/select.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef HAVE_XSS
+#include <X11/extensions/scrnsaver.h>
+#endif
+
+/* "System standby" and "System hibernates" from the power scheme: the X
+ * server's idle time is asked every half minute and the machine put to
+ * sleep through logind once it has passed the limit; after it wakes,
+ * the next sleep waits for the user to have been active again. */
+static void power_idle_poll(void)
+{
+#ifdef HAVE_XSS
+    static int fired;
+    static int have = -1;
+    if (w2k_standby_min <= 0 && w2k_hibernate_min <= 0) return;
+    if (have < 0) {
+        int ev, err;
+        have = XScreenSaverQueryExtension(w2k.dpy, &ev, &err) ? 1 : 0;
+    }
+    if (!have) return;
+    XScreenSaverInfo *info = XScreenSaverAllocInfo();
+    if (!info) return;
+    long idle_ms = -1;
+    if (XScreenSaverQueryInfo(w2k.dpy, w2k.root, info)) idle_ms = (long)info->idle;
+    XFree(info);
+    if (idle_ms < 0) return;
+    if (idle_ms < 5000) { fired = 0; return; }
+    if (fired) return;
+    if (w2k_hibernate_min > 0 && idle_ms >= (long)w2k_hibernate_min * 60000) {
+        fired = 1;
+        w2k_power_action("hibernate");
+    } else if (w2k_standby_min > 0 && idle_ms >= (long)w2k_standby_min * 60000) {
+        fired = 1;
+        w2k_power_action("suspend");
+    }
+#endif
+}
 
 Window wm_check;
 int    wa_x, wa_y, wa_w, wa_h;
@@ -863,11 +899,13 @@ int main(int argc, char **argv)
         /* A log-off is waiting on windows to close; one that refuses
          * sends no events, so keep checking the deadline. */
         if (logging_out && wait > 200) wait = 200;
+        if ((w2k_standby_min > 0 || w2k_hibernate_min > 0) && wait > 30000) wait = 30000;
         if (wait < 10) wait = 10;
         if (wait > 60000) wait = 60000;
         struct timeval tv = { .tv_sec = wait / 1000,
                               .tv_usec = (wait % 1000) * 1000 };
         int rc = select((nfd > fd ? nfd : fd) + 1, &r, NULL, NULL, &tv);
+        power_idle_poll();
         if (rc < 0 && errno == EBADF && nfd >= 0) {
             /* The notification service's connection has gone bad; drop
              * it rather than treat a lost D-Bus as the end of the session. */

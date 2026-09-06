@@ -33,6 +33,14 @@ bin/l2kdm: LDLIBS += -lpam
 endif
 # The notification service needs libdbus; without it the shell shows only
 # its own balloons.
+ifneq ($(shell pkg-config --exists libwebp 2>/dev/null && echo y),)
+lib/image.o: CFLAGS += -DHAVE_WEBP $(shell pkg-config --cflags libwebp)
+LDLIBS += $(shell pkg-config --libs libwebp)
+endif
+ifneq ($(shell pkg-config --exists xscrnsaver 2>/dev/null && echo y),)
+wm/wm.o: CFLAGS += -DHAVE_XSS
+bin/l2kwm: LDLIBS += -lXss
+endif
 ifneq ($(shell pkg-config --exists dbus-1 2>/dev/null && echo y),)
 wm/notifyd.o: CFLAGS += -DHAVE_DBUS $(shell pkg-config --cflags dbus-1)
 bin/l2kwm: LDLIBS += $(shell pkg-config --libs dbus-1)

@@ -156,6 +156,7 @@ void wm_search_dialog(const char *first)
  * ------------------------------------------------------------------ */
 typedef struct {
     W2kRect  ok, cancel, apply;
+    W2kTabs *tabs;                    /* General / Start Menu            */
     int      down, dirty;
     W2kEdit *custom;                  /* the "Custom" banner text        */
     W2kEdit *rgb[2][3];               /* top and bottom gradient colours */
@@ -164,7 +165,10 @@ typedef struct {
     W2kRect  labels_box, small_box;   /* Windows 7's button options */
     W2kRect  smallicons_box, personalized_box;
     W2kRect  style_radio[2];
-    W2kRect  preview;
+    W2kRect  width_radio[2];          /* Windows 2000 / Windows 98 columns */
+    int      width;
+    W2kRect  preview;                 /* the General page's picture      */
+    W2kRect  preview2;                /* the Start Menu page's banner    */
     int      mode, icon, dither, search;   /* edited copies              */
     int      ontop, autohide, showclock, smallicons, personalized;
     int      labels, tsmall;
@@ -197,6 +201,7 @@ static void startdlg_commit(StartDlg *sd)
     w2k_start_small_icons = sd->smallicons;
     w2k_start_panel = sd->panel;
     w2k_start_personalized = sd->personalized;
+    w2k_start_width = sd->width;
     taskbar_init();                    /* re-place and re-stack the bar */
     wm_update_workarea();
     clients_restack();
@@ -214,16 +219,10 @@ static void startdlg_commit(StartDlg *sd)
     taskbar_paint();
 }
 
-static void startdlg_paint(W2kWin *w, Drawable d)
+/* The banner strip as the edits describe it, `w` wide and `h` tall, with
+ * the name up it. Windows drew the same picture on this page. */
+static void startdlg_banner(StartDlg *sd, Drawable d, int x, int y, int w, int h)
 {
-    StartDlg *sd = w->user;
-    int fh = w2k_font_height(F_UI);
-
-    /* Live preview: the banner as it will look, beside the Start button. */
-    W2kRect pv = sd->preview;
-    w2k_edge(d, pv.x, pv.y, pv.w, pv.h, EDGE_SUNKEN, BF_RECT);
-    w2k_fill(d, pv.x + 2, pv.y + 2, pv.w - 4, pv.h - 4, C_MENU);
-    /* the banner strip, drawn with whatever is currently in the edits */
     int save_dither = w2k_start_banner_dither, save_top[3], save_bot[3];
     for (int k = 0; k < 3; k++) {
         save_top[k] = w2k_start_banner_top[k];
@@ -232,15 +231,13 @@ static void startdlg_paint(W2kWin *w, Drawable d)
         w2k_start_banner_bottom[k] = atoi(w2k_edit_text(sd->rgb[1][k]));
     }
     w2k_start_banner_dither = sd->dither;
-    w2k_menu_banner_fill(d, pv.x + 4, pv.y + 4, 26, pv.h - 8);
+    w2k_menu_banner_fill(d, x, y, w, h);
     int save_mode = w2k_start_banner_mode;
     w2k_start_banner_mode = sd->mode;
     const char *banner = sd->mode == SB_CUSTOM ? w2k_edit_text(sd->custom)
                                                : w2k_start_banner_text();
-    /* The real banner is as tall as the menu; in a preview this size the
-     * name runs off the top, so keep it inside the strip. */
-    w2k_clip_set(pv.x + 4, pv.y + 4, 26, pv.h - 8);
-    w2k_text_vertical(d, F_UI_BOLD, pv.x + 8, pv.y + pv.h - 10, banner, C_WHITE);
+    w2k_clip_set(x, y, w, h);
+    w2k_text_vertical(d, F_UI_BOLD, x + 4, y + h - 6, banner, C_WHITE);
     w2k_clip_clear();
     w2k_start_banner_mode = save_mode;
     w2k_start_banner_dither = save_dither;
@@ -248,92 +245,183 @@ static void startdlg_paint(W2kWin *w, Drawable d)
         w2k_start_banner_top[k] = save_top[k];
         w2k_start_banner_bottom[k] = save_bot[k];
     }
-    /* ...and the button, so the icon choice can be seen next to it */
+}
+
+/* The Start button with the icon chosen, at (x, y); returns its width. */
+static int startdlg_button(StartDlg *sd, Drawable d, int x, int y)
+{
     int bw = 20 + w2k_mnemonic_width(F_UI_BOLD, "Start") + 8;
-    int bx = pv.x + 40, by = pv.y + pv.h - 30;
-    w2k_button(d, bx, by, bw, 22, 0);
-    w2k_icon_draw(d, bx + 3, by + 3, ICO_STARTFLAG);
-    w2k_text_mnemonic(d, F_UI_BOLD, bx + 21,
-                      by + (22 - w2k_font_height(F_UI_BOLD)) / 2, "Start",
-                      C_TEXT, 0);
+    w2k_button(d, x, y, bw, 22, 0);
+    /* The flag slot carries whichever icon is applied; the choice shows
+     * once it is. */
+    w2k_icon_draw(d, x + 3, y + 3, ICO_STARTFLAG);
+    w2k_text_mnemonic(d, F_UI_BOLD, x + 21, y + (22 - w2k_font_height(F_UI_BOLD)) / 2,
+                      "Start", C_TEXT, 0);
+    return bw;
+}
 
-    /* Banner text */
-    W2kRect g = { 10, pv.y + pv.h + 8, w->w - 20, 3 * (fh + 6) + 22 };
-    w2k_draw_groupbox(d, &g, "Banner text");
-    const char *labels[3];
-    labels[0] = "&Windows 2000 Professional";
-    labels[1] = w2k_distro_name();
-    labels[2] = "C&ustom:";
-    for (int i = 0; i < 3; i++)
-        w2k_draw_radio(d, sd->text_radio[i].x, sd->text_radio[i].y, labels[i],
-                       sd->mode == i, 0, 0);
-    w2k_edit_draw(d, sd->custom);
+/* The General page's picture: a slice of desktop with the Start menu
+ * open over the taskbar, drawn from the settings as they stand -- the
+ * menu's style and icon size, the bar's clock, the banner. */
+static void startdlg_preview(StartDlg *sd, Drawable d)
+{
+    W2kRect pv = sd->preview;
+    w2k_edge(d, pv.x, pv.y, pv.w, pv.h, EDGE_SUNKEN, BF_RECT);
+    int x0 = pv.x + 2, y0 = pv.y + 2, w = pv.w - 4, h = pv.h - 4;
+    w2k_clip_set(x0, y0, w, h);
+    w2k_fill(d, x0, y0, w, h, C_DESKTOP);
 
-    /* Gradient */
-    W2kRect g2 = { 10, g.y + g.h + 8, w->w - 20, 2 * 26 + 52 };
-    w2k_draw_groupbox(d, &g2, "Banner colour");
-    const char *rows[2] = { "Top:", "Bottom:" };
-    for (int i = 0; i < 2; i++) {
-        w2k_text(d, F_UI, g2.x + 10, sd->rgb[i][0]->r.y + (21 - fh) / 2,
-                 rows[i], C_TEXT);
-        for (int k = 0; k < 3; k++) w2k_edit_draw(d, sd->rgb[i][k]);
-        int r = atoi(w2k_edit_text(sd->rgb[i][0]));
-        int gg = atoi(w2k_edit_text(sd->rgb[i][1]));
-        int b = atoi(w2k_edit_text(sd->rgb[i][2]));
-        W2kRect sw = { sd->rgb[i][2]->r.x + 56, sd->rgb[i][0]->r.y, 40, 21 };
-        w2k_fill_rgb(d, sw.x, sw.y, sw.w, sw.h, r & 255, gg & 255, b & 255);
-        w2k_edge(d, sw.x, sw.y, sw.w, sw.h, EDGE_SUNKEN, BF_RECT);
+    /* The taskbar along the bottom. */
+    int tb_h = 28, tby = y0 + h - tb_h;
+    w2k_fill(d, x0, tby, w, tb_h, C_FACE);
+    w2k_hline(d, x0, tby, w, C_LIGHT);
+    w2k_hline(d, x0, tby + 1, w, C_HILIGHT);
+    int by = tby + 4;
+    int bw = startdlg_button(sd, d, x0 + 2, by);
+    /* a task button and the tray */
+    int tx = x0 + 2 + bw + 12;
+    w2k_button(d, tx, by, 120, 22, 1);
+    w2k_icon_draw(d, tx + 5, by + 3, ICO_EXPLORER);
+    w2k_text(d, F_UI, tx + 24, by + (22 - w2k_font_height(F_UI)) / 2, "My Computer", C_TEXT);
+    if (sd->showclock) {
+        int cw = w2k_text_width(F_UI, "12:00 PM", -1) + 12;
+        int cx = x0 + w - 2 - cw;
+        w2k_edge(d, cx, by, cw, 22, EDGE_SUNKEN_THIN, BF_RECT);
+        w2k_text(d, F_UI, cx + 6, by + (22 - w2k_font_height(F_UI)) / 2, "12:00 PM", C_TEXT);
     }
-    const char *rgb_head[3] = { "Red", "Green", "Blue" };
-    for (int k = 0; k < 3; k++)
-        w2k_text(d, F_UI, sd->rgb[0][k]->r.x + 2,
-                 sd->rgb[0][0]->r.y - fh - 3, rgb_head[k], C_TEXT);
-    w2k_draw_checkbox(d, sd->dither_box.x, sd->dither_box.y,
-                      "Classic &dithered gradient", sd->dither, 0, 0);
 
-    /* Start button icon */
-    /* The frame follows its contents: the rows are laid out once, in
-     * startdlg layout, and a group that guesses its own height drifts the
-     * moment a row is added. */
-    W2kRect g3 = { 10, sd->style_radio[0].y - 16, w->w - 20,
-                   (sd->personalized_box.y + 16 + 8) - (sd->style_radio[0].y - 16) };
-    w2k_draw_groupbox(d, &g3, "Start menu");
-    /* The choice Windows XP offered: its two-column panel, or the single
-     * column of Windows 2000. */
-    w2k_draw_radio(d, sd->style_radio[0].x, sd->style_radio[0].y,
-                   "&Start menu (two columns)", sd->panel, 0, 0);
-    w2k_draw_radio(d, sd->style_radio[1].x, sd->style_radio[1].y,
-                   "&Classic Start menu", !sd->panel, 0, 0);
-    char distro_icon[96];
-    snprintf(distro_icon, sizeof distro_icon, "&Distribution logo");
-    const char *icons[3] = { "Windows &flag", "&Tux", distro_icon };
-    for (int i = 0; i < 3; i++)
-        w2k_draw_radio(d, sd->icon_radio[i].x, sd->icon_radio[i].y, icons[i],
-                       sd->icon == i, 0, 0);
-    w2k_draw_checkbox(d, sd->search_box.x, sd->search_box.y,
-                      "&Search for programs when you type in the Start menu",
-                      sd->search, 0, 0);
-    w2k_draw_checkbox(d, sd->smallicons_box.x, sd->smallicons_box.y,
-                      "Show small &icons in Start menu", sd->smallicons, 0, 0);
-    w2k_draw_checkbox(d, sd->personalized_box.x, sd->personalized_box.y,
-                      "Use &Personalized Menus", sd->personalized, 0, 0);
+    /* The Start menu above the button. */
+    int big = !sd->smallicons;
+    int row = big ? 34 : 18, icol = big ? 38 : 20;
+    const char *items[] = { "Programs", "Documents", "Settings", "Search", "Help", "Run...", "Shut Down..." };
+    const int icons[] = { ICO_PROGRAMS, ICO_DOCUMENTS, ICO_SETTINGS, ICO_SEARCH, ICO_HELP, ICO_RUN, ICO_SHUTDOWN };
+    int n = 7;
+    int mh = 3 + n * row + 3 + (big ? 0 : 4);
+    int maxw = 0;
+    for (int i = 0; i < n; i++) {
+        int tw = w2k_text_width(F_UI, items[i], -1);
+        if (tw > maxw) maxw = tw;
+    }
+    int mw = 21 + icol + maxw + 14 + 6;
+    if (sd->panel) {
+        /* The two-column panel: a blue-topped box standing in for it. */
+        int px = x0 + 2, pw = 200, ph = h - tb_h - 6, py = tby - ph;
+        w2k_fill(d, px, py, pw, ph, C_WINDOW);
+        w2k_fill_rgb(d, px, py, pw, 34, 0, 82, 195);
+        w2k_fill_rgb(d, px + pw / 2, py + 34, pw / 2, ph - 34 - 26, 212, 228, 248);
+        w2k_fill_rgb(d, px, py + ph - 26, pw, 26, 0, 82, 195);
+        w2k_text_rgb(d, F_UI_BOLD, px + 40, py + 10, "Linux 2000", 255, 255, 255);
+        w2k_bigicon_draw(d, px + 6, py + 2, ICO_MYCOMPUTER);
+        w2k_frame(d, px, py, pw, ph, C_WINDOWFRAME);
+    } else {
+        int my = tby - mh, mx = x0 + 2;   /* the top runs off the picture */
+        w2k_fill(d, mx, my, mw, mh, C_MENU);
+        w2k_edge(d, mx, my, mw, mh, EDGE_RAISED, BF_RECT);
+        startdlg_banner(sd, d, mx + 3, my + 3, 21, mh - 6);
+        w2k_clip_set(x0, y0, w, h);        /* the banner cleared it */
+        int y = my + 3;
+        for (int i = 0; i < n; i++) {
+            int ix = mx + 3 + 21;
+            if (big) w2k_bigicon_draw(d, ix + 3, y + 1, icons[i]);
+            else     w2k_icon_draw(d, ix + 2, y + 1, icons[i]);
+            w2k_text(d, F_UI, ix + icol, y + (row - w2k_font_height(F_UI)) / 2, items[i],
+                     C_MENUTEXT);
+            if (i < 4) {
+                int ax = mx + mw - 12, ay = y + row / 2 - 3;
+                for (int k = 0; k < 4; k++) w2k_fill(d, ax + k, ay + 3 - k, 1, 1 + 2 * k, C_MENUTEXT);
+            }
+            y += row;
+        }
+    }
+    w2k_clip_clear();
+}
 
-    W2kRect g4 = { 10, sd->ontop_box.y - 16, w->w - 20,
-                   (sd->small_box.y + 16 + 8) - (sd->ontop_box.y - 16) };
-    w2k_draw_groupbox(d, &g4, "Taskbar");
-    w2k_draw_checkbox(d, sd->ontop_box.x, sd->ontop_box.y,
-                      "Always on t&op", sd->ontop, 0, 0);
-    w2k_draw_checkbox(d, sd->autohide_box.x, sd->autohide_box.y,
-                      "A&uto hide", sd->autohide, 0, 0);
-    w2k_draw_checkbox(d, sd->clock_box.x, sd->clock_box.y,
-                      "Show cloc&k", sd->showclock, 0, 0);
-    /* Windows 7's two: whether buttons combine to an icon or keep their
-     * titles, and whether the bar is the small one. Both are read by the
-     * Windows 7 Basic theme alone. */
-    w2k_draw_checkbox(d, sd->labels_box.x, sd->labels_box.y,
-                      "&Never combine taskbar buttons (show titles)", sd->labels, 0, 0);
-    w2k_draw_checkbox(d, sd->small_box.x, sd->small_box.y,
-                      "Use s&mall taskbar icons", sd->tsmall, 0, 0);
+static void startdlg_paint(W2kWin *w, Drawable d)
+{
+    StartDlg *sd = w->user;
+    int fh = w2k_font_height(F_UI);
+    w2k_tabs_draw(d, sd->tabs);
+
+    if (sd->tabs->sel == 0) {
+        startdlg_preview(sd, d);
+
+        W2kRect g3 = { sd->style_radio[0].x - 10, sd->style_radio[0].y - 16, sd->preview.w,
+                       (sd->style_radio[1].y + fh + 4 + 8) - (sd->style_radio[0].y - 16) };
+        w2k_draw_groupbox(d, &g3, "Start menu");
+        w2k_draw_radio(d, sd->style_radio[0].x, sd->style_radio[0].y,
+                       "&Start menu (two columns, as Windows XP)", sd->panel, 0, 0);
+        w2k_draw_radio(d, sd->style_radio[1].x, sd->style_radio[1].y,
+                       "&Classic Start menu (Windows 2000)", !sd->panel, 0, 0);
+
+        W2kRect g4 = { sd->ontop_box.x - 10, sd->ontop_box.y - 16, sd->preview.w,
+                       (sd->small_box.y + 16 + 8) - (sd->ontop_box.y - 16) };
+        w2k_draw_groupbox(d, &g4, "Taskbar");
+        w2k_draw_checkbox(d, sd->ontop_box.x, sd->ontop_box.y, "Always on t&op", sd->ontop, 0, 0);
+        w2k_draw_checkbox(d, sd->autohide_box.x, sd->autohide_box.y, "A&uto hide", sd->autohide, 0, 0);
+        w2k_draw_checkbox(d, sd->clock_box.x, sd->clock_box.y, "Show cloc&k", sd->showclock, 0, 0);
+        w2k_draw_checkbox(d, sd->labels_box.x, sd->labels_box.y,
+                          "&Never combine taskbar buttons (Windows 7 look)", sd->labels, 0, 0);
+        w2k_draw_checkbox(d, sd->small_box.x, sd->small_box.y,
+                          "Use s&mall taskbar icons (Windows 7 look)", sd->tsmall, 0, 0);
+    } else {
+        /* The banner beside its settings, as the real page showed it. */
+        W2kRect pv = sd->preview2;
+        w2k_edge(d, pv.x, pv.y, pv.w, pv.h, EDGE_SUNKEN, BF_RECT);
+        w2k_fill(d, pv.x + 2, pv.y + 2, pv.w - 4, pv.h - 4, C_MENU);
+        startdlg_banner(sd, d, pv.x + 4, pv.y + 4, 21, pv.h - 8);
+        w2k_bigicon_draw(d, pv.x + 4 + 21 + 4, pv.y + 6, ICO_PROGRAMS);
+        w2k_text(d, F_UI, pv.x + 4 + 21 + 42, pv.y + 6 + (34 - fh) / 2, "Programs", C_MENUTEXT);
+        w2k_bigicon_draw(d, pv.x + 4 + 21 + 4, pv.y + 6 + 34, ICO_DOCUMENTS);
+        w2k_text(d, F_UI, pv.x + 4 + 21 + 42, pv.y + 6 + 34 + (34 - fh) / 2, "Documents", C_MENUTEXT);
+
+        W2kRect g = { pv.x + pv.w + 8, pv.y, sd->preview.w - pv.w - 8, 3 * (fh + 6) + 22 };
+        w2k_draw_groupbox(d, &g, "Banner text");
+        const char *labels[3];
+        labels[0] = "&Windows 2000 Professional";
+        labels[1] = w2k_distro_name();
+        labels[2] = "C&ustom:";
+        for (int i = 0; i < 3; i++)
+            w2k_draw_radio(d, sd->text_radio[i].x, sd->text_radio[i].y, labels[i],
+                           sd->mode == i, 0, 0);
+        w2k_edit_draw(d, sd->custom);
+
+        W2kRect g2 = { pv.x, sd->rgb[0][0]->r.y - fh - 3 - 18, sd->preview.w, 2 * 26 + 52 + fh };
+        w2k_draw_groupbox(d, &g2, "Banner colour");
+        const char *rows[2] = { "Top:", "Bottom:" };
+        for (int i = 0; i < 2; i++) {
+            w2k_text(d, F_UI, g2.x + 10, sd->rgb[i][0]->r.y + (21 - fh) / 2, rows[i], C_TEXT);
+            for (int k = 0; k < 3; k++) w2k_edit_draw(d, sd->rgb[i][k]);
+            int r = atoi(w2k_edit_text(sd->rgb[i][0]));
+            int gg = atoi(w2k_edit_text(sd->rgb[i][1]));
+            int b = atoi(w2k_edit_text(sd->rgb[i][2]));
+            W2kRect sw = { sd->rgb[i][2]->r.x + 56, sd->rgb[i][0]->r.y, 40, 21 };
+            w2k_fill_rgb(d, sw.x, sw.y, sw.w, sw.h, r & 255, gg & 255, b & 255);
+            w2k_edge(d, sw.x, sw.y, sw.w, sw.h, EDGE_SUNKEN, BF_RECT);
+        }
+        const char *rgb_head[3] = { "Red", "Green", "Blue" };
+        for (int k = 0; k < 3; k++)
+            w2k_text(d, F_UI, sd->rgb[0][k]->r.x + 2, sd->rgb[0][0]->r.y - fh - 3, rgb_head[k], C_TEXT);
+        w2k_draw_checkbox(d, sd->dither_box.x, sd->dither_box.y,
+                          "Classic &dithered gradient", sd->dither, 0, 0);
+
+        W2kRect g3 = { pv.x, sd->icon_radio[0].y - 16, sd->preview.w,
+                       (sd->width_radio[1].y + fh + 4 + 8) - (sd->icon_radio[0].y - 16) };
+        w2k_draw_groupbox(d, &g3, "Start button and menu");
+        const char *icons[3] = { "Windows &flag", "&Tux", "&Distribution logo" };
+        for (int i = 0; i < 3; i++)
+            w2k_draw_radio(d, sd->icon_radio[i].x, sd->icon_radio[i].y, icons[i],
+                           sd->icon == i, 0, 0);
+        w2k_draw_checkbox(d, sd->search_box.x, sd->search_box.y,
+                          "&Search for programs when you type in the Start menu", sd->search, 0, 0);
+        w2k_draw_checkbox(d, sd->smallicons_box.x, sd->smallicons_box.y,
+                          "Show small &icons in Start menu", sd->smallicons, 0, 0);
+        w2k_draw_checkbox(d, sd->personalized_box.x, sd->personalized_box.y,
+                          "Use &Personalized Menus", sd->personalized, 0, 0);
+        w2k_draw_radio(d, sd->width_radio[0].x, sd->width_radio[0].y,
+                       "Windows &2000 columns (wider, as measured)", sd->width, 0, 0);
+        w2k_draw_radio(d, sd->width_radio[1].x, sd->width_radio[1].y,
+                       "Windows &98 columns (narrow)", !sd->width, 0, 0);
+    }
 
     w2k_draw_pushbutton(d, &sd->ok, "OK", BS_DEFAULT | (sd->down == 1 ? BS_PRESSED : 0));
     w2k_draw_pushbutton(d, &sd->cancel, "Cancel", sd->down == 2 ? BS_PRESSED : 0);
@@ -344,67 +432,76 @@ static void startdlg_paint(W2kWin *w, Drawable d)
 static int startdlg_event(W2kWin *w, XEvent *e)
 {
     StartDlg *sd = w->user;
+    int page = sd->tabs->sel;
     switch (e->type) {
     case ButtonPress: {
         int x = e->xbutton.x, y = e->xbutton.y;
-        if (w2k_edit_press(sd->custom, &e->xbutton)) {
-            sd->mode = SB_CUSTOM;
-            sd->dirty = 1;
-            w2k_win_dirty(w);
-            return 1;
-        }
-        for (int i = 0; i < 2; i++)
-            for (int k = 0; k < 3; k++)
-                if (w2k_edit_press(sd->rgb[i][k], &e->xbutton)) {
-                    sd->custom->focused = 0;
-                    for (int a = 0; a < 2; a++)
-                        for (int b = 0; b < 3; b++)
-                            if (a != i || b != k) sd->rgb[a][b]->focused = 0;
-                    sd->dirty = 1;
-                    w2k_win_dirty(w);
-                    return 1;
-                }
-        for (int i = 0; i < 3; i++) {
-            if (w2k_rect_hit(&sd->text_radio[i], x, y)) {
-                sd->mode = i; sd->dirty = 1; w2k_win_dirty(w); return 1;
-            }
-            if (w2k_rect_hit(&sd->icon_radio[i], x, y)) {
-                sd->icon = i; sd->dirty = 1; w2k_win_dirty(w); return 1;
-            }
-        }
-        if (w2k_rect_hit(&sd->dither_box, x, y)) {
-            sd->dither = !sd->dither; sd->dirty = 1; w2k_win_dirty(w); return 1;
-        }
-        for (int i = 0; i < 2; i++)
-            if (w2k_rect_hit(&sd->style_radio[i], x, y)) {
-                sd->panel = (i == 0);
+        if (w2k_tabs_press(sd->tabs, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        if (page == 1) {
+            if (w2k_edit_press(sd->custom, &e->xbutton)) {
+                sd->mode = SB_CUSTOM;
                 sd->dirty = 1;
                 w2k_win_dirty(w);
                 return 1;
             }
-        if (w2k_rect_hit(&sd->search_box, x, y)) {
-            sd->search = !sd->search; sd->dirty = 1; w2k_win_dirty(w); return 1;
-        }
-        if (w2k_rect_hit(&sd->smallicons_box, x, y)) {
-            sd->smallicons = !sd->smallicons; sd->dirty = 1; w2k_win_dirty(w); return 1;
-        }
-        if (w2k_rect_hit(&sd->personalized_box, x, y)) {
-            sd->personalized = !sd->personalized; sd->dirty = 1; w2k_win_dirty(w); return 1;
-        }
-        if (w2k_rect_hit(&sd->ontop_box, x, y)) {
-            sd->ontop = !sd->ontop; sd->dirty = 1; w2k_win_dirty(w); return 1;
-        }
-        if (w2k_rect_hit(&sd->autohide_box, x, y)) {
-            sd->autohide = !sd->autohide; sd->dirty = 1; w2k_win_dirty(w); return 1;
-        }
-        if (w2k_rect_hit(&sd->clock_box, x, y)) {
-            sd->showclock = !sd->showclock; sd->dirty = 1; w2k_win_dirty(w); return 1;
-        }
-        if (w2k_rect_hit(&sd->labels_box, x, y)) {
-            sd->labels = !sd->labels; sd->dirty = 1; w2k_win_dirty(w); return 1;
-        }
-        if (w2k_rect_hit(&sd->small_box, x, y)) {
-            sd->tsmall = !sd->tsmall; sd->dirty = 1; w2k_win_dirty(w); return 1;
+            for (int i = 0; i < 2; i++)
+                for (int k = 0; k < 3; k++)
+                    if (w2k_edit_press(sd->rgb[i][k], &e->xbutton)) {
+                        sd->custom->focused = 0;
+                        for (int a = 0; a < 2; a++)
+                            for (int b = 0; b < 3; b++)
+                                if (a != i || b != k) sd->rgb[a][b]->focused = 0;
+                        sd->dirty = 1;
+                        w2k_win_dirty(w);
+                        return 1;
+                    }
+            for (int i = 0; i < 3; i++) {
+                if (w2k_rect_hit(&sd->text_radio[i], x, y)) {
+                    sd->mode = i; sd->dirty = 1; w2k_win_dirty(w); return 1;
+                }
+                if (w2k_rect_hit(&sd->icon_radio[i], x, y)) {
+                    sd->icon = i; sd->dirty = 1; w2k_win_dirty(w); return 1;
+                }
+            }
+            if (w2k_rect_hit(&sd->dither_box, x, y)) {
+                sd->dither = !sd->dither; sd->dirty = 1; w2k_win_dirty(w); return 1;
+            }
+            if (w2k_rect_hit(&sd->search_box, x, y)) {
+                sd->search = !sd->search; sd->dirty = 1; w2k_win_dirty(w); return 1;
+            }
+            if (w2k_rect_hit(&sd->smallicons_box, x, y)) {
+                sd->smallicons = !sd->smallicons; sd->dirty = 1; w2k_win_dirty(w); return 1;
+            }
+            if (w2k_rect_hit(&sd->personalized_box, x, y)) {
+                sd->personalized = !sd->personalized; sd->dirty = 1; w2k_win_dirty(w); return 1;
+            }
+            for (int i = 0; i < 2; i++)
+                if (w2k_rect_hit(&sd->width_radio[i], x, y)) {
+                    sd->width = (i == 0); sd->dirty = 1; w2k_win_dirty(w); return 1;
+                }
+        } else {
+            for (int i = 0; i < 2; i++)
+                if (w2k_rect_hit(&sd->style_radio[i], x, y)) {
+                    sd->panel = (i == 0);
+                    sd->dirty = 1;
+                    w2k_win_dirty(w);
+                    return 1;
+                }
+            if (w2k_rect_hit(&sd->ontop_box, x, y)) {
+                sd->ontop = !sd->ontop; sd->dirty = 1; w2k_win_dirty(w); return 1;
+            }
+            if (w2k_rect_hit(&sd->autohide_box, x, y)) {
+                sd->autohide = !sd->autohide; sd->dirty = 1; w2k_win_dirty(w); return 1;
+            }
+            if (w2k_rect_hit(&sd->clock_box, x, y)) {
+                sd->showclock = !sd->showclock; sd->dirty = 1; w2k_win_dirty(w); return 1;
+            }
+            if (w2k_rect_hit(&sd->labels_box, x, y)) {
+                sd->labels = !sd->labels; sd->dirty = 1; w2k_win_dirty(w); return 1;
+            }
+            if (w2k_rect_hit(&sd->small_box, x, y)) {
+                sd->tsmall = !sd->tsmall; sd->dirty = 1; w2k_win_dirty(w); return 1;
+            }
         }
         if (w2k_rect_hit(&sd->ok, x, y)) sd->down = 1;
         else if (w2k_rect_hit(&sd->cancel, x, y)) sd->down = 2;
@@ -431,7 +528,7 @@ static int startdlg_event(W2kWin *w, XEvent *e)
         return 1;
     }
     case MotionNotify:
-        if (w2k_edit_motion(sd->custom, &e->xmotion)) { w2k_win_dirty(w); return 1; }
+        if (page == 1 && w2k_edit_motion(sd->custom, &e->xmotion)) { w2k_win_dirty(w); return 1; }
         return 0;
     case KeyPress: {
         KeySym ks = XLookupKeysym(&e->xkey, 0);
@@ -441,20 +538,22 @@ static int startdlg_event(W2kWin *w, XEvent *e)
             w2k_win_close(w, ID_OK);
             return 1;
         }
-        if (sd->custom->focused && w2k_edit_key(sd->custom, &e->xkey)) {
+        if (w2k_tabs_key(sd->tabs, &e->xkey)) { w2k_win_dirty(w); return 1; }
+        if (page == 1 && sd->custom->focused && w2k_edit_key(sd->custom, &e->xkey)) {
             sd->mode = SB_CUSTOM;
             sd->dirty = 1;
             w2k_win_dirty(w);
             return 1;
         }
-        for (int i = 0; i < 2; i++)
-            for (int k = 0; k < 3; k++)
-                if (sd->rgb[i][k]->focused &&
-                    w2k_edit_key(sd->rgb[i][k], &e->xkey)) {
-                    sd->dirty = 1;
-                    w2k_win_dirty(w);
-                    return 1;
-                }
+        if (page == 1)
+            for (int i = 0; i < 2; i++)
+                for (int k = 0; k < 3; k++)
+                    if (sd->rgb[i][k]->focused &&
+                        w2k_edit_key(sd->rgb[i][k], &e->xkey)) {
+                        sd->dirty = 1;
+                        w2k_win_dirty(w);
+                        return 1;
+                    }
         return 1;
     }
     }
@@ -464,7 +563,9 @@ static int startdlg_event(W2kWin *w, XEvent *e)
 void wm_startmenu_dialog(void)
 {
     StartDlg sd = { 0 };
-    int cw = 360, chh = 700;    /* two more rows for the menu style, two for Windows 7's buttons */
+    /* Two pages, as Windows 2000's dialog had: the whole thing fits a
+     * 600-line screen with room to spare. */
+    int cw = 400, chh = 494;
     W2kWin *w = w2k_win_new("Taskbar and Start Menu Properties",
                             "w2kshell", cw, chh, 0);
     int fh = w2k_font_height(F_UI);
@@ -481,49 +582,59 @@ void wm_startmenu_dialog(void)
     sd.smallicons = w2k_start_small_icons;
     sd.panel = w2k_start_panel;
     sd.personalized = w2k_start_personalized;
+    sd.width = w2k_start_width;
     for (int k = 0; k < 3; k++) {
         sd.col[0][k] = w2k_start_banner_top[k];
         sd.col[1][k] = w2k_start_banner_bottom[k];
     }
 
-    sd.preview = (W2kRect){ 10, 10, cw - 20, 96 };
+    sd.tabs = w2k_tabs_new(&sd, NULL);
+    w2k_tabs_add(sd.tabs, "General");
+    w2k_tabs_add(sd.tabs, "Start Menu");
+    sd.tabs->r = (W2kRect){ 7, 7, cw - 14, chh - 7 - 41 };
+    W2kRect c = w2k_tabs_client(sd.tabs);
 
-    int y = sd.preview.y + sd.preview.h + 8 + 16;
+    /* General: the picture, the menu style, the bar. */
+    sd.preview = (W2kRect){ c.x + 10, c.y + 10, c.w - 20, 176 };
+    int y3 = sd.preview.y + sd.preview.h + 10 + 16;
+    for (int i = 0; i < 2; i++)
+        sd.style_radio[i] = (W2kRect){ c.x + 20, y3 + i * (fh + 6), c.w - 60, fh + 4 };
+    int y4 = sd.style_radio[1].y + fh + 4 + 8 + 8 + 16;
+    sd.ontop_box    = (W2kRect){ c.x + 20, y4, c.w - 40, 16 };
+    sd.autohide_box = (W2kRect){ c.x + 20, y4 + fh + 6, c.w - 40, 16 };
+    sd.clock_box    = (W2kRect){ c.x + 20, y4 + 2 * (fh + 6), c.w - 40, 16 };
+    sd.labels_box   = (W2kRect){ c.x + 20, y4 + 3 * (fh + 6), c.w - 40, 16 };
+    sd.small_box    = (W2kRect){ c.x + 20, y4 + 4 * (fh + 6), c.w - 40, 16 };
+
+    /* Start Menu: the banner beside its text, the colours, the button. */
+    sd.preview2 = (W2kRect){ c.x + 10, c.y + 10, 150, 3 * (fh + 6) + 22 };
+    int gx = sd.preview2.x + sd.preview2.w + 8;
+    int y = sd.preview2.y + 16;
     for (int i = 0; i < 3; i++)
-        sd.text_radio[i] = (W2kRect){ 20, y + i * (fh + 6), cw - 60, fh + 4 };
+        sd.text_radio[i] = (W2kRect){ gx + 10, y + i * (fh + 6), c.w - gx - 20, fh + 4 };
     sd.custom = w2k_edit_new(0);
     w2k_edit_bind(sd.custom, w);
-    sd.custom->r = (W2kRect){ 90, y + 2 * (fh + 6) - 3, cw - 110, 21 };
+    sd.custom->r = (W2kRect){ gx + 76, y + 2 * (fh + 6) - 3, c.x + c.w - 20 - (gx + 76), 21 };
     w2k_edit_set(sd.custom, w2k_start_banner_custom);
 
-    int y2 = y + 3 * (fh + 6) + 14 + 16 + fh + 4;   /* + the Red/Green/Blue row */
+    int y2 = sd.preview2.y + sd.preview2.h + 10 + 16 + fh + 4;   /* + the Red/Green/Blue row */
     for (int i = 0; i < 2; i++)
         for (int k = 0; k < 3; k++) {
             sd.rgb[i][k] = w2k_edit_new(0);
             w2k_edit_bind(sd.rgb[i][k], w);
-            sd.rgb[i][k]->r = (W2kRect){ 74 + k * 46, y2 + i * 26, 40, 21 };
+            sd.rgb[i][k]->r = (W2kRect){ c.x + 74 + k * 46, y2 + i * 26, 40, 21 };
         }
     startdlg_sync_edits(&sd);
-    sd.dither_box = (W2kRect){ 20, y2 + 2 * 26 + 6, cw - 40, 16 };
+    sd.dither_box = (W2kRect){ c.x + 20, y2 + 2 * 26 + 6, c.w - 40, 16 };
 
-    int y3 = y2 + 2 * 26 + 34 + 16;
-    for (int i = 0; i < 2; i++)
-        sd.style_radio[i] = (W2kRect){ 20, y3 + i * (fh + 6), cw - 60, fh + 4 };
-    int y3b = y3 + 2 * (fh + 6);
+    int y5 = sd.dither_box.y + 16 + 8 + 8 + 16;
     for (int i = 0; i < 3; i++)
-        sd.icon_radio[i] = (W2kRect){ 20, y3b + i * (fh + 6), cw - 60, fh + 4 };
-    sd.search_box       = (W2kRect){ 20, y3b + 3 * (fh + 6) + 2, cw - 40, 16 };
-    sd.smallicons_box   = (W2kRect){ 20, y3b + 4 * (fh + 6) + 2, cw - 40, 16 };
-    sd.personalized_box = (W2kRect){ 20, y3b + 5 * (fh + 6) + 2, cw - 40, 16 };
-
-    /* Below the Start menu group, whose contents now end at the
-     * personalized-menus row. */
-    int y4 = sd.personalized_box.y + 16 + 8 + 8 + 16;
-    sd.ontop_box    = (W2kRect){ 20, y4, cw - 40, 16 };
-    sd.autohide_box = (W2kRect){ 20, y4 + fh + 6, cw - 40, 16 };
-    sd.clock_box    = (W2kRect){ 20, y4 + 2 * (fh + 6), cw - 40, 16 };
-    sd.labels_box   = (W2kRect){ 20, y4 + 3 * (fh + 6), cw - 40, 16 };
-    sd.small_box    = (W2kRect){ 20, y4 + 4 * (fh + 6), cw - 40, 16 };
+        sd.icon_radio[i] = (W2kRect){ c.x + 20, y5 + i * (fh + 6), c.w - 60, fh + 4 };
+    sd.search_box       = (W2kRect){ c.x + 20, y5 + 3 * (fh + 6) + 2, c.w - 40, 16 };
+    sd.smallicons_box   = (W2kRect){ c.x + 20, y5 + 4 * (fh + 6) + 2, c.w - 40, 16 };
+    sd.personalized_box = (W2kRect){ c.x + 20, y5 + 5 * (fh + 6) + 2, c.w - 40, 16 };
+    sd.width_radio[0] = (W2kRect){ c.x + 20, y5 + 6 * (fh + 6) + 4, c.w - 60, fh + 4 };
+    sd.width_radio[1] = (W2kRect){ c.x + 20, y5 + 7 * (fh + 6) + 4, c.w - 60, fh + 4 };
 
     int by = chh - 12 - 23;
     sd.apply  = (W2kRect){ cw - 12 - 75, by, 75, 23 };
@@ -539,10 +650,14 @@ void wm_startmenu_dialog(void)
     XChangeProperty(w2k.dpy, w->win, w2k.a_net_wm_window_type, XA_ATOM, 32,
                     PropModeReplace, (unsigned char *)&t, 1);
 
+    /* W2K_RENDER_TAB picks the page for the render harness. */
+    if (getenv("W2K_RENDER_TAB")) sd.tabs->sel = atoi(getenv("W2K_RENDER_TAB")) ? 1 : 0;
+
     w2k_add_timer(w2k_caret_blink, blink, sd.custom);
     w2k_win_modal(w);
     w2k_del_timer(blink, sd.custom);
 
+    w2k_tabs_free(sd.tabs);
     w2k_edit_free(sd.custom);
     for (int i = 0; i < 2; i++)
         for (int k = 0; k < 3; k++) w2k_edit_free(sd.rgb[i][k]);
@@ -897,6 +1012,11 @@ static const char *shut_desc[] = {
     "Closes all programs and ends the X session.",
     "Closes all programs and ends the session so it can be\n"
     "started again.",
+    "Maintains your session, keeping the computer running on\n"
+    "low power with data still in memory. To return to full\n"
+    "power, press the power button or open the lid.",
+    "Saves your session to disk and turns the computer off.\n"
+    "When you turn it on again, your session is restored.",
 };
 
 static void shut_paint(W2kWin *w, Drawable d)
@@ -921,7 +1041,11 @@ static void shut_paint(W2kWin *w, Drawable d)
     w2k_text(d, F_UI, bw + 14, 16, "What do you want the computer to do?", C_TEXT);
     w2k_combo_draw(d, s->what);
 
-    const char *p = shut_desc[s->what->sel < 0 ? 0 : s->what->sel];
+    int di = s->what->sel < 0 ? 0 : s->what->sel;
+    if (di >= 3 && di < s->what->n) {
+        di = !strcmp(s->what->items[di], "Hibernate") ? 4 : 3;
+    }
+    const char *p = shut_desc[di];
     for (int i = 0; i < 3 && p; i++) {
         const char *nl = strchr(p, '\n');
         int n = nl ? (int)(nl - p) : (int)strlen(p);
@@ -985,6 +1109,8 @@ void wm_shutdown_dialog(void)
     w2k_combo_add(s.what, "Log off");
     w2k_combo_add(s.what, "Shut down");
     w2k_combo_add(s.what, "Restart");
+    if (w2k_power_can("suspend"))   w2k_combo_add(s.what, "Stand by");
+    if (w2k_power_can("hibernate")) w2k_combo_add(s.what, "Hibernate");
     s.what->sel = 1;
     s.what->r = (W2kRect){ 80, 38, cw - 92, 21 };
 
@@ -1004,10 +1130,17 @@ void wm_shutdown_dialog(void)
 
     int rc = w2k_win_modal(w);
     int what = s.what->sel;
+    char chosen[32] = "";
+    if (what >= 0 && what < s.what->n) snprintf(chosen, sizeof chosen, "%s", s.what->items[what]);
     w2k_combo_free(s.what);
 
-    /* 0 = log off, 1 = shut down, 2 = restart; l2k-session acts on it. */
-    if (rc == ID_OK) wm_logout(what);
+    /* 0 = log off, 1 = shut down, 2 = restart; l2k-session acts on it.
+     * Standing by and hibernating keep the session: the machine is asked
+     * directly, and comes back where it was. */
+    if (rc != ID_OK) return;
+    if (!strcmp(chosen, "Stand by"))       w2k_power_action("suspend");
+    else if (!strcmp(chosen, "Hibernate")) w2k_power_action("hibernate");
+    else wm_logout(what);
 }
 
 void wm_logoff_dialog(void)

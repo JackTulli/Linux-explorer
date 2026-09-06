@@ -90,38 +90,38 @@ if [ "$DO_DEPS" = 1 ]; then
         as_root apt-get update
         apt_install build-essential libx11-dev libxext-dev libxrandr-dev \
             libxcursor-dev libxft-dev libfontconfig1-dev libfreetype-dev zlib1g-dev \
-            libjpeg-dev x11-xserver-utils x11-utils xdg-utils zip unzip tar p7zip-full \
+            libjpeg-dev libwebp-dev libxss-dev x11-xserver-utils x11-utils xdg-utils zip unzip tar p7zip-full \
             pulseaudio-utils alsa-utils xterm python3 git curl fonts-dejavu-core dbus-x11 \
             cabextract qt5ct qt6ct libpam0g-dev xauth libdbus-1-dev libnotify-bin ;;
     *fedora*|*rhel*|*centos*|*rocky*|*alma*)
         # strict=0: a name this release no longer has is skipped, not fatal.
         as_root dnf install -y --setopt=strict=0 gcc make libX11-devel libXext-devel libXrandr-devel \
             libXcursor-devel libXft-devel fontconfig-devel freetype-devel zlib-devel \
-            libjpeg-turbo-devel xrandr xset xsetroot xrdb xmessage xdg-utils zip unzip \
+            libjpeg-turbo-devel libwebp-devel libXScrnSaver-devel xrandr xset xsetroot xrdb xmessage xdg-utils zip unzip \
             tar p7zip p7zip-plugins pulseaudio-utils alsa-utils xterm python3 git curl \
             dejavu-sans-fonts dbus-x11 cabextract qt5ct qt6ct pam-devel xorg-x11-xauth dbus-devel libnotify ;;
     *arch*|*manjaro*|*endeavouros*)
         # -Syu, never -Sy: a refreshed database with an unrefreshed system
         # is the partial upgrade Arch warns about.
         as_root pacman -Syu --needed --noconfirm base-devel libx11 libxext libxrandr \
-            libxcursor libxft fontconfig freetype2 zlib libjpeg-turbo xorg-xrandr \
+            libxcursor libxft fontconfig freetype2 zlib libjpeg-turbo libwebp libxss xorg-xrandr \
             xorg-xset xorg-xsetroot xorg-xrdb xorg-xmessage xdg-utils zip unzip tar \
             p7zip libpulse alsa-utils xterm python git curl ttf-dejavu dbus cabextract qt5ct qt6ct pam xorg-xauth libnotify ;;
     *suse*)
         as_root zypper --non-interactive install gcc make libX11-devel libXext-devel \
             libXrandr-devel libXcursor-devel libXft-devel fontconfig-devel \
-            freetype2-devel zlib-devel libjpeg8-devel xrandr xset xsetroot xrdb xmessage \
+            freetype2-devel zlib-devel libjpeg8-devel libwebp-devel libXss-devel xrandr xset xsetroot xrdb xmessage \
             xdg-utils zip unzip tar p7zip-full pulseaudio-utils alsa-utils xterm python3 git curl \
             dejavu-fonts dbus-1-x11 cabextract qt5ct qt6ct pam-devel xauth dbus-1-devel libnotify-tools ;;
     *alpine*)
         as_root apk add build-base libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
-            libxft-dev fontconfig-dev freetype-dev zlib-dev libjpeg-turbo-dev xrandr \
+            libxft-dev fontconfig-dev freetype-dev zlib-dev libjpeg-turbo-dev libwebp-dev libxscrnsaver-dev xrandr \
             xset xsetroot xrdb xmessage xdg-utils zip unzip tar p7zip pulseaudio-utils \
             xterm python3 git curl font-dejavu dbus-x11 cabextract linux-pam-dev xauth dbus-dev libnotify ;;
     *void*)
         as_root xbps-install -Sy base-devel libX11-devel libXext-devel libXrandr-devel \
             libXcursor-devel libXft-devel fontconfig-devel freetype-devel zlib-devel \
-            libjpeg-turbo-devel xrandr xset xsetroot xrdb xmessage xdg-utils zip unzip \
+            libjpeg-turbo-devel libwebp-devel libXScrnSaver-devel xrandr xset xsetroot xrdb xmessage xdg-utils zip unzip \
             tar p7zip pulseaudio-utils xterm python3 git curl dejavu-fonts-ttf dbus \
             cabextract qt5ct qt6ct pam-devel xauth dbus-devel libnotify ;;
     *)

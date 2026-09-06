@@ -217,6 +217,10 @@ extern int  w2k_start_icon;
 extern int  w2k_start_search;   /* type in the Start menu to search */
 extern int  w2k_start_panel;    /* two-column Start menu (XP style) */
 extern int  w2k_start_small_icons;
+/* The classic Start menu's columns: 1 = Windows 2000's, measured off a
+ * 640x480 capture (banner 22, icon column 42, arrow gutter 20), 0 =
+ * Windows 98's narrower ones (21, 38, 14). */
+extern int  w2k_start_width;
 extern int  w2k_start_personalized;
 
 /* ---- Visual effects ------------------------------------------------- *
@@ -288,6 +292,8 @@ enum { W2K_TABCOMP_DIRS = 1 };
 int  w2k_tabcomp(const char *text, const char *cwd, char *out, int n, int flags);
 
 /* Writing pictures: RGBA in, a file out. 1 on success. */
+/* WebP (libwebp; NULL when the desktop was built without it). */
+unsigned char *w2k_webp_load(const char *path, int *w, int *h);
 int  w2k_png_save(const char *path, const unsigned char *rgba, int w, int h);
 int  w2k_jpeg_save(const char *path, const unsigned char *rgba, int w, int h);
 /* Same as w2k_jpeg_save with explicit quality 1–100 (clamped). */
@@ -370,6 +376,7 @@ extern int w2k_bell_volume;      /* percent */
 extern int w2k_bell_pitch;       /* Hz */
 extern int w2k_bell_duration;    /* ms */
 void w2k_input_apply(void);
+extern int w2k_monitor_off_min, w2k_standby_min, w2k_hibernate_min;
 
 /* ---- Folder Options ------------------------------------------------ *
  * Explorer's View tab, shared so that every window (and the desktop)
@@ -750,6 +757,15 @@ int  w2k_backlight_available(void);
 int  w2k_backlight_get(int *pct);           /* 1 on success */
 int  w2k_backlight_set(int pct);            /* 0 on success */
 int  w2k_is_laptop(void);                   /* a battery or a backlight */
+/* Standing by and hibernating, through systemd-logind ("suspend",
+ * "hibernate"); can() asks whether the machine and the policy allow it. */
+int  w2k_power_can(const char *what);
+void w2k_power_action(const char *what);
+/* The lid and the power button, from logind's configuration: "suspend",
+ * "hibernate", "poweroff", "ignore" (or "lock"); set() writes a drop-in
+ * through pkexec and asks logind to reload. 0 on success. */
+void w2k_power_lid_get(char *lid, int nl, char *button, int nb);
+int  w2k_power_lid_set(const char *lid, const char *button);
 const char *w2k_sound_pack_label(const char *id);
 int         w2k_sound_pack_dir(const char *pack, char *out, int n);
 int         w2k_sound_pack_files(const char *pack, char (*out)[128], int max);

@@ -638,7 +638,8 @@ static int is_picture(const char *name)
     const char *dot = strrchr(name, '.');
     if (!dot) return 0;
     return !strcasecmp(dot, ".bmp") || !strcasecmp(dot, ".png") ||
-           !strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".jpeg");
+           !strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".jpeg") ||
+           !strcasecmp(dot, ".webp");
 }
 
 /* The picture itself, scaled into the little monitor the way the desktop

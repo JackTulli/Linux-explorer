@@ -136,7 +136,17 @@ static int item_h(W2kMenu *m, Item *it)
     return menu_big(m) ? BIG_ITEM_H : ITEM_H;
 }
 
-static int icon_col(W2kMenu *m) { return menu_big(m) ? BIG_ICON_COL : ICON_COL; }
+/* Windows 2000 set its Start menu out wider than Windows 98: a 22-pixel
+ * banner, the text 42 in from the item's edge, and 20 for the arrow
+ * gutter (measured off a 640x480 capture); the desktop offers both. */
+static int wide(W2kMenu *m) { return m->banner && w2k_start_width; }
+static int icon_col(W2kMenu *m)
+{
+    if (!menu_big(m)) return ICON_COL;
+    return wide(m) ? 42 : BIG_ICON_COL;
+}
+static int banner_w(W2kMenu *m) { return m->banner ? (w2k_start_width ? 22 : BANNER_W) : 0; }
+static int arrow_col(W2kMenu *m) { return menu_big(m) && wide(m) ? 20 : ARROW_COL; }
 
 static void menu_layout(W2kMenu *m)
 {
@@ -151,7 +161,7 @@ static void menu_layout(W2kMenu *m)
             if (aw > accelw) accelw = aw;
         }
     }
-    int cw = icon_col(m) + textw + ARROW_COL;
+    int cw = icon_col(m) + textw + arrow_col(m);
     if (accelw) cw += ACCEL_GAP + accelw;
     if (cw < 100) cw = 100;
     m->col_w = cw;
@@ -165,7 +175,7 @@ static void menu_layout(W2kMenu *m)
      * off the bottom of the one it is on. */
     int max_h = menu_max_h ? menu_max_h : w2k.sh;
     max_h -= 2 * MENU_BORDER + 8;
-    int left = m->banner ? BANNER_W : 0;
+    int left = banner_w(m);
     int col = 0, y = 0, tallest = 0;
     for (int i = 0; i < m->n; i++) {
         int h = item_h(m, &m->items[i]);
@@ -182,7 +192,7 @@ static void menu_layout(W2kMenu *m)
 static void menu_size(W2kMenu *m, int *w, int *h)
 {
     menu_layout(m);
-    *w = (m->banner ? BANNER_W : 0) + m->cols * m->col_w + 2 * MENU_BORDER;
+    *w = banner_w(m) + m->cols * m->col_w + 2 * MENU_BORDER;
     *h = m->body_h + 2 * MENU_BORDER;
 }
 
@@ -357,7 +367,7 @@ static void menu_paint(W2kMenu *m, Window win, int w, int h, int sel)
          * settings; see w2k_menu_banner_fill(). */
         int bx = MENU_BORDER, by = MENU_BORDER;
         int bh = h - 2 * MENU_BORDER;
-        w2k_menu_banner_fill(pm, bx, by, BANNER_W, bh);
+        w2k_menu_banner_fill(pm, bx, by, banner_w(m), bh);
         w2k_text_vertical(pm, F_UI_BOLD, bx + 4, by + bh - 6, m->banner,
                           C_WHITE);
     }

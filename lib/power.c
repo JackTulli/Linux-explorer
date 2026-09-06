@@ -225,6 +225,113 @@ int w2k_backlight_set(int pct)
     return -1;
 }
 
+/* logind answers CanSuspend / CanHibernate with "yes", "no", "na" or
+ * "challenge"; without busctl the kernel's own list of sleep states
+ * (/sys/power/state: "mem" to stand by, "disk" to hibernate) decides. */
+int w2k_power_can(const char *what)
+{
+    int hib = !strcmp(what, "hibernate");
+    if (!hib && strcmp(what, "suspend")) return 0;
+    if (have_program("busctl")) {
+        char cmd[200], buf[64] = "";
+        snprintf(cmd, sizeof cmd,
+                 "busctl --system call org.freedesktop.login1 /org/freedesktop/login1 "
+                 "org.freedesktop.login1.Manager %s 2>/dev/null",
+                 hib ? "CanHibernate" : "CanSuspend");
+        FILE *p = popen(cmd, "r");
+        if (p) {
+            if (!fgets(buf, sizeof buf, p)) buf[0] = 0;
+            pclose(p);
+            if (buf[0]) return strstr(buf, "\"yes\"") != NULL || strstr(buf, "\"challenge\"") != NULL;
+        }
+    }
+    char st[128] = "";
+    if (!read_line("/sys/power/state", st, sizeof st)) return 0;
+    return strstr(st, hib ? "disk" : "mem") != NULL;
+}
+
+void w2k_power_action(const char *what)
+{
+    if (strcmp(what, "suspend") && strcmp(what, "hibernate") && strcmp(what, "hybrid-sleep")) return;
+    char cmd[200];
+    /* A moment for the screen to settle, then logind; loginctl for the
+     * odd machine where systemctl is not on the path. */
+    snprintf(cmd, sizeof cmd, "(sleep 0.3; systemctl %s || loginctl %s) >/dev/null 2>&1 &", what, what);
+    if (system(cmd) != 0) { /* logind will say why in the journal */ }
+}
+
+/* logind's effective HandleLidSwitch / HandlePowerKey: the main file,
+ * then the drop-ins in order, last one wins. */
+static void logind_key(const char *key, char *out, int n, const char *dflt)
+{
+    snprintf(out, (size_t)n, "%s", dflt);
+    const char *files[] = { "/etc/systemd/logind.conf", NULL };
+    char paths[64][256];
+    int np = 0;
+    for (int i = 0; files[i] && np < 64; i++) snprintf(paths[np++], 256, "%s", files[i]);
+    DIR *d = opendir("/etc/systemd/logind.conf.d");
+    if (d) {
+        char names[64][200];
+        int nn = 0;
+        struct dirent *de;
+        while ((de = readdir(d)) && nn < 64) {
+            size_t l = strlen(de->d_name);
+            if (l > 5 && !strcmp(de->d_name + l - 5, ".conf")) snprintf(names[nn++], 200, "%s", de->d_name);
+        }
+        closedir(d);
+        for (int i = 1; i < nn; i++) {          /* lexical order, as logind reads them */
+            char t[200];
+            snprintf(t, sizeof t, "%s", names[i]);
+            int j = i - 1;
+            while (j >= 0 && strcmp(names[j], t) > 0) { snprintf(names[j + 1], 200, "%s", names[j]); j--; }
+            snprintf(names[j + 1], 200, "%s", t);
+        }
+        for (int i = 0; i < nn && np < 64; i++)
+            snprintf(paths[np++], 256, "/etc/systemd/logind.conf.d/%s", names[i]);
+    }
+    size_t kl = strlen(key);
+    for (int i = 0; i < np; i++) {
+        FILE *f = fopen(paths[i], "r");
+        if (!f) continue;
+        char line[256];
+        while (fgets(line, sizeof line, f)) {
+            char *p = line;
+            while (*p == ' ' || *p == '\t') p++;
+            if (strncmp(p, key, kl) || p[kl] != '=') continue;
+            p += kl + 1;
+            p[strcspn(p, "\r\n #")] = 0;
+            if (*p) snprintf(out, (size_t)n, "%s", p);
+        }
+        fclose(f);
+    }
+}
+
+void w2k_power_lid_get(char *lid, int nl, char *button, int nb)
+{
+    logind_key("HandleLidSwitch", lid, nl, "suspend");
+    logind_key("HandlePowerKey", button, nb, "poweroff");
+}
+
+static int valid_action(const char *a)
+{
+    return !strcmp(a, "ignore") || !strcmp(a, "suspend") || !strcmp(a, "hibernate") ||
+           !strcmp(a, "poweroff") || !strcmp(a, "lock") || !strcmp(a, "hybrid-sleep");
+}
+
+int w2k_power_lid_set(const char *lid, const char *button)
+{
+    if (!valid_action(lid) || !valid_action(button) || !have_program("pkexec")) return -1;
+    /* The words are from the list above, so the command is fixed text. */
+    char cmd[700];
+    snprintf(cmd, sizeof cmd,
+             "pkexec sh -c 'mkdir -p /etc/systemd/logind.conf.d && "
+             "printf \"[Login]\\nHandleLidSwitch=%s\\nHandleLidSwitchExternalPower=%s\\n"
+             "HandlePowerKey=%s\\n\" > /etc/systemd/logind.conf.d/50-linux2000.conf && "
+             "(systemctl kill -s HUP systemd-logind 2>/dev/null; true)' >/dev/null 2>&1",
+             lid, lid, button);
+    return system(cmd) == 0 ? 0 : -1;
+}
+
 int w2k_is_laptop(void)
 {
     W2kPower p;

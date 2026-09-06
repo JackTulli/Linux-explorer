@@ -121,7 +121,7 @@ const char *w2k_assoc_class_for(const char *path)
     const char *dot = strrchr(path, '.');
     if (!dot) return "other";
     static const struct { const char *ext, *cls; } map[] = {
-        { ".png","image" }, { ".jpg","image" }, { ".jpeg","image" },
+        { ".png","image" }, { ".jpg","image" }, { ".jpeg","image" }, { ".webp","image" },
         { ".jpe","image" }, { ".bmp","image" }, { ".dib","image" },
         { ".gif","image" }, { ".webp","image" }, { ".tif","image" },
         { ".tiff","image" }, { ".ico","image" }, { ".xpm","image" },

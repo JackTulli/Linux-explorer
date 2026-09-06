@@ -10,8 +10,8 @@
 #include "w2kui.h"
 
 #define IMAGE_FILTERS \
-    "All Picture Files|*.bmp;*.png;*.jpg;*.jpeg;*.gif;*.ico;*.xpm|" \
-    "Bitmap Image (*.bmp)|*.bmp|PNG Image (*.png)|*.png|" \
+    "All Picture Files|*.bmp;*.png;*.jpg;*.jpeg;*.webp;*.gif;*.ico;*.xpm|" \
+    "Bitmap Image (*.bmp)|*.bmp|PNG Image (*.png)|*.png|WebP Image (*.webp)|*.webp|" \
     "JPEG Image (*.jpg)|*.jpg;*.jpeg|All Files (*.*)|*"
 #include <dirent.h>
 #include <stdio.h>
@@ -20,8 +20,8 @@
 #include <strings.h>
 
 enum {
-    ID_OPEN = 1, ID_CLOSE, ID_PREV, ID_NEXT, ID_FIT, ID_ACTUAL,
-    ID_ZOOMIN, ID_ZOOMOUT, ID_ABOUT
+    ID_OPEN = 1, ID_CLOSE, ID_PREV, ID_NEXT, ID_FIRST, ID_LAST, ID_FIT, ID_ACTUAL,
+    ID_ZOOMIN, ID_ZOOMOUT, ID_Z25, ID_Z50, ID_Z100, ID_Z200, ID_Z400, ID_ABOUT
 };
 
 #define STATUS_H  20
@@ -39,6 +39,8 @@ static struct {
     int         sw, sh;              /* its size                        */
     int         fit;                 /* scale to the window             */
     double      zoom;                /* when not fitting                */
+    int         pan_x, pan_y;        /* view offset into a big picture  */
+    int         drag, drag_x, drag_y;
 
     char        dir[1024];           /* folder, for stepping through    */
     char      **siblings;
@@ -234,11 +236,12 @@ static void load(const char *path, int rescan)
         char msg[1200];
         snprintf(msg, sizeof msg,
                  "%s\n\nThis file is not a picture Imaging can open.\n"
-                 "PNG, JPEG and BMP are supported.", name);
+                 "PNG, JPEG, BMP and WebP are supported.", name);
         w2k_msgbox(im.win, "Imaging", msg, MB_OK | MB_ICONERROR);
     }
     if (rescan) scan_siblings();
     im.zoom = 1.0;
+    im.pan_x = im.pan_y = 0;
     set_status();
     if (im.win) w2k_win_dirty(im.win);
 }
@@ -270,9 +273,20 @@ static void paint(W2kWin *w, Drawable d)
             int x = vx + (vw - im.sw) / 2;
             int y = vy + (vh - im.sh) / 2;
             int sx = 0, sy = 0, cw = im.sw, ch = im.sh;
-            /* Bigger than the view: show the middle of it. */
-            if (cw > vw) { sx = (cw - vw) / 2; cw = vw; x = vx; }
-            if (ch > vh) { sy = (ch - vh) / 2; ch = vh; y = vy; }
+            /* Bigger than the view: the middle of it, panned by the
+             * mouse; the pan is clamped so the picture never leaves. */
+            if (cw > vw) {
+                int maxp = (cw - vw) / 2;
+                if (im.pan_x > maxp) im.pan_x = maxp;
+                if (im.pan_x < -maxp) im.pan_x = -maxp;
+                sx = maxp + im.pan_x; cw = vw; x = vx;
+            } else im.pan_x = 0;
+            if (ch > vh) {
+                int maxp = (ch - vh) / 2;
+                if (im.pan_y > maxp) im.pan_y = maxp;
+                if (im.pan_y < -maxp) im.pan_y = -maxp;
+                sy = maxp + im.pan_y; ch = vh; y = vy;
+            } else im.pan_y = 0;
             XCopyArea(w2k.dpy, im.scaled, d, w2k.gc, sx, sy, (unsigned)cw, (unsigned)ch, x, y);
         }
     } else {
@@ -298,6 +312,10 @@ static W2kMenu *build_file(void *u)
     if (im.nsib < 2) w2k_menu_disable(m);
     w2k_menu_item(m, ID_NEXT, "&Next Picture", "Right", ICO_FORWARD);
     if (im.nsib < 2) w2k_menu_disable(m);
+    w2k_menu_item(m, ID_FIRST, "F&irst Picture", "Home", ICO_NONE);
+    if (im.nsib < 2) w2k_menu_disable(m);
+    w2k_menu_item(m, ID_LAST, "&Last Picture", "End", ICO_NONE);
+    if (im.nsib < 2) w2k_menu_disable(m);
     w2k_menu_sep(m);
     w2k_menu_item(m, ID_CLOSE, "E&xit", NULL, ICO_NONE);
     return m;
@@ -314,6 +332,14 @@ static W2kMenu *build_view(void *u)
     w2k_menu_sep(m);
     w2k_menu_item(m, ID_ZOOMIN, "Zoom &In", "+", ICO_NONE);
     w2k_menu_item(m, ID_ZOOMOUT, "Zoom &Out", "-", ICO_NONE);
+    w2k_menu_sep(m);
+    static const struct { int id; const char *label; double z; } zooms[] = {
+        { ID_Z25, "&25%", 0.25 }, { ID_Z50, "&50%", 0.5 }, { ID_Z100, "&100%", 1.0 },
+        { ID_Z200, "20&0%", 2.0 }, { ID_Z400, "&400%", 4.0 } };
+    for (int i = 0; i < 5; i++) {
+        w2k_menu_item(m, zooms[i].id, zooms[i].label, NULL, ICO_NONE);
+        w2k_menu_radio(m, !im.fit && im.zoom > zooms[i].z * 0.99 && im.zoom < zooms[i].z * 1.01);
+    }
     return m;
 }
 
@@ -341,6 +367,15 @@ static void command(void *u, int id)
     case ID_CLOSE: w2k_win_close(im.win, 0); break;
     case ID_PREV:  step(-1); break;
     case ID_NEXT:  step(1); break;
+    case ID_FIRST: if (im.nsib) { im.sib_at = 0; load(im.siblings[0], 0); } break;
+    case ID_LAST:  if (im.nsib) { im.sib_at = im.nsib - 1; load(im.siblings[im.sib_at], 0); } break;
+    case ID_Z25: case ID_Z50: case ID_Z100: case ID_Z200: case ID_Z400:
+        im.fit = 0;
+        im.zoom = id == ID_Z25 ? 0.25 : id == ID_Z50 ? 0.5 : id == ID_Z100 ? 1.0
+               : id == ID_Z200 ? 2.0 : 4.0;
+        im.pan_x = im.pan_y = 0;
+        drop_scaled();
+        break;
     case ID_FIT:   im.fit = 1; drop_scaled(); break;
     case ID_ACTUAL: im.fit = 0; im.zoom = 1.0; drop_scaled(); break;
     case ID_ZOOMIN:
@@ -358,7 +393,9 @@ static void command(void *u, int id)
     case ID_ABOUT:
         w2k_msgbox(im.win, "About Imaging",
                    "Imaging\nLinux 2000\nA Windows 2000-style desktop for X11\n\n"
-                   "Opens PNG, JPEG and BMP pictures.\n\nLinux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
+                   "Opens PNG, JPEG, BMP and WebP pictures.\n"
+                   "Left and Right step through the folder; the wheel zooms;\n"
+                   "drag to pan a picture larger than the window.\n\nLinux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
                    MB_OK | MB_ICONINFO);
         break;
     }
@@ -371,6 +408,28 @@ static int event(W2kWin *w, XEvent *e)
     switch (e->type) {
     case ButtonPress:
         if (w2k_menubar_press(im.mb, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        /* The wheel zooms; a drag pans a picture larger than the view. */
+        if (e->xbutton.button == Button4) { command(NULL, ID_ZOOMIN); return 1; }
+        if (e->xbutton.button == Button5) { command(NULL, ID_ZOOMOUT); return 1; }
+        if (e->xbutton.button == Button1 && im.rgba) {
+            im.drag = 1;
+            im.drag_x = e->xbutton.x;
+            im.drag_y = e->xbutton.y;
+        }
+        return 1;
+    case MotionNotify:
+        if (im.drag) {
+            /* Pan in screen pixels: the picture moves with the pointer. */
+            im.pan_x -= w2k_px(e->xmotion.x - im.drag_x);
+            im.pan_y -= w2k_px(e->xmotion.y - im.drag_y);
+            im.drag_x = e->xmotion.x;
+            im.drag_y = e->xmotion.y;
+            w2k_win_dirty(w);
+            return 1;
+        }
+        return 0;
+    case ButtonRelease:
+        im.drag = 0;
         return 1;
     case KeyPress: {
         KeySym ks = XLookupKeysym(&e->xkey, 0);
@@ -378,8 +437,11 @@ static int event(W2kWin *w, XEvent *e)
         if (ctrl && (ks == XK_o || ks == XK_O)) { command(NULL, ID_OPEN); return 1; }
         switch (ks) {
         case XK_Escape:    w2k_win_close(w, 0); return 1;
-        case XK_Left:  case XK_Prior:  command(NULL, ID_PREV); return 1;
-        case XK_Right: case XK_Next:   command(NULL, ID_NEXT); return 1;
+        case XK_Left:  case XK_Prior: case XK_BackSpace: command(NULL, ID_PREV); return 1;
+        case XK_Right: case XK_Next:  case XK_space:     command(NULL, ID_NEXT); return 1;
+        case XK_Home:  command(NULL, ID_FIRST); return 1;
+        case XK_End:   command(NULL, ID_LAST); return 1;
+        case XK_0: case XK_KP_0: if (ctrl) { command(NULL, ID_ACTUAL); return 1; } break;
         case XK_plus:  case XK_equal:  case XK_KP_Add:
             command(NULL, ID_ZOOMIN); return 1;
         case XK_minus: case XK_KP_Subtract:

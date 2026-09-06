@@ -102,8 +102,45 @@ unsigned char *w2k_image_load(const char *path, int *w, int *h)
     if (n >= 8 && !memcmp(magic, png_sig, 8))       return w2k_png_load(path, w, h);
     if (magic[0] == 0xff && magic[1] == 0xd8)       return w2k_jpeg_load(path, w, h);
     if (magic[0] == 'B' && magic[1] == 'M')         return w2k_bmp_load(path, w, h);
+    if (!memcmp(magic, "RIFF", 4))                  return w2k_webp_load(path, w, h);
     return NULL;
 }
+
+/* WebP, through libwebp when the desktop was built with it. */
+#ifdef HAVE_WEBP
+#include <webp/decode.h>
+unsigned char *w2k_webp_load(const char *path, int *w, int *h)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (n <= 12 || n > 256L * 1024 * 1024) { fclose(f); return NULL; }
+    unsigned char *data = malloc((size_t)n);
+    if (!data || fread(data, 1, (size_t)n, f) != (size_t)n) { free(data); fclose(f); return NULL; }
+    fclose(f);
+    int iw = 0, ih = 0;
+    if (!WebPGetInfo(data, (size_t)n, &iw, &ih) || iw <= 0 || ih <= 0 ||
+        (long)iw * ih > 64L * 1024 * 1024) { free(data); return NULL; }
+    uint8_t *px = WebPDecodeRGBA(data, (size_t)n, &iw, &ih);
+    free(data);
+    if (!px) return NULL;
+    /* Into our own allocation: libwebp's is freed with WebPFree. */
+    unsigned char *out = malloc((size_t)iw * ih * 4);
+    if (out) memcpy(out, px, (size_t)iw * ih * 4);
+    WebPFree(px);
+    if (!out) return NULL;
+    *w = iw; *h = ih;
+    return out;
+}
+#else
+unsigned char *w2k_webp_load(const char *path, int *w, int *h)
+{
+    (void)path; (void)w; (void)h;
+    return NULL;
+}
+#endif
 
 /* Does this look like something l2kimage can open? Used for associations
  * and for stepping through a folder. */
@@ -112,7 +149,7 @@ int w2k_image_is_image(const char *path)
     const char *dot = strrchr(path, '.');
     if (!dot) return 0;
     static const char *ext[] = { ".png", ".jpg", ".jpeg", ".jpe", ".bmp",
-                                 ".dib", NULL };
+                                 ".dib", ".webp", NULL };
     for (int i = 0; ext[i]; i++)
         if (!strcasecmp(dot, ext[i])) return 1;
     return 0;

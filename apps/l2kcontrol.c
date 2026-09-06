@@ -53,7 +53,7 @@ static const Applet applets[] = {
     { "Network and Dial-up Connections", "Connects to other computers, networks, and the Internet.",
       ICO_CP_NETWORK, "l2knetwork" },
     { "Power Options", "Configures energy-saving settings for your computer.",
-      ICO_CP_POWER, NULL },                /* laptops only: see main() */
+      ICO_CP_POWER, NULL },
     { "Sounds and Multimedia", "Assigns sounds to events and configures sound devices.",
       ICO_CP_SOUNDS, NULL },
     { "System", "Provides system information and changes environment settings.",
@@ -1725,7 +1725,49 @@ typedef struct {
     W2kPower   pw;
     int        have_backlight, cur_bright, want_bright;
     int        down, dirty;
+    /* Power Schemes: minutes of idleness; Advanced: the lid and the
+     * power button, from logind. */
+    W2kCombo  *mon_off, *standby, *hibern, *lid, *pbtn;
+    char       lid_was[32], pbtn_was[32];
+    int        can_suspend, can_hibernate;
 } PowerDlg;
+
+/* The times on offer, in minutes; 0 is Never. */
+static const int pw_minutes[] = { 0, 1, 2, 3, 5, 10, 15, 20, 25, 30, 45, 60, 120, 180 };
+#define N_PW_MINUTES ((int)(sizeof pw_minutes / sizeof *pw_minutes))
+static const char *const pw_actions[] = { "ignore", "suspend", "hibernate", "poweroff" };
+static const char *const pw_action_labels[] = { "Do nothing", "Stand by", "Hibernate", "Shut down" };
+
+static void pw_fill_minutes(W2kCombo *c, int minutes)
+{
+    for (int i = 0; i < N_PW_MINUTES; i++) {
+        char t[32];
+        int m = pw_minutes[i];
+        if (m == 0)           snprintf(t, sizeof t, "Never");
+        else if (m < 60)      snprintf(t, sizeof t, "After %d min%s", m, m == 1 ? "" : "s");
+        else                  snprintf(t, sizeof t, "After %d hour%s", m / 60, m == 60 ? "" : "s");
+        w2k_combo_add(c, t);
+        if (m == minutes) c->sel = i;
+    }
+    if (c->sel < 0) c->sel = 0;
+}
+
+static void pw_fill_actions(W2kCombo *c, const char *current)
+{
+    for (int i = 0; i < 4; i++) {
+        w2k_combo_add(c, pw_action_labels[i]);
+        if (!strcmp(pw_actions[i], current)) c->sel = i;
+    }
+    if (c->sel < 0) c->sel = !strcmp(current, "lock") ? 1 : 0;
+}
+
+static void pw_on_change(void *u, int i)
+{
+    PowerDlg *pd = u;
+    (void)i;
+    pd->dirty = 1;
+    w2k_win_dirty(pd->win);
+}
 
 static void pw_refresh(PowerDlg *pd)
 {
@@ -1754,15 +1796,46 @@ static void pw_on_bright(void *u, int pos)
 static void pw_commit(PowerDlg *pd)
 {
     if (!pd->dirty) return;
-    if (w2k_backlight_set(pd->want_bright) == 0) {
-        pd->cur_bright = pd->want_bright;
-        pd->dirty = 0;
-    } else {
-        w2k_msgbox(pd->win, "Power Options",
-                   "The brightness could not be changed. Install brightnessctl, or\n"
-                   "give your user write access to /sys/class/backlight.",
-                   MB_OK | MB_ICONERROR);
+    int ok = 1;
+    /* The scheme's minutes: saved and broadcast, the shell applies them. */
+    int mo = pw_minutes[pd->mon_off->sel < 0 ? 0 : pd->mon_off->sel];
+    int sb = pw_minutes[pd->standby->sel < 0 ? 0 : pd->standby->sel];
+    int hb = pw_minutes[pd->hibern->sel < 0 ? 0 : pd->hibern->sel];
+    if (mo != w2k_monitor_off_min || sb != w2k_standby_min || hb != w2k_hibernate_min) {
+        w2k_monitor_off_min = mo;
+        w2k_standby_min = sb;
+        w2k_hibernate_min = hb;
+        w2k_input_apply();
+        w2k_scheme_save(NULL);
+        w2k_scheme_broadcast();
     }
+    /* The lid and the button belong to logind: one administrator prompt
+     * writes both. */
+    const char *lid = pw_actions[pd->lid->sel < 0 ? 0 : pd->lid->sel];
+    const char *btn = pw_actions[pd->pbtn->sel < 0 ? 0 : pd->pbtn->sel];
+    if (strcmp(lid, pd->lid_was) || strcmp(btn, pd->pbtn_was)) {
+        if (w2k_power_lid_set(lid, btn) == 0) {
+            snprintf(pd->lid_was, sizeof pd->lid_was, "%s", lid);
+            snprintf(pd->pbtn_was, sizeof pd->pbtn_was, "%s", btn);
+        } else {
+            ok = 0;
+            w2k_msgbox(pd->win, "Power Options",
+                       "The lid and power button settings could not be written.\n"
+                       "They live in /etc/systemd/logind.conf.d and need an\n"
+                       "administrator (pkexec).", MB_OK | MB_ICONERROR);
+        }
+    }
+    if (pd->want_bright != pd->cur_bright) {
+        if (w2k_backlight_set(pd->want_bright) == 0) pd->cur_bright = pd->want_bright;
+        else {
+            ok = 0;
+            w2k_msgbox(pd->win, "Power Options",
+                       "The brightness could not be changed. Install brightnessctl, or\n"
+                       "give your user write access to /sys/class/backlight.",
+                       MB_OK | MB_ICONERROR);
+        }
+    }
+    if (ok) pd->dirty = 0;
 }
 
 /* The meter's big battery: a case standing up, filled from the bottom
@@ -1795,6 +1868,42 @@ static void pw_paint(W2kWin *w, Drawable d)
     W2kRect c = w2k_tabs_client(pd->tabs);
 
     if (pd->tabs->sel == 0) {
+        /* Power Schemes: the Windows 2000 page's settings, one column. */
+        w2k_icon_draw(d, c.x + 12, c.y + 14, ICO_CP_POWER);
+        w2k_text(d, F_UI, c.x + 36, c.y + 12, "Select the power settings that suit the way you use", C_TEXT);
+        w2k_text(d, F_UI, c.x + 36, c.y + 12 + fh, "this computer. Each is measured from the last key or", C_TEXT);
+        w2k_text(d, F_UI, c.x + 36, c.y + 12 + 2 * fh, "mouse movement.", C_TEXT);
+        W2kRect g = { c.x + 9, c.y + 66, c.w - 18, 128 };
+        w2k_draw_groupbox(d, &g, "Settings for the power scheme");
+        w2k_text_mnemonic(d, F_UI, g.x + 10, pd->mon_off->r.y + (21 - fh) / 2, "Turn off &monitor:", C_TEXT, 1);
+        w2k_combo_draw(d, pd->mon_off);
+        w2k_text_mnemonic(d, F_UI, g.x + 10, pd->standby->r.y + (21 - fh) / 2, "System &stand by:", C_TEXT, 1);
+        w2k_combo_draw(d, pd->standby);
+        w2k_text_mnemonic(d, F_UI, g.x + 10, pd->hibern->r.y + (21 - fh) / 2, "System &hibernates:", C_TEXT, 1);
+        w2k_combo_draw(d, pd->hibern);
+        int y = g.y + g.h + 10;
+        if (!pd->can_suspend || !pd->can_hibernate) {
+            w2k_text(d, F_UI, c.x + 9, y, !pd->can_suspend
+                     ? "This computer cannot stand by (systemd-logind says no)."
+                     : "This computer cannot hibernate (no swap, or logind says no).", C_GRAYTEXT);
+            y += fh + 2;
+        }
+        w2k_text(d, F_UI, c.x + 9, y, "The monitor is turned off by DPMS; standing by and hibernating", C_GRAYTEXT); y += fh;
+        w2k_text(d, F_UI, c.x + 9, y, "go through systemd-logind. Programs playing video may keep the", C_GRAYTEXT); y += fh;
+        w2k_text(d, F_UI, c.x + 9, y, "computer awake by inhibiting them.", C_GRAYTEXT);
+    } else if (pd->tabs->sel == 1) {
+        /* Advanced: what the lid and the power button do. */
+        W2kRect g = { c.x + 9, c.y + 10, c.w - 18, 112 };
+        w2k_draw_groupbox(d, &g, "Power buttons");
+        w2k_text_mnemonic(d, F_UI, g.x + 10, g.y + 20, "When I close the &lid of my portable computer:", C_TEXT, 1);
+        w2k_combo_draw(d, pd->lid);
+        w2k_text_mnemonic(d, F_UI, g.x + 10, pd->pbtn->r.y - fh - 4, "When I press the &power button on my computer:", C_TEXT, 1);
+        w2k_combo_draw(d, pd->pbtn);
+        int y = g.y + g.h + 12;
+        w2k_text(d, F_UI, c.x + 9, y, "These are systemd-logind's HandleLidSwitch and HandlePowerKey;", C_GRAYTEXT); y += fh;
+        w2k_text(d, F_UI, c.x + 9, y, "changing them asks for an administrator's password and writes", C_GRAYTEXT); y += fh;
+        w2k_text(d, F_UI, c.x + 9, y, "/etc/systemd/logind.conf.d/50-linux2000.conf.", C_GRAYTEXT);
+    } else if (pd->tabs->sel == 2) {
         W2kRect g = { c.x + 9, c.y + 10, c.w - 18, 74 };
         w2k_draw_groupbox(d, &g, "Power status");
         w2k_bigicon_draw(d, g.x + 12, g.y + 22, ICO_CP_POWER);
@@ -1865,8 +1974,13 @@ static int pw_event(W2kWin *w, XEvent *e)
     case ButtonPress: {
         int x = e->xbutton.x, y = e->xbutton.y;
         if (w2k_tabs_press(pd->tabs, &e->xbutton)) { w2k_win_dirty(w); return 1; }
-        if (pd->tabs->sel == 1 && pd->have_backlight &&
+        if (pd->tabs->sel == 3 && pd->have_backlight &&
             w2k_slider_press(&pd->bright, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        if (pd->tabs->sel == 0 && (w2k_combo_press(pd->mon_off, &e->xbutton) ||
+                                   w2k_combo_press(pd->standby, &e->xbutton) ||
+                                   w2k_combo_press(pd->hibern, &e->xbutton))) { w2k_win_dirty(w); return 1; }
+        if (pd->tabs->sel == 1 && (w2k_combo_press(pd->lid, &e->xbutton) ||
+                                   w2k_combo_press(pd->pbtn, &e->xbutton))) { w2k_win_dirty(w); return 1; }
         if (w2k_rect_hit(&pd->ok, x, y)) pd->down = 1;
         else if (w2k_rect_hit(&pd->cancel, x, y)) pd->down = 2;
         else if (w2k_rect_hit(&pd->apply, x, y) && pd->dirty) pd->down = 3;
@@ -1884,7 +1998,7 @@ static int pw_event(W2kWin *w, XEvent *e)
         return 1;
     }
     case MotionNotify:
-        if (pd->tabs->sel == 1 && pd->have_backlight &&
+        if (pd->tabs->sel == 3 && pd->have_backlight &&
             w2k_slider_motion(&pd->bright, &e->xmotion)) { w2k_win_dirty(w); return 1; }
         return 0;
     case KeyPress: {
@@ -1892,7 +2006,7 @@ static int pw_event(W2kWin *w, XEvent *e)
         if (ks == XK_Escape) { w2k_win_close(w, ID_CANCEL); return 1; }
         if (ks == XK_Return || ks == XK_KP_Enter) { pw_commit(pd); w2k_win_close(w, ID_OK); return 1; }
         if (w2k_tabs_key(pd->tabs, &e->xkey)) { w2k_win_dirty(w); return 1; }
-        if (pd->tabs->sel == 1 && pd->have_backlight &&
+        if (pd->tabs->sel == 3 && pd->have_backlight &&
             w2k_slider_key(&pd->bright, &e->xkey)) { w2k_win_dirty(w); return 1; }
         return 1;
     }
@@ -1904,14 +2018,35 @@ static void open_power(void)
 {
     PowerDlg pd;
     memset(&pd, 0, sizeof pd);
-    int cw = 398, chh = 372;
+    int cw = 398, chh = 372, fh0 = w2k_font_height(F_UI);
     W2kWin *w = w2k_win_new("Power Options Properties", "l2kcontrol", cw, chh, 0);
     pd.win = w;
     pd.tabs = w2k_tabs_new(&pd, NULL);
+    w2k_tabs_add(pd.tabs, "Power Schemes");
+    w2k_tabs_add(pd.tabs, "Advanced");
     w2k_tabs_add(pd.tabs, "Power Meter");
     w2k_tabs_add(pd.tabs, "Brightness");
     pd.tabs->r = (W2kRect){ 7, 7, cw - 14, chh - 7 - 41 };
     W2kRect c = w2k_tabs_client(pd.tabs);
+
+    pd.can_suspend = w2k_power_can("suspend");
+    pd.can_hibernate = w2k_power_can("hibernate");
+    pd.mon_off = w2k_combo_new(0); pd.mon_off->user = &pd; pd.mon_off->on_change = pw_on_change;
+    pd.standby = w2k_combo_new(0); pd.standby->user = &pd; pd.standby->on_change = pw_on_change;
+    pd.hibern  = w2k_combo_new(0); pd.hibern->user = &pd;  pd.hibern->on_change = pw_on_change;
+    pw_fill_minutes(pd.mon_off, w2k_monitor_off_min);
+    pw_fill_minutes(pd.standby, w2k_standby_min);
+    pw_fill_minutes(pd.hibern, w2k_hibernate_min);
+    pd.mon_off->r = (W2kRect){ c.x + 160, c.y + 66 + 22, c.w - 18 - 160, 21 };
+    pd.standby->r = (W2kRect){ c.x + 160, c.y + 66 + 52, c.w - 18 - 160, 21 };
+    pd.hibern->r  = (W2kRect){ c.x + 160, c.y + 66 + 82, c.w - 18 - 160, 21 };
+    w2k_power_lid_get(pd.lid_was, sizeof pd.lid_was, pd.pbtn_was, sizeof pd.pbtn_was);
+    pd.lid  = w2k_combo_new(0); pd.lid->user = &pd;  pd.lid->on_change = pw_on_change;
+    pd.pbtn = w2k_combo_new(0); pd.pbtn->user = &pd; pd.pbtn->on_change = pw_on_change;
+    pw_fill_actions(pd.lid, pd.lid_was);
+    pw_fill_actions(pd.pbtn, pd.pbtn_was);
+    pd.lid->r  = (W2kRect){ c.x + 19, c.y + 10 + 20 + fh0 + 4, c.w - 38, 21 };
+    pd.pbtn->r = (W2kRect){ c.x + 19, c.y + 10 + 20 + fh0 + 4 + 21 + 10 + fh0 + 4, c.w - 38, 21 };
 
     pd.have_backlight = w2k_backlight_available();
     pd.bright = (W2kSlider){ .r = { c.x + 9 + 40, c.y + 10 + 44, c.w - 18 - 80 - 10, 24 },
@@ -1935,6 +2070,8 @@ static void open_power(void)
     w2k_add_timer(5000, pw_tick, &pd);
     w2k_win_modal(w);
     w2k_del_timer(pw_tick, &pd);
+    w2k_combo_free(pd.mon_off); w2k_combo_free(pd.standby); w2k_combo_free(pd.hibern);
+    w2k_combo_free(pd.lid); w2k_combo_free(pd.pbtn);
     w2k_tabs_free(pd.tabs);
 }
 
@@ -2098,9 +2235,7 @@ int main(int argc, char **argv)
     W2kList *l = cp.fw->list;
     l->on_activate = on_activate;
     l->on_select = on_select;
-    int laptop = w2k_is_laptop();
     for (int i = 0; i < NAPPLETS; i++) {
-        if (i == AP_POWER && !laptop) continue;   /* nothing to meter or dim */
         int r = w2k_list_add(l, applets[i].icon, (void *)(intptr_t)i);
         w2k_list_set(l, r, 0, applets[i].name);
     }

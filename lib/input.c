@@ -5,10 +5,27 @@
  * session starts and again whenever an applet commits. */
 #include "w2k.h"
 #include <X11/XKBlib.h>
+#include <X11/extensions/dpms.h>
 
 void w2k_input_apply(void)
 {
     if (!w2k.dpy) return;
+
+    /* "Turn off monitor": DPMS, the power scheme's minutes; the X screen
+     * saver's blanking is set to the same so the two never disagree. */
+    {
+        int ev, err;
+        int secs = w2k_monitor_off_min > 0 ? w2k_monitor_off_min * 60 : 0;
+        if (DPMSQueryExtension(w2k.dpy, &ev, &err) && DPMSCapable(w2k.dpy)) {
+            if (secs > 0) {
+                DPMSEnable(w2k.dpy);
+                DPMSSetTimeouts(w2k.dpy, (CARD16)secs, (CARD16)secs, (CARD16)secs);
+            } else {
+                DPMSDisable(w2k.dpy);
+            }
+        }
+        XSetScreenSaver(w2k.dpy, secs, 0, DefaultBlanking, DefaultExposures);
+    }
 
     /* Button order. Anything past the first three (wheel, side buttons)
      * keeps its identity mapping. */

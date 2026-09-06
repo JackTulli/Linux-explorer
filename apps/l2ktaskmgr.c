@@ -1,4 +1,4 @@
-/* l2ktaskmgr -- Windows Task Manager.
+/* l2ktaskmgr -- Linux Task Manager.
  *
  * Applications / Processes / Performance, refreshed once a second.
  * Applications come from the window manager's _NET_CLIENT_LIST; processes
@@ -16,7 +16,7 @@ enum {
     ID_NEWTASK = 1, ID_EXIT, ID_ENDTASK, ID_SWITCHTO, ID_ENDPROCESS,
     ID_ALWAYSTOP, ID_MINONUSE, ID_HIDEMIN, ID_REFRESH, ID_ABOUT,
     ID_SPEED_HIGH, ID_SPEED_NORMAL, ID_SPEED_LOW, ID_SPEED_PAUSED,
-    ID_CPU_ONE, ID_CPU_PER_CORE,
+    ID_CPU_ONE, ID_CPU_PER_CORE, ID_KERNEL_TIMES,
     ID_TILE_H, ID_TILE_V, ID_CASCADE, ID_MINIMIZE, ID_MAXIMIZE, ID_BRINGFRONT
 };
 
@@ -52,13 +52,23 @@ typedef struct {
 
     double      cpu_hist[HIST], mem_hist[HIST];
     int         hist_n;
+    long        hist_total;          /* samples ever taken: scrolls the grid */
     double      cpu_now, mem_pct;
+    /* Kernel time (system + irq + softirq), the red line under the green. */
+    double      kern_hist[HIST], kern_now;
+    unsigned long long cpu_kern;
+    int         show_kernel;
+    /* The page file: Windows' commit charge, from Committed_AS. */
+    long        commit_kb, commit_limit_kb, commit_peak_kb;
+    double      pf_pct;
+    long        slab_kb, sreclaim_kb, sunreclaim_kb, kstack_kb, ptables_kb;
+    long        handles;
 
     /* One set of figures per core, plus the totals above. */
     int         ncpu;
-    unsigned long long core_total[MAXCPU], core_idle[MAXCPU];
-    double      core_now[MAXCPU];
-    double      core_hist[MAXCPU][HIST];
+    unsigned long long core_total[MAXCPU], core_idle[MAXCPU], core_kern[MAXCPU];
+    double      core_now[MAXCPU], core_know[MAXCPU];
+    double      core_hist[MAXCPU][HIST], core_khist[MAXCPU][HIST];
     int         per_core;            /* one graph per CPU */
     long        mem_total_kb, mem_avail_kb, mem_cached_kb;
     long        swap_total_kb, swap_free_kb;
@@ -98,6 +108,42 @@ static void sample_memory(void)
     if (!tm.mem_avail_kb) tm.mem_avail_kb = read_meminfo_key(buf, "MemFree");
     if (tm.mem_total_kb > 0)
         tm.mem_pct = 100.0 * (tm.mem_total_kb - tm.mem_avail_kb) / tm.mem_total_kb;
+    /* The Windows figures: the commit charge is what the kernel calls
+     * Committed_AS against CommitLimit; the kernel's own memory is the
+     * slab, split into what can be paged out (reclaimable) and what
+     * cannot, plus stacks and page tables. */
+    tm.commit_kb       = read_meminfo_key(buf, "Committed_AS");
+    tm.commit_limit_kb = read_meminfo_key(buf, "CommitLimit");
+    if (tm.commit_kb > tm.commit_peak_kb) tm.commit_peak_kb = tm.commit_kb;
+    tm.slab_kb      = read_meminfo_key(buf, "Slab");
+    tm.sreclaim_kb  = read_meminfo_key(buf, "SReclaimable");
+    tm.sunreclaim_kb = read_meminfo_key(buf, "SUnreclaim");
+    tm.kstack_kb    = read_meminfo_key(buf, "KernelStack");
+    tm.ptables_kb   = read_meminfo_key(buf, "PageTables");
+    tm.mem_cached_kb += tm.sreclaim_kb;              /* System Cache */
+    tm.pf_pct = tm.commit_limit_kb > 0 ? 100.0 * tm.commit_kb / tm.commit_limit_kb : 0;
+    if (tm.pf_pct > 100) tm.pf_pct = 100;
+    FILE *h = fopen("/proc/sys/fs/file-nr", "r");   /* open handles */
+    if (h) {
+        long a = 0;
+        if (fscanf(h, "%ld", &a) == 1) tm.handles = a;
+        fclose(h);
+    }
+}
+
+/* Kernel share of the busy time between two samples. */
+static double kern_delta(unsigned long long kern, unsigned long long total_now,
+                         unsigned long long total_prev, unsigned long long *pkern,
+                         double previous)
+{
+    double pct = previous;
+    if (total_prev && total_now > total_prev && kern >= *pkern) {
+        pct = 100.0 * (double)(kern - *pkern) / (double)(total_now - total_prev);
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
+    }
+    *pkern = kern;
+    return pct;
 }
 
 /* Busy percentage between two /proc/stat samples of the same counter set. */
@@ -136,16 +182,21 @@ static void sample_cpu(void)
         unsigned long long total = 0;
         for (int i = 0; i < 8; i++) total += v[i];
         unsigned long long idle = v[3] + v[4];
+        unsigned long long kern = v[2] + v[5] + v[6];   /* system, irq, softirq */
 
         if (!label[3]) {
+            unsigned long long prev = tm.cpu_total;
             tm.cpu_now = cpu_delta(total, idle, &tm.cpu_total, &tm.cpu_idle,
                                    tm.cpu_now);
+            tm.kern_now = kern_delta(kern, total, prev, &tm.cpu_kern, tm.kern_now);
         } else {
             int n = atoi(label + 3);
             if (n < 0 || n >= MAXCPU) continue;
             if (n + 1 > tm.ncpu) tm.ncpu = n + 1;
+            unsigned long long prev = tm.core_total[n];
             tm.core_now[n] = cpu_delta(total, idle, &tm.core_total[n],
                                        &tm.core_idle[n], tm.core_now[n]);
+            tm.core_know[n] = kern_delta(kern, total, prev, &tm.core_kern[n], tm.core_know[n]);
         }
     }
     fclose(f);
@@ -424,21 +475,30 @@ static void tick(void *unused)
     if (tm.tabs->sel == 1) sample_procs(prev ? tm.cpu_total - prev : 0);
     else                   sample_totals();
 
+    tm.hist_total++;
     if (tm.hist_n < HIST) {
         tm.cpu_hist[tm.hist_n] = tm.cpu_now;
-        tm.mem_hist[tm.hist_n] = tm.mem_pct;
-        for (int k = 0; k < tm.ncpu; k++)
+        tm.kern_hist[tm.hist_n] = tm.kern_now;
+        tm.mem_hist[tm.hist_n] = tm.pf_pct;
+        for (int k = 0; k < tm.ncpu; k++) {
             tm.core_hist[k][tm.hist_n] = tm.core_now[k];
+            tm.core_khist[k][tm.hist_n] = tm.core_know[k];
+        }
         tm.hist_n++;
     } else {
         memmove(tm.cpu_hist, tm.cpu_hist + 1, (HIST - 1) * sizeof(double));
+        memmove(tm.kern_hist, tm.kern_hist + 1, (HIST - 1) * sizeof(double));
         memmove(tm.mem_hist, tm.mem_hist + 1, (HIST - 1) * sizeof(double));
         tm.cpu_hist[HIST - 1] = tm.cpu_now;
-        tm.mem_hist[HIST - 1] = tm.mem_pct;
+        tm.kern_hist[HIST - 1] = tm.kern_now;
+        tm.mem_hist[HIST - 1] = tm.pf_pct;
         for (int k = 0; k < tm.ncpu; k++) {
             memmove(tm.core_hist[k], tm.core_hist[k] + 1,
                     (HIST - 1) * sizeof(double));
+            memmove(tm.core_khist[k], tm.core_khist[k] + 1,
+                    (HIST - 1) * sizeof(double));
             tm.core_hist[k][HIST - 1] = tm.core_now[k];
+            tm.core_khist[k][HIST - 1] = tm.core_know[k];
         }
     }
 
@@ -454,10 +514,9 @@ static void tick(void *unused)
     w2k_status_set(tm.sb, 0, b);
     snprintf(b, sizeof b, "CPU Usage: %d%%", (int)(tm.cpu_now + 0.5));
     w2k_status_set(tm.sb, 1, b);
-    char used[24], total[24];
-    size_text(tm.mem_total_kb - tm.mem_avail_kb, used, sizeof used);
-    size_text(tm.mem_total_kb, total, sizeof total);
-    snprintf(b, sizeof b, "Mem Usage: %s / %s", used, total);
+    /* "Commit Charge: 326M / 1159M", as Windows put it. */
+    snprintf(b, sizeof b, "Commit Charge: %ldM / %ldM", tm.commit_kb / 1024,
+             tm.commit_limit_kb / 1024);
     w2k_status_set(tm.sb, 2, b);
 
     w2k_win_dirty(tm.win);
@@ -468,53 +527,76 @@ static void tick(void *unused)
  * ------------------------------------------------------------------ */
 #define GREEN   C_GRAYTEXT   /* placeholder; real colours come from w2k_rgb */
 
-static unsigned long g_bright, g_dim, g_black;
+static unsigned long g_bright, g_dim, g_black, g_red;
 
-/* The vertical bar meter: stacked 2px segments over black. */
-static void draw_meter(Drawable d, W2kRect r, double pct)
+/* The meter: a black well with LED bars -- two rows lit, one dark --
+ * climbing from above the reading, which sits inside the well in green,
+ * as Task Manager's do. */
+static void draw_meter(Drawable d, W2kRect r, double pct, const char *reading)
 {
     w2k_edge(d, r.x, r.y, r.w, r.h, EDGE_SUNKEN, BF_RECT);
-    XSetForeground(w2k.dpy, w2k.gc, g_black);
-    XFillRectangle(w2k.dpy, d, w2k.gc, r.x + 2, r.y + 2, r.w - 4, r.h - 4);
+    w2k_fill_rgb(d, r.x + 2, r.y + 2, r.w - 4, r.h - 4, 0, 0, 0);
 
-    int ih = r.h - 6, iw = r.w - 6;
-    int seg = 3, nseg = ih / seg;
+    int fh = w2k_font_height(F_UI);
+    int text_h = fh + 4;
+    int bx = r.x + 6, bw = r.w - 12;
+    int top = r.y + 6, bottom = r.y + r.h - 4 - text_h;
+    int seg = 3, nseg = (bottom - top) / seg;
     int on = (int)(nseg * pct / 100.0 + 0.5);
-    XSetForeground(w2k.dpy, w2k.gc, g_bright);
-    for (int i = 0; i < on; i++)
-        XFillRectangle(w2k.dpy, d, w2k.gc, r.x + 3,
-                       r.y + 3 + ih - (i + 1) * seg, iw, seg - 1);
+    if (pct > 0 && on < 1) on = 1;
+    for (int i = 0; i < nseg; i++) {
+        int y = bottom - (i + 1) * seg;
+        if (i < on) w2k_fill_rgb(d, bx, y, bw, seg - 1, 0, 255, 0);
+        else        w2k_fill_rgb(d, bx, y, bw, seg - 1, 0, 48, 0);
+    }
+    int tw = w2k_text_width(F_UI, reading, -1);
+    w2k_text_rgb(d, F_UI, r.x + (r.w - tw) / 2, bottom + 2, reading, 0, 255, 0);
 }
 
-/* Scrolling history graph: green grid on black, newest sample on the right. */
-static void draw_graph(Drawable d, W2kRect r, const double *hist, int n)
+/* The history graph: a green grid on black that scrolls with the
+ * samples, the reading in bright green and, when asked, the kernel's
+ * share in red beneath it. */
+static void draw_graph(Drawable d, W2kRect r, const double *hist,
+                       const double *kern, int n)
 {
     w2k_edge(d, r.x, r.y, r.w, r.h, EDGE_SUNKEN, BF_RECT);
     int gx = r.x + 2, gy = r.y + 2, gw = r.w - 4, gh = r.h - 4;
-    XSetForeground(w2k.dpy, w2k.gc, g_black);
-    XFillRectangle(w2k.dpy, d, w2k.gc, gx, gy, gw, gh);
+    w2k_fill_rgb(d, gx, gy, gw, gh, 0, 0, 0);
+    if (gw <= 0 || gh <= 0) return;
 
-    /* Grid density follows the size of the graph: the full 8x10 mesh in a
-     * per-core graph an inch wide is a solid green block, not a grid. */
-    int nh = gh / 14, nv = gw / 14;
-    if (nh > 8) nh = 8;
-    if (nv > 10) nv = 10;
-    XSetForeground(w2k.dpy, w2k.gc, g_dim);
-    for (int i = 1; i < nh; i++)
-        XFillRectangle(w2k.dpy, d, w2k.gc, gx, gy + gh * i / nh, gw, 1);
-    for (int i = 1; i < nv; i++)
-        XFillRectangle(w2k.dpy, d, w2k.gc, gx + gw * i / nv, gy, 1, gh);
+    /* Twelve-pixel cells; the verticals move left with each sample, the
+     * horizontals stand still, as in the original. Small per-core graphs
+     * get a coarser mesh so they stay readable. */
+    int cell = gw < 100 ? 8 : 12;
+    int step = gw / HIST;
+    if (step < 1) step = 1;
+    int shift = (int)((tm.hist_total * step) % cell);
+    w2k_clip_set(gx, gy, gw, gh);
+    for (int y = gy + gh - 1 - cell; y > gy; y -= cell)
+        w2k_fill_rgb(d, gx, y, gw, 1, 0, 128, 0);
+    for (int x = gx + gw - 1 - shift; x > gx; x -= cell)
+        w2k_fill_rgb(d, x, gy, 1, gh, 0, 128, 0);
 
-    if (n < 2) return;
-    XSetForeground(w2k.dpy, w2k.gc, g_bright);
-    for (int i = 1; i < n; i++) {
-        int x0 = gx + gw - (n - i) * gw / HIST;
-        int x1 = gx + gw - (n - i - 1) * gw / HIST;
-        int y0 = gy + gh - (int)(gh * hist[i - 1] / 100.0);
-        int y1 = gy + gh - (int)(gh * hist[i] / 100.0);
-        if (x1 > gx + gw) x1 = gx + gw;
-        XDrawLine(w2k.dpy, d, w2k.gc, x0, y0, x1, y1);
+    if (n >= 2) {
+        /* Newest sample at the right edge; the lines are polylines in
+         * screen pixels so a steep spike is one stroke, not stairs. */
+        for (int pass = 0; pass < 2; pass++) {
+            const double *h = pass == 0 ? kern : hist;
+            if (!h || (pass == 0 && !tm.show_kernel)) continue;
+            XSetForeground(w2k.dpy, w2k.gc, pass == 0 ? g_red : g_bright);
+            XSetLineAttributes(w2k.dpy, w2k.gc, (unsigned)w2k_th(1), LineSolid, CapButt, JoinMiter);
+            XPoint pts[HIST];
+            for (int i = 0; i < n; i++) {
+                int x = gx + gw - 1 - (n - 1 - i) * step;
+                int y = gy + gh - 1 - (int)((gh - 1) * h[i] / 100.0 + 0.5);
+                pts[i].x = (short)w2k_cx(x);
+                pts[i].y = (short)w2k_cx(y);
+            }
+            XDrawLines(w2k.dpy, d, w2k.gc, pts, n, CoordModeOrigin);
+            XSetLineAttributes(w2k.dpy, w2k.gc, 0, LineSolid, CapButt, JoinMiter);
+        }
     }
+    w2k_clip_clear();
 }
 
 static void label_pair(Drawable d, int x, int y, const char *k, const char *v,
@@ -531,7 +613,7 @@ static void label_pair(Drawable d, int x, int y, const char *k, const char *v,
 static void draw_core_graphs(Drawable d, W2kRect r)
 {
     int n = tm.ncpu;
-    if (n < 1) { draw_graph(d, r, tm.cpu_hist, tm.hist_n); return; }
+    if (n < 1) { draw_graph(d, r, tm.cpu_hist, tm.kern_hist, tm.hist_n); return; }
 
     /* Pick the column count that makes the individual graphs squarest for
      * the shape of the box -- sqrt(n) columns would be square only if the
@@ -553,13 +635,20 @@ static void draw_core_graphs(Drawable d, W2kRect r)
     int gap = 2;
     int cw = (r.w - (cols - 1) * gap) / cols;
     int ch = (r.h - (rows - 1) * gap) / rows;
-    if (cw < 8 || ch < 8) { draw_graph(d, r, tm.cpu_hist, tm.hist_n); return; }
+    if (cw < 8 || ch < 8) { draw_graph(d, r, tm.cpu_hist, tm.kern_hist, tm.hist_n); return; }
 
     for (int i = 0; i < n; i++) {
         W2kRect g = { r.x + (i % cols) * (cw + gap),
                       r.y + (i / cols) * (ch + gap), cw, ch };
-        draw_graph(d, g, tm.core_hist[i], tm.hist_n);
+        draw_graph(d, g, tm.core_hist[i], tm.core_khist[i], tm.hist_n);
     }
+}
+
+static void figure(Drawable d, int x, int y, int w, const char *k, long v)
+{
+    char b[32];
+    snprintf(b, sizeof b, "%ld", v);
+    label_pair(d, x, y, k, b, w);
 }
 
 static void paint_perf(Drawable d, W2kRect c)
@@ -567,26 +656,19 @@ static void paint_perf(Drawable d, W2kRect c)
     int fh = w2k_font_height(F_UI);
     char b[64];
 
-    /* Heights are derived rather than guessed: a group box is its title,
-     * the meter, the reading underneath and the padding around them. The
-     * old fixed numbers were two pixels short, which is what pushed the
-     * readings out through the bottom of their frames. */
-    int meter_w = 60;
-    int label_h = fh + 4;
-    /* Rather more than half the page goes to the two graph rows; the four
-     * figure boxes below need the rest. */
+    /* The Windows 2000 page: two rows of a meter beside its history, the
+     * meter's well 60 wide, then four boxes of figures in kilobytes. */
+    int meter_w = 62;
     int grp_h = ((c.h - 12) * 55 / 100 - 6) / 2;
-    int meter_h = grp_h - 16 - label_h - 6;
-    if (meter_h < 36) { meter_h = 36; grp_h = 16 + meter_h + label_h + 6; }
+    int meter_h = grp_h - 22;
+    if (meter_h < 50) { meter_h = 50; grp_h = meter_h + 22; }
 
     /* --- CPU ---------------------------------------------------------- */
-    W2kRect grp = { c.x + 4, c.y + 2, meter_w + 12, grp_h };
+    W2kRect grp = { c.x + 4, c.y + 2, meter_w + 16, grp_h };
     w2k_draw_groupbox(d, &grp, "CPU Usage");
-    W2kRect g1 = { grp.x + 6, grp.y + 16, meter_w, meter_h };
-    draw_meter(d, g1, tm.cpu_now);
+    W2kRect g1 = { grp.x + 8, grp.y + 16, meter_w, meter_h };
     snprintf(b, sizeof b, "%d %%", (int)(tm.cpu_now + 0.5));
-    w2k_text(d, F_UI, g1.x + (meter_w - w2k_text_width(F_UI, b, -1)) / 2,
-             g1.y + meter_h + 3, b, C_TEXT);
+    draw_meter(d, g1, tm.cpu_now, b);
 
     int hx = grp.x + grp.w + 6;
     W2kRect hgrp = { hx, c.y + 2, c.x + c.w - hx - 4, grp_h };
@@ -595,64 +677,57 @@ static void paint_perf(Drawable d, W2kRect c)
     else
         snprintf(b, sizeof b, "CPU Usage History");
     w2k_draw_groupbox(d, &hgrp, b);
-    W2kRect hg = { hgrp.x + 6, hgrp.y + 16, hgrp.w - 12, meter_h + label_h };
+    W2kRect hg = { hgrp.x + 8, hgrp.y + 16, hgrp.w - 16, meter_h };
     if (tm.per_core) draw_core_graphs(d, hg);
-    else             draw_graph(d, hg, tm.cpu_hist, tm.hist_n);
+    else             draw_graph(d, hg, tm.cpu_hist, tm.kern_hist, tm.hist_n);
 
-    /* --- Memory ------------------------------------------------------- */
+    /* --- Page file ---------------------------------------------------- */
     int y2 = grp.y + grp_h + 6;
-    W2kRect mgrp = { c.x + 4, y2, meter_w + 12, grp_h };
-    w2k_draw_groupbox(d, &mgrp, "MEM Usage");
-    W2kRect m1 = { mgrp.x + 6, mgrp.y + 16, meter_w, meter_h };
-    draw_meter(d, m1, tm.mem_pct);
-    size_text(tm.mem_total_kb - tm.mem_avail_kb, b, sizeof b);
-    w2k_text(d, F_UI, m1.x + (meter_w - w2k_text_width(F_UI, b, -1)) / 2,
-             m1.y + meter_h + 3, b, C_TEXT);
+    W2kRect mgrp = { c.x + 4, y2, meter_w + 16, grp_h };
+    w2k_draw_groupbox(d, &mgrp, "PF Usage");
+    W2kRect m1 = { mgrp.x + 8, mgrp.y + 16, meter_w, meter_h };
+    if (tm.commit_kb >= 1024 * 1024)
+        snprintf(b, sizeof b, "%.1f GB", tm.commit_kb / (1024.0 * 1024.0));
+    else
+        snprintf(b, sizeof b, "%ld MB", tm.commit_kb / 1024);
+    draw_meter(d, m1, tm.pf_pct, b);
 
     W2kRect mhgrp = { hx, y2, c.x + c.w - hx - 4, grp_h };
-    w2k_draw_groupbox(d, &mhgrp, "Memory Usage History");
-    W2kRect mh = { mhgrp.x + 6, mhgrp.y + 16, mhgrp.w - 12, meter_h + label_h };
-    draw_graph(d, mh, tm.mem_hist, tm.hist_n);
+    w2k_draw_groupbox(d, &mhgrp, "Page File Usage History");
+    W2kRect mh = { mhgrp.x + 8, mhgrp.y + 16, mhgrp.w - 16, meter_h };
+    draw_graph(d, mh, tm.mem_hist, NULL, tm.hist_n);
 
-    /* The four figure boxes along the bottom. */
+    /* The four figure boxes along the bottom, in K as Windows shows them. */
     int y3 = mgrp.y + grp_h + 6;
     int bw = (c.w - 16) / 2, bh = c.y + c.h - y3 - 4;
     if (bh < 40) return;
-    const char *titles[4] = { "Totals", "Physical Memory",
-                              "Commit Charge", "Kernel Memory" };
+    const char *titles[4] = { "Totals", "Physical Memory (K)",
+                              "Commit Charge (K)", "Kernel Memory (K)" };
     for (int i = 0; i < 4; i++) {
         W2kRect g = { c.x + 4 + (i % 2) * (bw + 8), y3 + (i / 2) * (bh / 2 + 2),
-                      bw, bh / 2 };
-        if (i >= 2) g.h = bh / 2;
+                      bw, bh / 2 - 2 };
         w2k_draw_groupbox(d, &g, titles[i]);
-        int lx = g.x + 10, ly = g.y + 16, lw = g.w - 20;
-        char v[40];
+        int lx = g.x + 10, ly = g.y + 16, lw = g.w - 20, dy = fh + 2;
         switch (i) {
         case 0:
-            snprintf(v, sizeof v, "%d", tm.nprocs);
-            label_pair(d, lx, ly, "Processes", v, lw);
-            snprintf(v, sizeof v, "%d", tm.nthreads);
-            label_pair(d, lx, ly + fh + 2, "Threads", v, lw);
+            figure(d, lx, ly, lw, "Handles", tm.handles);
+            figure(d, lx, ly + dy, lw, "Threads", tm.nthreads);
+            figure(d, lx, ly + 2 * dy, lw, "Processes", tm.nprocs);
             break;
         case 1:
-            size_text(tm.mem_total_kb, v, sizeof v);
-            label_pair(d, lx, ly, "Total", v, lw);
-            size_text(tm.mem_avail_kb, v, sizeof v);
-            label_pair(d, lx, ly + fh + 2, "Available", v, lw);
-            size_text(tm.mem_cached_kb, v, sizeof v);
-            label_pair(d, lx, ly + 2 * (fh + 2), "System Cache", v, lw);
+            figure(d, lx, ly, lw, "Total", tm.mem_total_kb);
+            figure(d, lx, ly + dy, lw, "Available", tm.mem_avail_kb);
+            figure(d, lx, ly + 2 * dy, lw, "System Cache", tm.mem_cached_kb);
             break;
         case 2:
-            size_text(tm.mem_total_kb - tm.mem_avail_kb, v, sizeof v);
-            label_pair(d, lx, ly, "Total", v, lw);
-            size_text(tm.mem_total_kb + tm.swap_total_kb, v, sizeof v);
-            label_pair(d, lx, ly + fh + 2, "Limit", v, lw);
+            figure(d, lx, ly, lw, "Total", tm.commit_kb);
+            figure(d, lx, ly + dy, lw, "Limit", tm.commit_limit_kb);
+            figure(d, lx, ly + 2 * dy, lw, "Peak", tm.commit_peak_kb);
             break;
         case 3:
-            size_text(tm.swap_total_kb - tm.swap_free_kb, v, sizeof v);
-            label_pair(d, lx, ly, "Swap in use", v, lw);
-            size_text(tm.swap_total_kb, v, sizeof v);
-            label_pair(d, lx, ly + fh + 2, "Swap total", v, lw);
+            figure(d, lx, ly, lw, "Total", tm.slab_kb + tm.kstack_kb + tm.ptables_kb);
+            figure(d, lx, ly + dy, lw, "Paged", tm.sreclaim_kb);
+            figure(d, lx, ly + 2 * dy, lw, "Nonpaged", tm.sunreclaim_kb + tm.kstack_kb + tm.ptables_kb);
             break;
         }
     }
@@ -874,9 +949,10 @@ static void command(void *user, int id)
     case ID_SPEED_PAUSED: tm.interval_ms = 0; break;
     case ID_CPU_ONE:      tm.per_core = 0; break;
     case ID_CPU_PER_CORE: tm.per_core = 1; break;
+    case ID_KERNEL_TIMES: tm.show_kernel = !tm.show_kernel; break;
     case ID_ABOUT:
         w2k_msgbox(tm.win, "About Task Manager",
-                   "Windows Task Manager\nLinux 2000\nA Windows 2000-style desktop for X11\n\n"
+                   "Linux Task Manager\nLinux 2000\nA Windows 2000-style desktop for X11\n\n"
                    "Applications from the window manager, processes and\n"
                    "performance figures from /proc.\n\nLinux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
                    MB_OK | MB_ICONINFO);
@@ -934,6 +1010,8 @@ static W2kMenu *build_view(void *u)
     w2k_menu_item(cp, ID_CPU_PER_CORE, "One Graph &Per CPU", NULL, ICO_NONE);
     w2k_menu_radio(cp, tm.per_core);
     w2k_menu_sub(m, "&CPU History", ICO_NONE, cp);
+    w2k_menu_item(m, ID_KERNEL_TIMES, "Show &Kernel Times", NULL, ICO_NONE);
+    w2k_menu_check(m, tm.show_kernel);
     return m;
 }
 
@@ -1103,12 +1181,14 @@ int main(void)
     if (w2k_init("l2ktaskmgr") < 0) return 1;
 
     g_bright = w2k_rgb(0, 255, 0);
+    g_red = w2k_rgb(255, 0, 0);
+    tm.show_kernel = 1;
     g_dim    = w2k_rgb(0, 130, 0);
     g_black  = w2k_rgb(0, 0, 0);
     tm.interval_ms = 1000;
     tm.per_core = 1;
 
-    tm.win = w2k_win_new("Windows Task Manager", "l2ktaskmgr", 520, 520, 1);
+    tm.win = w2k_win_new("Linux Task Manager", "l2ktaskmgr", 520, 520, 1);
     tm.win->paint = paint;
     tm.win->event = event;
     tm.win->resized = layout;

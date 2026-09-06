@@ -105,8 +105,10 @@ Try it nested first, without logging out of anything:
     l2kcontrol     Control Panel, the Windows 2000 folder with its web-view
                    pane: Date/Time, Default Programs, Device Manager, Display,
                    Folder Options, Fonts, Keyboard, Mouse, Network and Dial-up
-                   Connections, Power Options (on laptops: the Power Meter
-                   and a Brightness page for the backlight), Sounds and
+                   Connections, Power Options (Power Schemes: turn off the
+                   monitor, stand by, hibernate after idle minutes; Advanced:
+                   what the lid and the power button do, through logind;
+                   the Power Meter; Brightness for the backlight), Sounds and
                    Multimedia, System, Task Manager, Taskbar and Start Menu
     l2knetwork     Network and Dial-up Connections: one icon per adapter, the
                    Local Area Connection Status dialog (Connection and
@@ -120,10 +122,17 @@ Try it nested first, without logging out of anything:
                    experimentally, the desktop's own: see Scaling below
     l2kdevmgmt     Device Manager: the machine's hardware from sysfs, drivers,
                    enable/disable, DKMS driver install (contributed)
+    l2ktaskmgr     Task Manager: applications, processes, and a Performance
+                   page in the Windows 2000 layout -- LED meters, the green
+                   grid graphs with kernel time in red, page-file usage, the
+                   figures in K; Handles/Threads/Processes, Commit Charge
     l2kpaint       Paint: pencil, brush, eraser, line, rectangle, ellipse,
                    fill, picker and text tools, layers, undo, zoom, the
                    classic palette and an HSV colour dialog (contributed)
-    l2knotepad, l2kcalc, l2kcharmap, l2kimage (Imaging), l2ktaskmgr,
+    l2kimage       Imaging: PNG, JPEG, BMP and WebP; Left/Right, Home/End and
+                   Space step through the folder; the wheel and +/- zoom,
+                   with 25-400% presets; drag to pan
+    l2knotepad, l2kcalc, l2kcharmap,
     l2ksnip        Snipping Tool
     l2kupdate      Windows Update: checks for and installs a newer Linux 2000
                    on request, and the distribution's own updates (apt, dnf,
@@ -225,8 +234,11 @@ whole scale.
 
 Everything the applets set lives in `~/.w2k/scheme` (colours, theme,
 wallpaper, effects, taskbar, folder options, input settings, the monitor
-arrangement, `UiScale=` and `ScaleMode=desktop|xrandr` for the scaling
-above) and is applied live to every running program. Commands in
+arrangement, `UiScale=` and `ScaleMode=desktop|supersample|xrandr` for
+the scaling above, `Resample=`, the power scheme's `MonitorOff=`,
+`StandBy=` and `Hibernate=` minutes, `StartWidth=` for the classic Start
+menu's columns) and is applied live to every running program. Shut Down
+offers Stand by and Hibernate when logind allows them. Commands in
 `~/.w2k/autostart` (one per line) are launched at logon. Pinned programs,
 favorites and the Recycle Bin are under `~/.w2k` too.
 
