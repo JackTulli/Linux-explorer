@@ -121,9 +121,12 @@ int w2k_image_is_image(const char *path)
 /* ------------------------------------------------------------------ *
  * Writing JPEG (quality 90) and 24-bit BMP, for Save As.
  * ------------------------------------------------------------------ */
-int w2k_jpeg_save(const char *path, const unsigned char *rgba, int w, int h)
+int w2k_jpeg_save_quality(const char *path, const unsigned char *rgba,
+                          int w, int h, int quality)
 {
     if (!rgba || w <= 0 || h <= 0) return 0;
+    if (quality < 1) quality = 1;
+    if (quality > 100) quality = 100;
     FILE *f = fopen(path, "wb");
     if (!f) return 0;
     struct jpeg_compress_struct c;
@@ -140,11 +143,15 @@ int w2k_jpeg_save(const char *path, const unsigned char *rgba, int w, int h)
     c.input_components = 3;
     c.in_color_space = JCS_RGB;
     jpeg_set_defaults(&c);
-    jpeg_set_quality(&c, 90, TRUE);
+    jpeg_set_quality(&c, quality, TRUE);
     jpeg_start_compress(&c, TRUE);
     for (int y = 0; y < h; y++) {
         const unsigned char *p = rgba + (size_t)y * w * 4;
-        for (int x = 0; x < w; x++) { row[x * 3] = p[x * 4]; row[x * 3 + 1] = p[x * 4 + 1]; row[x * 3 + 2] = p[x * 4 + 2]; }
+        for (int x = 0; x < w; x++) {
+            row[x * 3] = p[x * 4];
+            row[x * 3 + 1] = p[x * 4 + 1];
+            row[x * 3 + 2] = p[x * 4 + 2];
+        }
         JSAMPROW rp = row;
         jpeg_write_scanlines(&c, &rp, 1);
     }
@@ -153,6 +160,11 @@ int w2k_jpeg_save(const char *path, const unsigned char *rgba, int w, int h)
     free(row);
     fclose(f);
     return 1;
+}
+
+int w2k_jpeg_save(const char *path, const unsigned char *rgba, int w, int h)
+{
+    return w2k_jpeg_save_quality(path, rgba, w, h, 90);
 }
 
 int w2k_bmp_save(const char *path, const unsigned char *rgba, int w, int h)

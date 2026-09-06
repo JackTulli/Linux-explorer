@@ -2,6 +2,7 @@
 #include "w2kui.h"
 #include <dirent.h>
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -205,6 +206,213 @@ int w2k_color_popup(int rx, int ry, int *r, int *g, int *b)
         *b = basic_colors[hot][2];
     }
     return picked;
+}
+
+/* ---- HSV colour picker ---------------------------------------------- */
+
+static void rgb_to_hsv(int r, int g, int b, float *h, float *s, float *v)
+{
+    float rf = r / 255.f, gf = g / 255.f, bf = b / 255.f;
+    float mx = rf > gf ? (rf > bf ? rf : bf) : (gf > bf ? gf : bf);
+    float mn = rf < gf ? (rf < bf ? rf : bf) : (gf < bf ? gf : bf);
+    float d = mx - mn;
+    *v = mx;
+    *s = mx > 0.f ? d / mx : 0.f;
+    if (d < 1e-6f) { *h = 0.f; return; }
+    if (mx == rf)      *h = 60.f * fmodf((gf - bf) / d, 6.f);
+    else if (mx == gf) *h = 60.f * ((bf - rf) / d + 2.f);
+    else               *h = 60.f * ((rf - gf) / d + 4.f);
+    if (*h < 0.f) *h += 360.f;
+}
+
+static void hsv_to_rgb(float h, float s, float v, int *r, int *g, int *b)
+{
+    float c = v * s;
+    float x = c * (1.f - fabsf(fmodf(h / 60.f, 2.f) - 1.f));
+    float m = v - c;
+    float rf = 0, gf = 0, bf = 0;
+    if      (h < 60.f)  { rf = c; gf = x; }
+    else if (h < 120.f) { rf = x; gf = c; }
+    else if (h < 180.f) { gf = c; bf = x; }
+    else if (h < 240.f) { gf = x; bf = c; }
+    else if (h < 300.f) { rf = x; bf = c; }
+    else                { rf = c; bf = x; }
+    *r = (int)((rf + m) * 255.f + 0.5f);
+    *g = (int)((gf + m) * 255.f + 0.5f);
+    *b = (int)((bf + m) * 255.f + 0.5f);
+    if (*r < 0) *r = 0; if (*r > 255) *r = 255;
+    if (*g < 0) *g = 0; if (*g > 255) *g = 255;
+    if (*b < 0) *b = 0; if (*b > 255) *b = 255;
+}
+
+typedef struct {
+    float h, s, v;
+    W2kRect sv, hue, prev, ok, cancel;
+    int down;           /* 1=sv drag, 2=hue drag, 3=ok, 4=cancel */
+} ColorPick;
+
+static void cp_paint(W2kWin *w, Drawable d)
+{
+    ColorPick *p = w->user;
+    w2k_fill(d, 0, 0, w->w, w->h, C_FACE);
+    int fh = w2k_font_height(F_UI);
+    w2k_text(d, F_UI, 12, 12, "Color", C_TEXT);
+
+    /* Saturation / value square. */
+    for (int y = 0; y < p->sv.h; y++) {
+        float vv = 1.f - (float)y / (float)(p->sv.h - 1);
+        for (int x = 0; x < p->sv.w; x++) {
+            float ss = (float)x / (float)(p->sv.w - 1);
+            int r, g, b;
+            hsv_to_rgb(p->h, ss, vv, &r, &g, &b);
+            w2k_fill_rgb(d, p->sv.x + x, p->sv.y + y, 1, 1, r, g, b);
+        }
+    }
+    w2k_edge(d, p->sv.x - 1, p->sv.y - 1, p->sv.w + 2, p->sv.h + 2,
+             EDGE_SUNKEN_THIN, BF_RECT);
+    {
+        int cx = p->sv.x + (int)(p->s * (p->sv.w - 1) + 0.5f);
+        int cy = p->sv.y + (int)((1.f - p->v) * (p->sv.h - 1) + 0.5f);
+        w2k_focus_rect(d, cx - 4, cy - 4, 9, 9);
+    }
+
+    /* Hue bar. */
+    for (int y = 0; y < p->hue.h; y++) {
+        float hh = 360.f * (float)y / (float)(p->hue.h - 1);
+        int r, g, b;
+        hsv_to_rgb(hh, 1.f, 1.f, &r, &g, &b);
+        w2k_fill_rgb(d, p->hue.x, p->hue.y + y, p->hue.w, 1, r, g, b);
+    }
+    w2k_edge(d, p->hue.x - 1, p->hue.y - 1, p->hue.w + 2, p->hue.h + 2,
+             EDGE_SUNKEN_THIN, BF_RECT);
+    {
+        int cy = p->hue.y + (int)(p->h / 360.f * (p->hue.h - 1) + 0.5f);
+        w2k_fill(d, p->hue.x - 3, cy - 1, p->hue.w + 6, 3, C_TEXT);
+        w2k_fill(d, p->hue.x - 2, cy, p->hue.w + 4, 1, C_HILIGHT);
+    }
+
+    /* Preview swatch. */
+    {
+        int r, g, b;
+        hsv_to_rgb(p->h, p->s, p->v, &r, &g, &b);
+        w2k_fill_rgb(d, p->prev.x, p->prev.y, p->prev.w, p->prev.h, r, g, b);
+        w2k_edge(d, p->prev.x, p->prev.y, p->prev.w, p->prev.h,
+                 EDGE_SUNKEN_THIN, BF_RECT);
+        char buf[48];
+        snprintf(buf, sizeof buf, "RGB %d, %d, %d", r, g, b);
+        w2k_text(d, F_UI, p->prev.x, p->prev.y + p->prev.h + 4, buf, C_TEXT);
+        (void)fh;
+    }
+
+    w2k_draw_pushbutton(d, &p->ok, "OK",
+                        BS_DEFAULT | (p->down == 3 ? BS_PRESSED : 0));
+    w2k_draw_pushbutton(d, &p->cancel, "Cancel",
+                        p->down == 4 ? BS_PRESSED : 0);
+}
+
+static void cp_hit_sv(ColorPick *p, int x, int y)
+{
+    int lx = x - p->sv.x, ly = y - p->sv.y;
+    if (lx < 0) lx = 0;
+    if (ly < 0) ly = 0;
+    if (lx >= p->sv.w) lx = p->sv.w - 1;
+    if (ly >= p->sv.h) ly = p->sv.h - 1;
+    p->s = (float)lx / (float)(p->sv.w - 1);
+    p->v = 1.f - (float)ly / (float)(p->sv.h - 1);
+}
+
+static void cp_hit_hue(ColorPick *p, int y)
+{
+    int ly = y - p->hue.y;
+    if (ly < 0) ly = 0;
+    if (ly >= p->hue.h) ly = p->hue.h - 1;
+    p->h = 360.f * (float)ly / (float)(p->hue.h - 1);
+    if (p->h >= 360.f) p->h = 359.9f;
+}
+
+static int cp_event(W2kWin *w, XEvent *e)
+{
+    ColorPick *p = w->user;
+    switch (e->type) {
+    case ButtonPress: {
+        int x = e->xbutton.x, y = e->xbutton.y;
+        if (w2k_rect_hit(&p->sv, x, y)) {
+            p->down = 1;
+            cp_hit_sv(p, x, y);
+        } else if (w2k_rect_hit(&p->hue, x, y)) {
+            p->down = 2;
+            cp_hit_hue(p, y);
+        } else if (w2k_rect_hit(&p->ok, x, y)) p->down = 3;
+        else if (w2k_rect_hit(&p->cancel, x, y)) p->down = 4;
+        w2k_win_dirty(w);
+        return 1;
+    }
+    case MotionNotify:
+        if (p->down == 1) {
+            cp_hit_sv(p, e->xmotion.x, e->xmotion.y);
+            w2k_win_dirty(w);
+            return 1;
+        }
+        if (p->down == 2) {
+            cp_hit_hue(p, e->xmotion.y);
+            w2k_win_dirty(w);
+            return 1;
+        }
+        return 0;
+    case ButtonRelease: {
+        int d = p->down, x = e->xbutton.x, y = e->xbutton.y;
+        p->down = 0;
+        if (d == 3 && w2k_rect_hit(&p->ok, x, y)) {
+            w2k_win_close(w, ID_OK);
+            return 1;
+        }
+        if (d == 4 && w2k_rect_hit(&p->cancel, x, y)) {
+            w2k_win_close(w, ID_CANCEL);
+            return 1;
+        }
+        w2k_win_dirty(w);
+        return 1;
+    }
+    case KeyPress: {
+        KeySym ks = XLookupKeysym(&e->xkey, 0);
+        if (ks == XK_Escape) { w2k_win_close(w, ID_CANCEL); return 1; }
+        if (ks == XK_Return || ks == XK_KP_Enter) {
+            w2k_win_close(w, ID_OK);
+            return 1;
+        }
+        return 1;
+    }
+    }
+    return 0;
+}
+
+int w2k_color_picker(W2kWin *over, int *r, int *g, int *b)
+{
+    if (!r || !g || !b) return 0;
+    ColorPick p;
+    memset(&p, 0, sizeof p);
+    rgb_to_hsv(*r, *g, *b, &p.h, &p.s, &p.v);
+
+    int W = 320, H = 280;
+    W2kWin *w = w2k_win_new("Color", "w2kdialog", W, H, 0);
+    w->user = &p;
+    w->paint = cp_paint;
+    w->event = cp_event;
+
+    p.sv     = (W2kRect){ 16, 32, 180, 180 };
+    p.hue    = (W2kRect){ 210, 32, 18, 180 };
+    p.prev   = (W2kRect){ 250, 32, 50, 40 };
+    p.ok     = (W2kRect){ W - 12 - 75 * 2 - 6, H - 12 - 23, 75, 23 };
+    p.cancel = (W2kRect){ W - 12 - 75, H - 12 - 23, 75, 23 };
+
+    w2k_win_center(w, over);
+    if (over) XSetTransientForHint(w2k.dpy, w->win, over->win);
+    int res = w2k_win_modal(w);
+    if (res == ID_OK) {
+        hsv_to_rgb(p.h, p.s, p.v, r, g, b);
+        return 1;
+    }
+    return 0;
 }
 
 /* A modal drop-down list. Returns the chosen index, or -1. */
@@ -581,6 +789,8 @@ static void fd_fill(FileDlg *f)
     }
     w2k_combo_clear(f->look);
     w2k_combo_add(f->look, f->dir);
+    if (f->look->editable)
+        w2k_combo_set_text(f->look, f->dir);
 }
 
 static void fd_chdir(FileDlg *f, const char *sub)
@@ -726,7 +936,12 @@ static int fd_event(W2kWin *w, XEvent *e)
     switch (e->type) {
     case ButtonPress:
         if (w2k_combo_press(f->look, &e->xbutton)) {
-            if (f->look->sel >= 0) fd_chdir(f, f->look->items[f->look->sel]);
+            if (f->look->edit && f->look->edit->focused) {
+                f->name->focused = 0;
+                f->list->focused = 0;
+            } else if (f->look->sel >= 0 && f->look->sel < f->look->n) {
+                fd_chdir(f, f->look->items[f->look->sel]);
+            }
             w2k_win_dirty(w);
             return 1;
         }
@@ -757,9 +972,14 @@ static int fd_event(W2kWin *w, XEvent *e)
             w2k_win_dirty(w);
             return 1;
         }
-        if (w2k_list_press(f->list, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        if (w2k_list_press(f->list, &e->xbutton)) {
+            if (f->look->edit) f->look->edit->focused = 0;
+            w2k_win_dirty(w);
+            return 1;
+        }
         if (w2k_edit_press(f->name, &e->xbutton)) {
             f->list->focused = 0;
+            if (f->look->edit) f->look->edit->focused = 0;
             w2k_win_dirty(w);
             return 1;
         }
@@ -769,12 +989,14 @@ static int fd_event(W2kWin *w, XEvent *e)
         return 1;
 
     case MotionNotify:
-        if (w2k_list_motion(f->list, &e->xmotion) ||
+        if ((f->look->edit && w2k_edit_motion(f->look->edit, &e->xmotion)) ||
+            w2k_list_motion(f->list, &e->xmotion) ||
             w2k_edit_motion(f->name, &e->xmotion)) { w2k_win_dirty(w); return 1; }
         return 0;
 
     case ButtonRelease: {
         w2k_list_release(f->list, &e->xbutton);
+        if (f->look->edit) w2k_edit_release(f->look->edit);
         w2k_edit_release(f->name);
         int d = f->down;
         f->down = 0;
@@ -790,6 +1012,69 @@ static int fd_event(W2kWin *w, XEvent *e)
     case KeyPress: {
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         if (ks == XK_Escape) { w2k_win_close(w, ID_CANCEL); return 1; }
+
+        /* Look-in path bar: Tab completes a path, Enter opens that folder. */
+        if (f->look->editable && f->look->edit && f->look->edit->focused) {
+            if (ks == XK_Tab || ks == XK_ISO_Left_Tab) {
+                const char *t = w2k_combo_text(f->look);
+                char out[1024];
+                if (w2k_tabcomp(t ? t : "", f->dir, out, sizeof out,
+                                W2K_TABCOMP_DIRS)) {
+                    w2k_combo_set_text(f->look, out);
+                    f->look->edit->caret = f->look->edit->sel = (int)strlen(out);
+                    f->look->edit->caret_on = 1;
+                    w2k_win_dirty(w);
+                }
+                return 1;
+            }
+            if (ks == XK_Return || ks == XK_KP_Enter) {
+                const char *t = w2k_combo_text(f->look);
+                if (t && t[0]) {
+                    char path[1024];
+                    snprintf(path, sizeof path, "%s", t);
+                    if (path[0] == '~' && (path[1] == '/' || path[1] == 0)) {
+                        const char *home = getenv("HOME");
+                        if (home) {
+                            char tmp[1024];
+                            snprintf(tmp, sizeof tmp, "%s%s", home,
+                                     path[1] ? path + 1 : "");
+                            snprintf(path, sizeof path, "%s", tmp);
+                        }
+                    }
+                    /* Drop a trailing slash except for root. */
+                    size_t L = strlen(path);
+                    if (L > 1 && path[L - 1] == '/') path[L - 1] = 0;
+                    struct stat st;
+                    if (stat(path, &st) == 0 && S_ISDIR(st.st_mode))
+                        fd_chdir(f, path);
+                }
+                if (f->look->edit) f->look->edit->focused = 0;
+                f->name->focused = 1;
+                w2k_win_dirty(w);
+                return 1;
+            }
+            if (w2k_combo_key(f->look, &e->xkey)) {
+                w2k_win_dirty(w);
+                return 1;
+            }
+        }
+
+        if (ks == XK_Tab || ks == XK_ISO_Left_Tab) {
+            /* Tab-complete the file name against the current folder. */
+            if (f->name->focused || !f->list->focused) {
+                const char *nm = w2k_edit_text(f->name);
+                char out[1024];
+                if (w2k_tabcomp(nm ? nm : "", f->dir, out, sizeof out, 0)) {
+                    w2k_edit_set(f->name, out);
+                    f->name->caret = f->name->sel = (int)strlen(out);
+                    f->name->caret_on = 1;
+                    f->name->focused = 1;
+                    f->list->focused = 0;
+                    w2k_win_dirty(w);
+                }
+                return 1;
+            }
+        }
         if (ks == XK_Return || ks == XK_KP_Enter) {
             const char *nm = w2k_edit_text(f->name);
             struct stat st;
@@ -886,7 +1171,8 @@ int w2k_file_dialog_filter(W2kWin *over, int save, char *path, int pathsz,
     w2k_scroll_bind(&f.list->hsb, w);
     f.name = w2k_edit_new(0);
     w2k_edit_bind(f.name, w);
-    f.look = w2k_combo_new(0);
+    f.look = w2k_combo_new(1);               /* editable path with Tab complete */
+    if (f.look->edit) w2k_edit_bind(f.look->edit, w);
     if (f.nfilters > 0) {
         f.type = w2k_combo_new(0);
         for (int i = 0; i < f.nfilters; i++)
@@ -930,8 +1216,12 @@ int w2k_file_dialog_filter(W2kWin *over, int save, char *path, int pathsz,
     if (over) XSetTransientForHint(w2k.dpy, w->win, over->win);
 
     w2k_add_timer(w2k_caret_blink, blink_cb, f.name);
+    if (f.look->edit)
+        w2k_add_timer(w2k_caret_blink, blink_cb, f.look->edit);
     w2k_win_modal(w);
     w2k_del_timer(blink_cb, f.name);
+    if (f.look->edit)
+        w2k_del_timer(blink_cb, f.look->edit);
 
     if (f.type) w2k_combo_free(f.type);
     int ok = f.accepted;

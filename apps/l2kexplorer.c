@@ -1,11 +1,16 @@
 /* l2kexplorer -- Windows Explorer.
  *
  * Folders pane on the left, contents on the right, four view modes, an
- * address bar, a status bar and the usual file operations. Virtual roots
- * (Desktop / My Computer / My Documents) sit above the real filesystem the
- * way the Windows shell namespace does. */
+ * address bar with a search filter beside it, a status bar and the usual
+ * file operations. Virtual roots (Desktop / My Computer / My Documents)
+ * sit above the real filesystem the way the Windows shell namespace does.
+ *
+ * Search supports wildcards (* ? []); typing a letter focuses the search
+ * box, Enter applies the filter and unfocuses. Ctrl+wheel and Alt+1..4
+ * cycle the folder view. */
 #include "w2kui.h"
 #include <fcntl.h>
+#include <fnmatch.h>
 #include <signal.h>
 #include <dirent.h>
 #include <errno.h>
@@ -13,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -24,6 +30,7 @@ enum {
     ID_CLOSE, ID_CUT, ID_COPY, ID_PASTE, ID_SELECTALL, ID_INVERT,
     ID_V_LARGE, ID_V_SMALL, ID_V_LIST, ID_V_DETAILS, ID_REFRESH,
     ID_BACK, ID_FORWARD, ID_UP, ID_SEARCH, ID_FOLDERS, ID_VIEWS,
+    ID_SHOW_HIDDEN,
     ID_ABOUT, ID_MYCOMPUTER, ID_MYDOCS, ID_FOLDEROPTS, ID_MAPDRIVE,
     ID_UNDO, ID_SHORTCUT, ID_OPENWITH, ID_NEW_SHORTCUT, ID_NEW_TEXT,
     ID_TB_STANDARD, ID_TB_ADDRESS, ID_STATUSBAR,
@@ -42,10 +49,11 @@ typedef struct {
     W2kMenubar *mb;
     W2kToolbar *tb;
     W2kCombo   *addr;
+    W2kEdit    *search;               /* filter box beside the address bar */
     W2kTree    *tree;
     W2kList    *list;
     W2kStatus  *sb;
-    W2kRect     addr_label, tree_r, split_r;
+    W2kRect     addr_label, search_label, tree_r, split_r;
 
     Node        cur;
     char        history[32][1024];
@@ -61,6 +69,7 @@ typedef struct {
     char        clip[64][1024];       /* pending file cut/copy */
     int         nclip, clip_cut;
     char        home[1024];
+    char        search_pat[256];      /* active wildcard filter; empty = none */
 } Exp;
 
 static Exp ex;
@@ -96,6 +105,38 @@ static void path_parent(char *p)
     if (!s) { strcpy(p, "/"); return; }
     if (s == p) { p[1] = 0; return; }
     *s = 0;
+}
+
+/* Lowercase ASCII into out (NUL-terminated). Used so fnmatch can match
+ * case-insensitively without depending on the non-POSIX FNM_CASEFOLD. */
+static void lower_copy(char *out, int n, const char *in)
+{
+    int i = 0;
+    if (n <= 0) return;
+    for (; in[i] && i < n - 1; i++)
+        out[i] = (char)tolower((unsigned char)in[i]);
+    out[i] = 0;
+}
+
+/* Wildcard filter for the search bar. Empty pattern matches everything.
+ * A pattern without * or ? is treated as a case-insensitive substring
+ * (internally wrapped as *pat*); otherwise it is passed to fnmatch. */
+static int entry_matches(const char *name)
+{
+    const char *pat = ex.search_pat;
+    if (!pat || !pat[0]) return 1;
+    char lname[512], lpat[280];
+    lower_copy(lname, sizeof lname, name);
+    lower_copy(lpat, sizeof lpat, pat);
+    int wild = 0;
+    for (const char *p = lpat; *p; p++)
+        if (*p == '*' || *p == '?' || *p == '[') { wild = 1; break; }
+    if (!wild) {
+        char wrapped[290];
+        snprintf(wrapped, sizeof wrapped, "*%s*", lpat);
+        return fnmatch(wrapped, lname, 0) == 0;
+    }
+    return fnmatch(lpat, lname, 0) == 0;
 }
 
 /* Windows shows sizes in whole KB, rounded up. */
@@ -321,6 +362,7 @@ static void refill_list(void)
 
     for (int i = 0; i < nentries; i++) {
         Entry *e = &entries[i];
+        if (!entry_matches(e->name)) continue;
         int r = w2k_list_add(ex.list, e->icon, NULL);
         ex.list->items[r].link = e->link;
         char shown[256];
@@ -366,6 +408,8 @@ static void update_caption(void)
     w2k_combo_clear(ex.addr);
     w2k_combo_add(ex.addr, ex.cur.kind == K_FS ? ex.cur.path : nm);
     ex.addr->sel = 0;
+    if (ex.addr->editable)
+        w2k_combo_set_text(ex.addr, ex.cur.kind == K_FS ? ex.cur.path : nm);
 
     w2k_toolbar_enable(ex.tb, ID_BACK, ex.hist_i > 0);
     w2k_toolbar_enable(ex.tb, ID_FORWARD, ex.hist_i + 1 < ex.hist_n);
@@ -498,6 +542,13 @@ static void navigate(const Node *nd, int record)
         ex.hist_n++;
         ex.hist_i = ex.hist_n - 1;
     }
+    /* A new folder clears the search filter so the listing is not stuck
+     * on a previous pattern. */
+    ex.search_pat[0] = 0;
+    if (ex.search) {
+        w2k_edit_set(ex.search, "");
+        ex.search->focused = 0;
+    }
     refill_list();
     update_caption();
     w2k_win_dirty(ex.win);
@@ -508,6 +559,67 @@ static void navigate_path(const char *p, int record)
     Node nd = { K_FS, { 0 } };
     set_path(nd.path, sizeof nd.path, p);
     navigate(&nd, record);
+}
+
+/* Go to whatever is typed in the address bar (Enter). Virtual names
+ * resolve the same way the tree does. */
+static void addr_go(void)
+{
+    const char *t = w2k_combo_text(ex.addr);
+    if (!t || !t[0]) return;
+    if (!strcasecmp(t, "My Computer") || !strcmp(t, "C:") || !strcmp(t, "C:\\")) {
+        Node nd = { K_MYCOMPUTER, { 0 } };
+        navigate(&nd, 1);
+        return;
+    }
+    if (!strcasecmp(t, "Desktop")) {
+        Node nd = { K_DESKTOP, { 0 } };
+        navigate(&nd, 1);
+        return;
+    }
+    if (!strcasecmp(t, "My Documents") || !strcmp(t, "~")) {
+        navigate_path(ex.home, 1);
+        return;
+    }
+    if (!strcasecmp(t, "Recycle Bin")) {
+        Node nd = { K_RECYCLE, { 0 } };
+        navigate(&nd, 1);
+        return;
+    }
+    char path[1024];
+    snprintf(path, sizeof path, "%s", t);
+    /* Expand a leading ~ to $HOME. */
+    if (path[0] == '~' && (path[1] == '/' || path[1] == 0)) {
+        char tmp[1024];
+        snprintf(tmp, sizeof tmp, "%s%s", ex.home, path[1] ? path + 1 : "");
+        snprintf(path, sizeof path, "%s", tmp);
+    }
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISDIR(st.st_mode))
+        navigate_path(path, 1);
+    else {
+        char msg[1200];
+        snprintf(msg, sizeof msg,
+                 "Windows cannot find '%s'. Make sure you typed the name correctly.",
+                 t);
+        w2k_msgbox(ex.win, "Address Bar", msg, MB_OK | MB_ICONWARNING);
+    }
+}
+
+/* Tab-complete the address bar via the shared w2k_tabcomp(). */
+static void addr_complete(void)
+{
+    if (!ex.addr->editable || !ex.addr->edit) return;
+    const char *t = w2k_combo_text(ex.addr);
+    if (!t) return;
+    const char *cwd = (ex.cur.kind == K_FS && ex.cur.path[0]) ? ex.cur.path : "/";
+    char out[1024];
+    if (!w2k_tabcomp(t, cwd, out, sizeof out, W2K_TABCOMP_DIRS)) return;
+    w2k_combo_set_text(ex.addr, out);
+    int n = (int)strlen(out);
+    ex.addr->edit->caret = n;
+    ex.addr->edit->sel = n;
+    ex.addr->edit->caret_on = 1;
 }
 
 static void go_up(void)
@@ -2143,6 +2255,10 @@ static W2kMenu *build_view(void *u)
     w2k_menu_radio(m, ex.view == ID_V_DETAILS);
     w2k_menu_sep(m);
 
+    w2k_menu_item(m, ID_SHOW_HIDDEN, "Show &Hidden Files", "Ctrl+H", ICO_NONE);
+    w2k_menu_check(m, w2k_folder_hidden);
+    w2k_menu_sep(m);
+
     W2kMenu *arr = w2k_menu_new();
     w2k_menu_item(arr, ID_ARR_NAME, "by &Name", NULL, ICO_NONE);
     w2k_menu_radio(arr, ex.sort_col == 0);
@@ -2412,6 +2528,11 @@ static void command(void *user, int id)
         list_configure();
         viewmem_store();
         break;
+    case ID_SHOW_HIDDEN:
+        w2k_folder_hidden = !w2k_folder_hidden;
+        w2k_scheme_save(NULL);
+        refill_list();
+        break;
     case ID_REFRESH: refill_list(); break;
     case ID_FOLDERS: ex.show_tree = !ex.show_tree;
                      if (ex.win->resized) ex.win->resized(ex.win);
@@ -2483,12 +2604,26 @@ static void layout(W2kWin *w)
     }
 
     if (ex.show_address) {
+        /* Address on the left, search filter on the right of the same row. */
+        int search_w = 160;
+        if (w->w < 420) search_w = 100;
+        int gap = 8;
+        int search_label_w = 42;
+        int right = w->w - 6;
+        ex.search->r = (W2kRect){ right - search_w, y + 2, search_w, 20 };
+        ex.search_label = (W2kRect){ ex.search->r.x - search_label_w - 2, y + 4,
+                                     search_label_w, 16 };
         ex.addr_label = (W2kRect){ 6, y + 4, 46, 16 };
-        ex.addr->r = (W2kRect){ 54, y + 2, w->w - 60, 20 };
+        int addr_x = 54;
+        int addr_w = ex.search_label.x - gap - addr_x;
+        if (addr_w < 80) addr_w = 80;
+        ex.addr->r = (W2kRect){ addr_x, y + 2, addr_w, 20 };
         y += ADDR_H;
     } else {
         ex.addr_label = (W2kRect){ 0, 0, 0, 0 };
         ex.addr->r = (W2kRect){ 0, 0, 0, 0 };
+        ex.search_label = (W2kRect){ 0, 0, 0, 0 };
+        ex.search->r = (W2kRect){ 0, 0, 0, 0 };
     }
 
     int bottom = w->h - (ex.show_status ? STATUS_H : 0);
@@ -2519,6 +2654,9 @@ static void paint(W2kWin *w, Drawable d)
         w2k_text_mnemonic(d, F_UI, ex.addr_label.x,
                           ex.addr->r.y + (20 - fh) / 2, "A&ddress", C_TEXT, 1);
         w2k_combo_draw(d, ex.addr);
+        w2k_text_mnemonic(d, F_UI, ex.search_label.x,
+                          ex.search->r.y + (20 - fh) / 2, "Se&arch", C_TEXT, 1);
+        w2k_edit_draw(d, ex.search);
     }
 
     if (ex.show_tree) {
@@ -2537,9 +2675,57 @@ static int event(W2kWin *w, XEvent *e)
     case ButtonPress: {
         if (w2k_dnd_active()) return 1;
         int x = e->xbutton.x, y = e->xbutton.y;
+        /* Mouse wheel: Ctrl+wheel cycles view modes; plain wheel scrolls the
+         * pane under the pointer (list or folders tree). */
+        if (e->xbutton.button == Button4 || e->xbutton.button == Button5) {
+            int up = (e->xbutton.button == Button4);
+            if (e->xbutton.state & ControlMask) {
+                if (up)
+                    ex.view = (ex.view == ID_V_LARGE) ? ID_V_DETAILS : ex.view - 1;
+                else
+                    ex.view = (ex.view == ID_V_DETAILS) ? ID_V_LARGE : ex.view + 1;
+                list_configure();
+                viewmem_store();
+                w2k_win_dirty(w);
+                return 1;
+            }
+            if (ex.show_tree && w2k_rect_hit(&ex.tree->r, x, y)) {
+                w2k_list_layout(ex.list); /* keep geometry current */
+                w2k_tree_layout(ex.tree);
+                if (w2k_scroll_wheel(&ex.tree->vsb, up ? -1 : 1))
+                    w2k_win_dirty(w);
+                return 1;
+            }
+            /* Default: scroll the file list (vertical, or horizontal in List). */
+            {
+                w2k_list_layout(ex.list);
+                W2kScroll *s = (ex.list->mode == LV_LIST) ? &ex.list->hsb
+                                                          : &ex.list->vsb;
+                if (w2k_scroll_wheel(s, up ? -1 : 1)) {
+                    ex.list->top = ex.list->vsb.pos;
+                    ex.list->scroll_x = ex.list->hsb.pos;
+                    w2k_win_dirty(w);
+                }
+            }
+            return 1;
+        }
         if (w2k_menubar_press(ex.mb, &e->xbutton)) { w2k_win_dirty(w); return 1; }
         if (w2k_toolbar_press(ex.tb, &e->xbutton)) { w2k_win_dirty(w); return 1; }
-        if (w2k_combo_press(ex.addr, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        if (ex.show_address && w2k_combo_press(ex.addr, &e->xbutton)) {
+            if (ex.search) ex.search->focused = 0;
+            if (ex.addr->edit && ex.addr->edit->focused) {
+                ex.list->focused = 0;
+                if (ex.tree) ex.tree->focused = 0;
+            }
+            w2k_win_dirty(w);
+            return 1;
+        }
+        if (ex.show_address && w2k_edit_press(ex.search, &e->xbutton)) {
+            ex.list->focused = 0;
+            if (ex.tree) ex.tree->focused = 0;
+            w2k_win_dirty(w);
+            return 1;
+        }
         if (ex.show_tree && w2k_rect_hit(&ex.split_r, x, y)) {
             ex.dragging_split = 1;
             return 1;
@@ -2547,11 +2733,13 @@ static int event(W2kWin *w, XEvent *e)
         if (ex.show_tree && w2k_tree_press(ex.tree, &e->xbutton)) {
             ex.list->focused = 0;
             ex.tree->focused = 1;
+            if (ex.search) ex.search->focused = 0;
             w2k_win_dirty(w);
             return 1;
         }
         if (w2k_list_press(ex.list, &e->xbutton)) {
             ex.tree->focused = 0;
+            if (ex.search) ex.search->focused = 0;
             /* A press on a selected item may become a drag; a press on empty
              * space is the rubber band's, never a drag of what was selected
              * before. */
@@ -2610,6 +2798,16 @@ static int event(W2kWin *w, XEvent *e)
             w2k_win_dirty(w);
             return 1;
         }
+        if (ex.show_address && ex.addr && ex.addr->edit &&
+            w2k_edit_motion(ex.addr->edit, &e->xmotion)) {
+            w2k_win_dirty(w);
+            return 1;
+        }
+        if (ex.show_address && ex.search &&
+            w2k_edit_motion(ex.search, &e->xmotion)) {
+            w2k_win_dirty(w);
+            return 1;
+        }
         if (w2k_toolbar_motion(ex.tb, &e->xmotion) ||
             w2k_list_motion(ex.list, &e->xmotion)) { w2k_win_dirty(w); return 1; }
         return 0;
@@ -2624,17 +2822,92 @@ static int event(W2kWin *w, XEvent *e)
         }
         ex.dragging_split = 0;
         w2k_toolbar_release(ex.tb);
+        if (ex.addr && ex.addr->edit) w2k_edit_release(ex.addr->edit);
+        if (ex.search) w2k_edit_release(ex.search);
         w2k_list_release(ex.list, &e->xbutton);
         w2k_win_dirty(w);
         return 1;
     case KeyPress: {
         if (w2k_menubar_key(ex.mb, &e->xkey)) { w2k_win_dirty(w); return 1; }
         KeySym ks = XLookupKeysym(&e->xkey, 0);
+
+        /* Editable address bar: Enter navigates, Tab completes a path. */
+        if (ex.show_address && ex.addr && ex.addr->editable &&
+            ex.addr->edit && ex.addr->edit->focused) {
+            if (ks == XK_Return || ks == XK_KP_Enter) {
+                addr_go();
+                if (ex.addr->edit) ex.addr->edit->focused = 0;
+                ex.list->focused = 1;
+                w2k_win_dirty(w);
+                return 1;
+            }
+            if (ks == XK_Tab || ks == XK_ISO_Left_Tab) {
+                addr_complete();
+                w2k_win_dirty(w);
+                return 1;
+            }
+            if (ks == XK_Escape) {
+                if (ex.addr->edit) {
+                    ex.addr->edit->focused = 0;
+                    w2k_combo_set_text(ex.addr,
+                        ex.cur.kind == K_FS ? ex.cur.path : "");
+                }
+                ex.list->focused = 1;
+                w2k_win_dirty(w);
+                return 1;
+            }
+            if (w2k_combo_key(ex.addr, &e->xkey)) {
+                w2k_win_dirty(w);
+                return 1;
+            }
+        }
+
+        /* Search bar focused: Enter applies the filter and unfocuses;
+         * Escape clears focus (and the filter if empty). */
+        if (ex.show_address && ex.search && ex.search->focused) {
+            if (ks == XK_Return || ks == XK_KP_Enter) {
+                const char *t = w2k_edit_text(ex.search);
+                snprintf(ex.search_pat, sizeof ex.search_pat, "%s", t ? t : "");
+                ex.search->focused = 0;
+                ex.list->focused = 1;
+                refill_list();
+                w2k_win_dirty(w);
+                return 1;
+            }
+            if (ks == XK_Escape) {
+                ex.search->focused = 0;
+                ex.list->focused = 1;
+                w2k_win_dirty(w);
+                return 1;
+            }
+            if (w2k_edit_key(ex.search, &e->xkey)) {
+                w2k_win_dirty(w);
+                return 1;
+            }
+        }
+
         if (e->xkey.state & Mod1Mask) {
             if (ks == XK_Left)  { command(NULL, ID_BACK); return 1; }
             if (ks == XK_Right) { command(NULL, ID_FORWARD); return 1; }
             if (ks == XK_Up)    { command(NULL, ID_UP); return 1; }
             if (ks == XK_Return) { command(NULL, ID_PROPS); return 1; }
+            /* Alt+1..4 select folder view: Large, Small, List, Details. */
+            if (ks == XK_1 || ks == XK_KP_1) {
+                ex.view = ID_V_LARGE; list_configure(); viewmem_store();
+                w2k_win_dirty(w); return 1;
+            }
+            if (ks == XK_2 || ks == XK_KP_2) {
+                ex.view = ID_V_SMALL; list_configure(); viewmem_store();
+                w2k_win_dirty(w); return 1;
+            }
+            if (ks == XK_3 || ks == XK_KP_3) {
+                ex.view = ID_V_LIST; list_configure(); viewmem_store();
+                w2k_win_dirty(w); return 1;
+            }
+            if (ks == XK_4 || ks == XK_KP_4) {
+                ex.view = ID_V_DETAILS; list_configure(); viewmem_store();
+                w2k_win_dirty(w); return 1;
+            }
         }
         if ((e->xkey.state & ControlMask) && (ks == XK_n || ks == XK_N)) {
             /* A new window on this folder. */
@@ -2652,7 +2925,42 @@ static int event(W2kWin *w, XEvent *e)
             case XK_v: case XK_V: command(NULL, ID_PASTE); return 1;
             case XK_a: case XK_A: command(NULL, ID_SELECTALL); return 1;
             case XK_z: case XK_Z: command(NULL, ID_UNDO); return 1;
+            case XK_h: case XK_H: command(NULL, ID_SHOW_HIDDEN); return 1;
+            case XK_f: case XK_F:
+                /* Ctrl+F focuses the search bar; caret at the start. */
+                if (ex.show_address && ex.search) {
+                    if (ex.addr && ex.addr->edit) ex.addr->edit->focused = 0;
+                    ex.search->focused = 1;
+                    ex.list->focused = 0;
+                    if (ex.tree) ex.tree->focused = 0;
+                    ex.search->caret = 0;
+                    ex.search->sel = 0;
+                    ex.search->caret_on = 1;
+                    w2k_win_dirty(w);
+                    return 1;
+                }
+                break;
             }
+        }
+
+        /* `/` focuses the address bar (path), caret at the end. */
+        if (ex.show_address && ex.addr && ex.addr->editable &&
+            ex.addr->edit &&
+            !(e->xkey.state & (ControlMask | Mod1Mask | Mod4Mask)) &&
+            (ks == XK_slash || ks == XK_KP_Divide)) {
+            if (ex.search) ex.search->focused = 0;
+            ex.addr->edit->focused = 1;
+            ex.list->focused = 0;
+            if (ex.tree) ex.tree->focused = 0;
+            {
+                const char *t = w2k_combo_text(ex.addr);
+                int n = t ? (int)strlen(t) : 0;
+                ex.addr->edit->caret = n;
+                ex.addr->edit->sel = n;
+                ex.addr->edit->caret_on = 1;
+            }
+            w2k_win_dirty(w);
+            return 1;
         }
         if (ks == XK_F5)     { command(NULL, ID_REFRESH); return 1; }
         if (ks == XK_F2)     { command(NULL, ID_RENAME); return 1; }
@@ -2662,6 +2970,26 @@ static int event(W2kWin *w, XEvent *e)
             return 1;
         }
         if (ks == XK_BackSpace) { command(NULL, ID_UP); return 1; }
+
+        /* Type any letter a–z to focus the search bar and start filtering.
+         * Skip when the address bar already has the caret. */
+        if (ex.show_address && ex.search &&
+            !(ex.addr && ex.addr->edit && ex.addr->edit->focused) &&
+            !(e->xkey.state & (ControlMask | Mod1Mask | Mod4Mask)) &&
+            ((ks >= XK_a && ks <= XK_z) || (ks >= XK_A && ks <= XK_Z))) {
+            char buf[8] = { 0 };
+            XLookupString(&e->xkey, buf, sizeof buf, NULL, NULL);
+            if (buf[0]) {
+                ex.search->focused = 1;
+                ex.list->focused = 0;
+                if (ex.tree) ex.tree->focused = 0;
+                w2k_edit_set(ex.search, "");
+                w2k_edit_insert(ex.search, buf);
+                w2k_win_dirty(w);
+                return 1;
+            }
+        }
+
         if (ex.tree->focused && w2k_tree_key(ex.tree, &e->xkey)) {
             w2k_win_dirty(w);
             return 1;
@@ -2725,7 +3053,11 @@ int main(int argc, char **argv)
     w2k_toolbar_add(ex.tb, ID_PROPS, ICO_PROPERTIES, NULL);
     w2k_toolbar_add(ex.tb, ID_VIEWS, ICO_VIEWS, NULL);
 
-    ex.addr = w2k_combo_new(0);
+    ex.addr = w2k_combo_new(1);           /* editable path with Tab complete */
+    if (ex.addr->edit) w2k_edit_bind(ex.addr->edit, ex.win);
+    ex.search = w2k_edit_new(0);
+    w2k_edit_bind(ex.search, ex.win);
+    ex.search_pat[0] = 0;
 
     ex.tree = w2k_tree_new();
     ex.tree->on_select = on_tree_select;
@@ -2804,6 +3136,7 @@ int main(int argc, char **argv)
     w2k_menubar_free(ex.mb);
     w2k_toolbar_free(ex.tb);
     w2k_combo_free(ex.addr);
+    w2k_edit_free(ex.search);
     w2k_tree_free(ex.tree);
     w2k_list_free(ex.list);
     w2k_status_free(ex.sb);
