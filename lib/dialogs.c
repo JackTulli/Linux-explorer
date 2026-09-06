@@ -240,9 +240,12 @@ static void hsv_to_rgb(float h, float s, float v, int *r, int *g, int *b)
     *r = (int)((rf + m) * 255.f + 0.5f);
     *g = (int)((gf + m) * 255.f + 0.5f);
     *b = (int)((bf + m) * 255.f + 0.5f);
-    if (*r < 0) *r = 0; if (*r > 255) *r = 255;
-    if (*g < 0) *g = 0; if (*g > 255) *g = 255;
-    if (*b < 0) *b = 0; if (*b > 255) *b = 255;
+    if (*r < 0) *r = 0;
+    if (*r > 255) *r = 255;
+    if (*g < 0) *g = 0;
+    if (*g > 255) *g = 255;
+    if (*b < 0) *b = 0;
+    if (*b > 255) *b = 255;
 }
 
 typedef struct {
@@ -258,15 +261,38 @@ static void cp_paint(W2kWin *w, Drawable d)
     int fh = w2k_font_height(F_UI);
     w2k_text(d, F_UI, 12, 12, "Color", C_TEXT);
 
-    /* Saturation / value square. */
-    for (int y = 0; y < p->sv.h; y++) {
-        float vv = 1.f - (float)y / (float)(p->sv.h - 1);
-        for (int x = 0; x < p->sv.w; x++) {
-            float ss = (float)x / (float)(p->sv.w - 1);
-            int r, g, b;
-            hsv_to_rgb(p->h, ss, vv, &r, &g, &b);
-            w2k_fill_rgb(d, p->sv.x + x, p->sv.y + y, 1, 1, r, g, b);
+    /* Saturation / value square: rendered as one image per hue and put
+     * up in one request -- a fill per pixel was 32,000 requests on every
+     * motion of a drag. Built at the size it has on the screen. */
+    {
+        static Pixmap sq;
+        static int sq_hue = -1, sq_w, sq_h;
+        int pw = w2k_cw(p->sv.x, p->sv.w), ph = w2k_cw(p->sv.y, p->sv.h);
+        int hue = (int)(p->h * 4);                 /* quarter degrees */
+        if (sq && (sq_hue != hue || sq_w != pw || sq_h != ph)) { w2k_free_pixmap(sq); sq = 0; }
+        if (!sq && pw > 0 && ph > 0) {
+            char *pixels = malloc((size_t)pw * ph * 4);
+            XImage *im = pixels ? XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap, 0,
+                                               pixels, (unsigned)pw, (unsigned)ph, 32, 0) : NULL;
+            if (!im) free(pixels);
+            else {
+                for (int y = 0; y < ph; y++) {
+                    float vv = 1.f - (float)y / (float)(ph - 1 > 0 ? ph - 1 : 1);
+                    for (int x = 0; x < pw; x++) {
+                        float ss = (float)x / (float)(pw - 1 > 0 ? pw - 1 : 1);
+                        int r, g, b;
+                        hsv_to_rgb(p->h, ss, vv, &r, &g, &b);
+                        XPutPixel(im, x, y, w2k_rgb(r, g, b));
+                    }
+                }
+                sq = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)pw, (unsigned)ph, w2k.depth);
+                XPutImage(w2k.dpy, sq, w2k_copy_gc(), im, 0, 0, 0, 0, (unsigned)pw, (unsigned)ph);
+                XDestroyImage(im);
+                sq_hue = hue; sq_w = pw; sq_h = ph;
+            }
         }
+        if (sq) XCopyArea(w2k.dpy, sq, d, w2k_copy_gc(), 0, 0, (unsigned)pw, (unsigned)ph,
+                          w2k_cx(p->sv.x), w2k_cx(p->sv.y));
     }
     w2k_edge(d, p->sv.x - 1, p->sv.y - 1, p->sv.w + 2, p->sv.h + 2,
              EDGE_SUNKEN_THIN, BF_RECT);

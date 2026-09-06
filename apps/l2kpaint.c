@@ -844,23 +844,32 @@ static void blit_visible(Drawable d)
         out_h = pt.canvas_r.h - (r.y - pt.canvas_r.y);
     if (out_w <= 0 || out_h <= 0) return;
 
-    /* Row buffer of X pixels — far faster than XPutPixel per point. */
-    char *pixels = malloc((size_t)out_w * out_h * 4);
+    /* The picture is put up in screen pixels: on a scaled desktop each
+     * screen pixel maps back to a logical one, then to the document. */
+    int px0 = w2k_cx(r.x), py0 = w2k_cx(r.y);
+    int pw = w2k_cw(r.x, out_w), ph = w2k_cw(r.y, out_h);
+    if (pw <= 0 || ph <= 0) return;
+    char *pixels = malloc((size_t)pw * ph * 4);
     if (!pixels) return;
     XImage *xi = XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap, 0,
-                              pixels, out_w, out_h, 32, 0);
+                              pixels, (unsigned)pw, (unsigned)ph, 32, 0);
     if (!xi) { free(pixels); return; }
 
-    for (int y = 0; y < out_h; y++) {
-        int dy = doc_y0 + y / pt.zoom;
-        for (int x = 0; x < out_w; x++) {
-            int dx = doc_x0 + x / pt.zoom;
+    int sc = w2k_ui_scale;
+    for (int y = 0; y < ph; y++) {
+        int ly = (int)((long)y * 100 / sc);
+        int dy = doc_y0 + ly / pt.zoom;
+        if (dy >= pt.h) dy = pt.h - 1;
+        for (int x = 0; x < pw; x++) {
+            int lx = (int)((long)x * 100 / sc);
+            int dx = doc_x0 + lx / pt.zoom;
+            if (dx >= pt.w) dx = pt.w - 1;
             int cr, cg, cb;
             composite_px(dx, dy, &cr, &cg, &cb);
             XPutPixel(xi, x, y, w2k_rgb(cr, cg, cb));
         }
     }
-    XPutImage(w2k.dpy, d, w2k.gc, xi, 0, 0, r.x, r.y, out_w, out_h);
+    XPutImage(w2k.dpy, d, w2k.gc, xi, 0, 0, px0, py0, (unsigned)pw, (unsigned)ph);
     XDestroyImage(xi);
     w2k_edge(d, r.x - 1, r.y - 1, out_w + 2, out_h + 2, EDGE_SUNKEN_THIN, BF_RECT);
 }

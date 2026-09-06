@@ -163,6 +163,7 @@ static int pin_icon_resolve(const Pin *p)
     if (strstr(p->cmd, "l2kcontrol"))  return ICO_CONTROLPANEL;
     if (strstr(p->cmd, "l2kdisplay"))  return ICO_SETTINGS;
     if (strstr(p->cmd, "l2kimage"))    return ICO_PAINT;
+    if (strstr(p->cmd, "l2kpaint"))    return ICO_PAINT;
     if (strstr(p->cmd, "term"))        return ICO_TERMINAL;
     return ICO_APP;
 }

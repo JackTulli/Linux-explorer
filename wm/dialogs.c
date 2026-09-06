@@ -849,13 +849,20 @@ void wm_run_dialog(void)
         const char *cmd = w2k_combo_text(r.open);
         if (*cmd) {
             run_mru_save(r.open, cmd);
-            /* Absolute paths and URLs go through the desktop handler. */
-            if (cmd[0] == '/' ||
-                !strncasecmp(cmd, "https://", 8) ||
-                !strncasecmp(cmd, "http://", 7) ||
-                !strncasecmp(cmd, "file://", 7)) {
-                char open[1100];
-                snprintf(open, sizeof open, "xdg-open %s", cmd);
+            /* A path to a program runs, as it does in Windows; a path to
+             * a document or folder, or a URL, opens through the desktop
+             * handler. The name is quoted: spaces and shell characters
+             * in a path must not be parsed by the shell. */
+            struct stat st;
+            int is_url = !strncasecmp(cmd, "https://", 8) ||
+                         !strncasecmp(cmd, "http://", 7) ||
+                         !strncasecmp(cmd, "file://", 7);
+            int is_doc = cmd[0] == '/' && stat(cmd, &st) == 0 &&
+                         !(S_ISREG(st.st_mode) && access(cmd, X_OK) == 0);
+            if (is_url || is_doc) {
+                char q[2200], open[2300];
+                w2k_shell_quote(cmd, q, sizeof q);
+                snprintf(open, sizeof open, "xdg-open %s", q);
                 wm_spawn(open);
             } else {
                 /* "cmd" and "command" open the terminal, as they open the

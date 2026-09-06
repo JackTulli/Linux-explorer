@@ -120,6 +120,9 @@ Try it nested first, without logging out of anything:
                    experimentally, the desktop's own: see Scaling below
     l2kdevmgmt     Device Manager: the machine's hardware from sysfs, drivers,
                    enable/disable, DKMS driver install (contributed)
+    l2kpaint       Paint: pencil, brush, eraser, line, rectangle, ellipse,
+                   fill, picker and text tools, layers, undo, zoom, the
+                   classic palette and an HSV colour dialog (contributed)
     l2knotepad, l2kcalc, l2kcharmap, l2kimage (Imaging), l2ktaskmgr,
     l2ksnip        Snipping Tool
     l2kupdate      Windows Update: checks for and installs a newer Linux 2000

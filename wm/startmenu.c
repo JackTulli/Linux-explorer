@@ -252,7 +252,7 @@ void startmenu_open(void)
     w2k_menu_sep(acc);
     prog_item(acc, SM_CALC,     "&Calculator", "l2kcalc", ICO_CALC);
     prog_item(acc, SM_NOTEPAD,  "&Notepad",    "l2knotepad", ICO_NOTEPAD);
-    prog_item(acc, SM_PAINT,    "&Paint",      "w2kpaint", ICO_PAINT);
+    prog_item(acc, SM_PAINT,    "&Paint",      "l2kpaint", ICO_PAINT);
     prog_item(acc, SM_SNIP,     "&Snipping Tool", "l2ksnip", ICO_SNIP);
     prog_item(acc, SM_IMAGING,  "&Imaging",    "l2kimage", ICO_PAINT);
     w2k_menu_item(acc, SM_TERMINAL, "Command &Prompt", NULL, ICO_TERMINAL);
@@ -387,7 +387,7 @@ void startmenu_dispatch(int id)
     case SM_LINVER:       wm_spawn("linver"); break;
     case SM_UPDATE:       wm_spawn("l2kupdate"); break;
     case SM_FOLDEROPTS:   wm_spawn("l2kcontrol folders"); break;
-    case SM_PAINT:        wm_spawn("w2kpaint"); break;
+    case SM_PAINT:        wm_spawn("l2kpaint"); break;
     case SM_SNIP:         wm_spawn("l2ksnip"); break;
     case SM_TERMINAL:     wm_spawn(terminal_cmd()); break;
     case SM_MYDOCS:       wm_spawn("l2kexplorer ~"); break;
