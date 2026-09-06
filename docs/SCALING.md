@@ -17,6 +17,22 @@ at 125, 150 and 175% no filter can be: nearest gives uneven pixels
 (some doubled, some not) and bilinear gives a slight blur. The desktop
 picks bilinear there, having tried the other.
 
+## Sharp scaling (supersampled)
+
+The third choice, "Sharp", is how GNOME's mutter and the Wayland
+compositors produce a fractional scale: render at the next whole scale
+and shrink. The desktop draws itself at 200%, where everything is an
+exact pixel doubling and nothing is invented, and xrandr's transform
+makes the panel show that virtual screen *smaller* by 200/wanted
+(`--scale 1.3333` for 150%). Downscaling with bilinear averages real
+pixels rather than inventing them, so edges and text stay crisp where
+upscaling from 100% smears them. The cost is a virtual screen a third
+larger than the panel for the GPU to render, and fonts hinted at 200%
+then shrunk rather than hinted at 150%. It uses the desktop-scaling
+machinery below, at its one exact setting. Each monitor keeps its own
+scale: a second monitor wanting 100% gets `--scale 2` from the same
+200% desktop.
+
 ## Desktop scaling (the experimental way)
 
 The panel stays at its native size and the desktop renders larger. This

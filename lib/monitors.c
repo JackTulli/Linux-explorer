@@ -208,15 +208,14 @@ int w2k_monitors_apply_saved(void)
          * screen stretched over the panel). 100 resets an earlier one. */
         if (c->rate[0] && c->mode[0])
             snprintf(extra, sizeof extra, " --rate %s", c->rate);
-        if (c->scale && c->scale != 100 && w2k_scale_mode != SCALE_DESKTOP) {
-            /* 200 per cent is an exact doubling, so the nearest filter
-             * shows every pixel whole; the fractional sizes cannot be,
-             * and bilinear looks better there than uneven pixels. With
-             * desktop scaling the screen is left alone. */
+        /* The transform follows the scaling mode: the screen's own, or
+         * the desktop rendering at w2k_ui_scale_pref and the panel shown
+         * shrunk or stretched to what this monitor wants. */
+        const char *flt;
+        double f = w2k_scale_transform(w2k_scale_mode, w2k_ui_scale_pref, c->scale, &flt);
+        if (f > 1.0001 || f < 0.9999) {
             char sc[64];
-            snprintf(sc, sizeof sc, " --scale %.4fx%.4f --filter %s",
-                     100.0 / c->scale, 100.0 / c->scale,
-                     c->scale == 200 ? "nearest" : "bilinear");
+            snprintf(sc, sizeof sc, " --scale %.4fx%.4f --filter %s", f, f, flt);
             strncat(extra, sc, sizeof extra - strlen(extra) - 1);
         } else {
             strncat(extra, " --scale 1x1 --filter bilinear", sizeof extra - strlen(extra) - 1);

@@ -188,13 +188,20 @@ Start menu searches.
 
 ## Scaling
 
-Display Properties > Settings offers two ways to make everything bigger
-on a dense panel. The plain one is the screen's: xrandr draws a smaller
-virtual screen and stretches it over the panel (`--scale`), with the
-nearest filter at 200%, where every pixel becomes an exact two-by-two
-block, and bilinear at 125/150/175%, where it cannot.
+Display Properties > Settings offers three ways to make everything
+bigger on a dense panel, in its Scaling method box. The plain one is the
+screen's: xrandr draws a smaller virtual screen and stretches it over
+the panel (`--scale`), with the nearest filter at 200%, where every
+pixel becomes an exact two-by-two block, and bilinear at 125/150/175%,
+where it cannot and is a little soft.
 
-The experimental one -- "scale the desktop itself, not the screen" -- is
+"Sharp" is what GNOME and the Wayland compositors do for a fraction: the
+desktop draws itself at 200%, an exact pixel doubling, and xrandr shows
+the panel that picture shrunk to the scale you asked for. Shrinking
+stays crisp where stretching smears, at the cost of a larger virtual
+screen for the GPU. It takes effect at the next logon.
+
+The experimental one -- "Desktop", drawn at the scale itself -- is
 how a real desktop does it: the screen stays at its native size and the
 desktop renders larger. Fonts open at the scaled size, icons and the XP
 and 7 chrome are enlarged from their art (exactly at 200%), title bars,

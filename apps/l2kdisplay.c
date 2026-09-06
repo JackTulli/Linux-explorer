@@ -229,9 +229,19 @@ static void read_monitors(void)
                     if (abs(pct - scales[k]) <= 2) m->scale = scales[k];
             }
         }
-        /* Under desktop scaling xrandr shows no transform; the scale
-         * lives in the scheme instead. */
-        if (w2k_scale_mode == SCALE_DESKTOP && m->primary) m->scale = w2k_ui_scale_pref;
+        /* Under desktop or supersampled scaling the transform xrandr
+         * shows is the render scale over the wanted one, so the wanted
+         * scale is read back from it. */
+        if (w2k_scale_mode != SCALE_XRANDR && m->cur_mode >= 0 && m->w > 0) {
+            int mw = 0, mh = 0;
+            sscanf(m->modes[m->cur_mode], "%dx%d", &mw, &mh);
+            if (mw > 0) {
+                int want = (int)(w2k_ui_scale_pref * (double)mw / m->w + 0.5);
+                m->scale = 100;
+                for (int k = 0; k < NSCALES; k++)
+                    if (abs(want - scales[k]) <= 3) m->scale = scales[k];
+            }
+        }
         m->want_scale = m->scale;
         m->want_primary = m->primary;
         m->want_enabled = m->enabled;
@@ -240,9 +250,21 @@ static void read_monitors(void)
     }
 }
 
-/* The experimental way: the desktop draws itself larger at the panel's
- * own resolution instead of xrandr stretching a smaller screen. */
-static int desktop_scaling;
+/* How the scale is produced: SCALE_XRANDR, SCALE_SUPER or SCALE_DESKTOP,
+ * from the Method box on the Settings page. */
+static int scale_method;
+static const int method_modes[3] = { SCALE_XRANDR, SCALE_SUPER, SCALE_DESKTOP };
+
+/* What the desktop would render at with the pending choices. */
+static int pending_render(void)
+{
+    int wants[8], primary = -1;
+    for (int i = 0; i < nmons && i < 8; i++) {
+        wants[i] = mons[i].want_scale > 0 ? mons[i].want_scale : 100;
+        if (mons[i].want_primary && primary < 0) primary = i;
+    }
+    return w2k_scale_render(scale_method, wants, nmons < 8 ? nmons : 8, primary < 0 ? 0 : primary);
+}
 
 /* Size of a monitor as it *would* be with its pending mode selected --
  * the layout has to show the new size before Apply, or dragging to line up
@@ -254,11 +276,11 @@ static void pending_size(const Monitor *m, int *w, int *h)
         sscanf(m->modes[m->mode_sel], "%dx%d", &mw, &mh);
     if (mw <= 0 || mh <= 0) { mw = m->w; mh = m->h; }
     if (mw <= 0 || mh <= 0) { mw = 1024; mh = 768; }
-    /* Scaled, the output covers a smaller virtual area -- unless the
-     * desktop is doing the scaling, when the screen stays as it is. */
-    int sc = m->want_scale > 0 && !desktop_scaling ? m->want_scale : 100;
-    *w = (mw * 100 + sc / 2) / sc;
-    *h = (mh * 100 + sc / 2) / sc;
+    /* The virtual area: smaller when the screen stretches, larger when
+     * the desktop renders at 200% and the panel shows it shrunk. */
+    double f = w2k_scale_transform(scale_method, pending_render(), m->want_scale, NULL);
+    *w = (int)(mw * f + 0.5);
+    *h = (int)(mh * f + 0.5);
 }
 
 /* The xrandr words for a monitor's pending rate and scale. */
@@ -270,15 +292,11 @@ static void rate_scale_args(const Monitor *m, char *out, int n)
         snprintf(out, (size_t)n, " --rate %s", m->rates[m->mode_sel][m->rate_sel]);
     }
     char sc[72];
-    /* Screen scaling is xrandr's transform. At 200 per cent the nearest
-     * filter shows every pixel as an exact two-by-two block; at the
-     * fractional sizes it cannot, and bilinear looks better than uneven
-     * pixels. Desktop scaling uses no transform at all: the desktop
-     * itself is drawn larger, at the panel's own resolution. */
-    int scale = desktop_scaling ? 100 : m->want_scale;
-    if (scale && scale != 100)
-        snprintf(sc, sizeof sc, " --scale %.4fx%.4f --filter %s", 100.0 / scale,
-                 100.0 / scale, scale == 200 ? "nearest" : "bilinear");
+    /* The transform for the method: see w2k_scale_transform(). */
+    const char *flt;
+    double f = w2k_scale_transform(scale_method, pending_render(), m->want_scale, &flt);
+    if (f > 1.0001 || f < 0.9999)
+        snprintf(sc, sizeof sc, " --scale %.4fx%.4f --filter %s", f, f, flt);
     else
         snprintf(sc, sizeof sc, " --scale 1x1 --filter bilinear");
     strncat(out, sc, (size_t)n - strlen(out) - 1);
@@ -400,7 +418,8 @@ typedef struct {
 
     /* Settings */
     W2kCombo *mon, *mode, *rate, *scale;
-    W2kRect   primary_box, enabled_box, layout_box, scaling_box;
+    W2kRect   primary_box, enabled_box, layout_box;
+    W2kCombo *method;               /* Screen / Sharp / Desktop */
     W2kRect   decorate_box;                 /* Appearance page */
     W2kCombo *iconset;                      /* which system's icons */
     char      sets[16][32];
@@ -828,6 +847,16 @@ static void on_rate(void *u, int i)
     w2k_win_dirty(dl.win);
 }
 
+static void on_method(void *u, int i)
+{
+    (void)u;
+    if (i < 0 || i > 2) return;
+    scale_method = method_modes[i];
+    for (int k = 0; k < nmons; k++) snap_monitor(k);   /* virtual sizes change */
+    dl.dirty = 1;
+    w2k_win_dirty(dl.win);
+}
+
 static void on_scale(void *u, int i)
 {
     (void)u;
@@ -1101,22 +1130,25 @@ static void paint(W2kWin *w, Drawable d)
                           "Use this device as the &primary monitor",
                           valid && mons[cur].want_primary, 0,
                           !valid || !mons[cur].want_enabled);
-        w2k_draw_checkbox(d, dl.scaling_box.x, dl.scaling_box.y,
-                          "E&xperimental: scale the desktop itself, not the screen",
-                          desktop_scaling, 0, 0);
+        w2k_text_mnemonic(d, F_UI, c.x + 10, dl.method->r.y + (21 - fh) / 2, "Scaling &method:", C_TEXT, 1);
+        w2k_combo_draw(d, dl.method);
         if (valid) {
             char info[200];
             int mw, mh;
             pending_size(&mons[cur], &mw, &mh);
             const char *how = "";
-            if (desktop_scaling && mons[cur].want_primary && mons[cur].want_scale != 100)
-                how = " -- desktop drawn larger; takes effect at the next logon";
-            else if (desktop_scaling && !mons[cur].want_primary && mons[cur].want_scale != 100)
-                how = " -- desktop scaling follows the primary monitor's scale";
-            else if (mons[cur].want_scale == 200)
-                how = " (scaled, every pixel doubled)";
-            else if (mons[cur].want_scale > 100)
-                how = " (scaled by the screen; a little soft)";
+            int want = mons[cur].want_scale, render = pending_render();
+            if (want == 100 && render == 100)
+                how = "";
+            else if (scale_method == SCALE_XRANDR)
+                how = want == 200 ? " (screen scaled, every pixel doubled)"
+                                  : " (screen scaled by xrandr; a little soft)";
+            else if (scale_method == SCALE_SUPER)
+                how = want == render ? " (desktop drawn at 200%; next logon)"
+                                     : " (drawn at 200%, shown shrunk: sharp; next logon)";
+            else
+                how = want == render ? " (desktop drawn larger; takes effect at the next logon)"
+                                     : " (desktop scale follows the primary; the screen makes up the rest)";
             snprintf(info, sizeof info, "%s -- %d x %d at %d, %d%s",
                      mons[cur].name, mw, mh, mons[cur].px, mons[cur].py, how);
             w2k_text(d, F_UI, c.x + 10, c.y + c.h - fh - 6, info, C_GRAYTEXT);
@@ -1173,16 +1205,12 @@ static void record_monitors(void)
         c->enabled = m->want_enabled;
         if (m->nmodes && m->rate_sel >= 0 && m->rate_sel < m->nrates[m->mode_sel])
             snprintf(c->rate, sizeof c->rate, "%s", m->rates[m->mode_sel][m->rate_sel]);
-        /* Under desktop scaling the screen keeps its native size and the
-         * scale is recorded for the desktop instead. */
-        c->scale = desktop_scaling ? 100 : m->want_scale;
+        /* What the monitor should show; the mode decides how the
+         * transform and the desktop's render scale produce it. */
+        c->scale = m->want_scale;
     }
-    w2k_scale_mode = desktop_scaling ? SCALE_DESKTOP : SCALE_XRANDR;
-    w2k_ui_scale_pref = 100;
-    if (desktop_scaling)
-        for (int i = 0; i < nmons; i++)
-            if (mons[i].want_primary && mons[i].want_scale > 0)
-                w2k_ui_scale_pref = mons[i].want_scale;
+    w2k_scale_mode = scale_method;
+    w2k_ui_scale_pref = pending_render();
 }
 
 static void do_apply(void)
@@ -1195,7 +1223,7 @@ static void do_apply(void)
     if (monitors) apply_monitors();
     dl.dirty = 0;
     w2k_win_dirty(dl.win);
-    int wanted = w2k_scale_mode == SCALE_DESKTOP ? w2k_ui_scale_pref : 100;
+    int wanted = w2k_scale_mode != SCALE_XRANDR ? w2k_ui_scale_pref : 100;
     if (monitors && wanted != running)
         w2k_msgbox(dl.win, "Display Properties",
                    "The desktop scale takes effect the next time you log on.\n"
@@ -1255,7 +1283,8 @@ static int event(W2kWin *w, XEvent *e)
             if (w2k_combo_press(dl.mon, &e->xbutton) ||
                 w2k_combo_press(dl.mode, &e->xbutton) ||
                 w2k_combo_press(dl.rate, &e->xbutton) ||
-                w2k_combo_press(dl.scale, &e->xbutton)) {
+                w2k_combo_press(dl.scale, &e->xbutton) ||
+                w2k_combo_press(dl.method, &e->xbutton)) {
                 w2k_win_dirty(w);
                 return 1;
             }
@@ -1265,13 +1294,6 @@ static int event(W2kWin *w, XEvent *e)
                 /* Exactly one primary, always. */
                 for (int i = 0; i < nmons; i++) mons[i].want_primary = (i == cur);
                 fill_monitor_combos();      /* the "(primary)" label moved */
-                dl.dirty = 1;
-                w2k_win_dirty(w);
-                return 1;
-            }
-            if (w2k_rect_hit(&dl.scaling_box, x, y)) {
-                desktop_scaling = !desktop_scaling;
-                for (int i = 0; i < nmons; i++) snap_monitor(i);   /* virtual sizes change */
                 dl.dirty = 1;
                 w2k_win_dirty(w);
                 return 1;
@@ -1549,8 +1571,14 @@ int main(void)
     dl.scale->r = (W2kRect){ c.x + c.w - 10 - 80, c.y + 246, 80, 21 };
     dl.enabled_box = (W2kRect){ c.x + 10, c.y + 278, c.w - 20, 16 };
     dl.primary_box = (W2kRect){ c.x + 10, c.y + 300, c.w - 20, 16 };
-    dl.scaling_box = (W2kRect){ c.x + 10, c.y + 322, c.w - 20, 16 };
-    desktop_scaling = w2k_scale_mode == SCALE_DESKTOP;
+    dl.method = w2k_combo_new(0);
+    dl.method->on_change = on_method;
+    w2k_combo_add(dl.method, "Screen (xrandr stretches the picture)");
+    w2k_combo_add(dl.method, "Sharp (drawn at 200%, shrunk to fit)");
+    w2k_combo_add(dl.method, "Desktop (experimental: drawn at the scale)");
+    scale_method = w2k_scale_mode;
+    dl.method->sel = scale_method == SCALE_SUPER ? 1 : scale_method == SCALE_DESKTOP ? 2 : 0;
+    dl.method->r = (W2kRect){ c.x + 100, c.y + 322, c.w - 110, 21 };
     fill_monitor_combos();
 
     /* Programs */
