@@ -21,7 +21,7 @@ struct W2kSkin {
      * it is exact). */
     unsigned char *rgba;
     Pixmap spm, smask;           /* the enlarged sheet, once built */
-    int    sscale, spw, sph;
+    int    sscale, spw, sph, smethod;
     /* Pieces of the sheet kept as tiles for w2k_skin_tile(), so a column
      * repeated across a caption is one filled rectangle, not one copy per
      * pixel. */
@@ -107,7 +107,8 @@ W2kSkin *w2k_skin_from_rgba(const unsigned char *rgba, int w, int h)
  * pieces of the sheet stay neighbours. Returns 0 without artwork. */
 static int ensure_scaled(W2kSkin *s)
 {
-    if (s->sscale == w2k_ui_scale && s->spm) return 1;
+    int method = w2k_ui_scale % 100 == 0 ? RS_NEAREST : w2k_resample;
+    if (s->sscale == w2k_ui_scale && s->smethod == method && s->spm) return 1;
     if (!s->rgba) return 0;
     if (s->spm) { XFreePixmap(w2k.dpy, s->spm); s->spm = 0; }
     if (s->smask) { XFreePixmap(w2k.dpy, s->smask); s->smask = 0; }
@@ -117,6 +118,17 @@ static int ensure_scaled(W2kSkin *s)
 
     int pw = w2k_px(s->w), ph = w2k_px(s->h);
     if (pw < 1 || ph < 1) return 0;
+    if (method != RS_NEAREST) {
+        /* A filtered enlargement: the sheet as a picture. */
+        unsigned char *big = w2k_rgba_resample(s->rgba, s->w, s->h, pw, ph, method);
+        if (!big) return 0;
+        make_pixmaps(big, pw, ph, &s->spm, &s->smask, NULL);
+        free(big);
+        s->sscale = w2k_ui_scale;
+        s->smethod = method;
+        s->spw = pw; s->sph = ph;
+        return 1;
+    }
     unsigned char *big = malloc((size_t)pw * ph * 4);
     if (!big) return 0;
     /* Each source pixel c owns the destination columns w2k_px(c) up to
@@ -141,6 +153,7 @@ static int ensure_scaled(W2kSkin *s)
     make_pixmaps(big, pw, ph, &s->spm, &s->smask, NULL);
     free(big);
     s->sscale = w2k_ui_scale;
+    s->smethod = method;
     s->spw = pw; s->sph = ph;
     return 1;
 }

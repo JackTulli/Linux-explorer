@@ -685,6 +685,12 @@ int w2k_scheme_load(const char *path)
             if (v >= 100 && v <= 400) w2k_ui_scale_pref = v;
             continue;
         }
+        if (!strcasecmp(line, "Resample")) {
+            w2k_resample = !strcasecmp(val, "nearest") ? RS_NEAREST
+                         : !strcasecmp(val, "bilinear") ? RS_BILINEAR
+                         : !strcasecmp(val, "lanczos") ? RS_LANCZOS : RS_CUBIC;
+            continue;
+        }
         if (!strcasecmp(line, "ScaleMode")) {
             w2k_scale_mode = strcasecmp(val, "desktop") == 0 ? SCALE_DESKTOP
                            : strcasecmp(val, "supersample") == 0 ? SCALE_SUPER : SCALE_XRANDR;
@@ -774,6 +780,9 @@ int w2k_scheme_save(const char *path)
             w2k_theme == THEME_BASIC7 ? "basic7" : "classic");
     fprintf(f, "IconSet=%s\n", w2k_icon_set);
     fprintf(f, "UiScale=%d\n", w2k_ui_scale_pref);
+    fprintf(f, "Resample=%s\n", w2k_resample == RS_NEAREST ? "nearest"
+                                : w2k_resample == RS_BILINEAR ? "bilinear"
+                                : w2k_resample == RS_LANCZOS ? "lanczos" : "cubic");
     fprintf(f, "ScaleMode=%s\n", w2k_scale_mode == SCALE_DESKTOP ? "desktop"
                                 : w2k_scale_mode == SCALE_SUPER ? "supersample" : "xrandr");
     fprintf(f, "SoundPack=%s\n", w2k_sound_pack);

@@ -474,6 +474,18 @@ static inline int w2k_th(int v)                  /* a thickness: always scaled *
 /* One logical pixel of line: the span 1 maps to under the current mode. */
 static inline int w2k_t1(int at) { return w2k_scale_raw ? w2k_th(1) : w2k_cw(at, 1); }
 
+/* How the desktop's own artwork is resized at a fractional scale: the
+ * Resampling box on Display Properties > Settings. Whole scales are exact
+ * blocks whatever this says. */
+enum { RS_NEAREST, RS_BILINEAR, RS_CUBIC, RS_LANCZOS };
+extern int w2k_resample;
+unsigned char *w2k_rgba_resample(const unsigned char *src, int sw, int sh,
+                                 int dw, int dh, int method);
+/* The method for a resize from `from` to `to` pixels: exact multiples
+ * stay nearest. */
+static inline int w2k_resample_for(int from, int to)
+{ return (to >= from && to % from == 0) ? RS_NEAREST : w2k_resample; }
+
 /* Raw RGB -> pixel value on the current visual (TrueColor fast path). */
 unsigned long w2k_rgb(int r, int g, int b);
 void w2k_color_rgb(int color, int *r, int *g, int *b);

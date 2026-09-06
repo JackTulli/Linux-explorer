@@ -201,6 +201,10 @@ the panel that picture shrunk to the scale you asked for. Shrinking
 stays crisp where stretching smears, at the cost of a larger virtual
 screen for the GPU. It takes effect at the next logon.
 
+A Resampling box beside it picks the filter the desktop uses for its own
+artwork at a fraction -- icons, the XP and 7 chrome, the pointer, the
+wallpaper: Lanczos, cubic spline, bilinear or nearest.
+
 The experimental one -- "Desktop", drawn at the scale itself -- is
 how a real desktop does it: the screen stays at its native size and the
 desktop renders larger. Fonts open at the scaled size, icons and the XP

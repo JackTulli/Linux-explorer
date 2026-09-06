@@ -64,6 +64,22 @@ multiplies on the way to the screen:
 - The mouse pointer is enlarged from the cursor art: blocks at 200%,
   bilinear at fractions.
 
+### Resampling
+
+What the desktop enlarges itself -- icons from their 32-pixel art, the
+XP and 7 chrome sheets, the pointer, the wallpaper, Imaging's picture --
+goes through a resampler of the user's choice (Display Properties >
+Settings > Resampling): Lanczos-3, a Catmull-Rom cubic spline (the
+default), bilinear, or nearest neighbour. It is separable and
+phase-correct, works in premultiplied colour so transparent edges do not
+bleed, and widens its kernel when shrinking. A whole-number enlargement
+is always exact blocks whatever is chosen. This is the one place a
+better filter than bilinear can be had on X11: the X server's own screen
+transform offers only nearest and bilinear (its "good" and "best" are
+bilinear, and its convolution filter is a fixed kernel with no
+sub-pixel phase), so the choice applies to the pictures the desktop
+draws, not to the Screen method's stretch.
+
 ### Lines
 
 The hard part of a fractional scale is a line. A one-pixel line at 150%

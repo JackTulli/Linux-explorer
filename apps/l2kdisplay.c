@@ -420,6 +420,7 @@ typedef struct {
     W2kCombo *mon, *mode, *rate, *scale;
     W2kRect   primary_box, enabled_box, layout_box;
     W2kCombo *method;               /* Screen / Sharp / Desktop */
+    W2kCombo *resample;             /* how the artwork is resized at a fraction */
     W2kRect   decorate_box;                 /* Appearance page */
     W2kCombo *iconset;                      /* which system's icons */
     char      sets[16][32];
@@ -649,7 +650,7 @@ static void wallpaper_preview(Drawable d, int x, int y, int w, int h)
 {
     static Pixmap cache;
     static char cache_path[1024];
-    static int cache_style = -1, cache_w, cache_h;
+    static int cache_style = -1, cache_w, cache_h, cache_method = -1;
     /* Built and blitted in screen pixels: the picture is resampled once
      * at the size the little monitor has on the panel. */
     int px0 = w2k_cx(x), py0 = w2k_cx(y);
@@ -657,7 +658,7 @@ static void wallpaper_preview(Drawable d, int x, int y, int w, int h)
     if (pw <= 0 || ph <= 0) return;
     x = px0; y = py0; w = pw; h = ph;
     if (cache && !strcmp(cache_path, w2k_wallpaper) && cache_style == w2k_wallpaper_style &&
-        cache_w == w && cache_h == h) {
+        cache_w == w && cache_h == h && cache_method == w2k_resample) {
         XCopyArea(w2k.dpy, cache, d, w2k_copy_gc(), 0, 0, (unsigned)w, (unsigned)h, x, y);
         return;
     }
@@ -672,7 +673,7 @@ static void wallpaper_preview(Drawable d, int x, int y, int w, int h)
     if (cache) w2k_free_pixmap(cache);
     cache = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)w, (unsigned)h, w2k.depth);
     snprintf(cache_path, sizeof cache_path, "%s", w2k_wallpaper);
-    cache_style = w2k_wallpaper_style; cache_w = w; cache_h = h;
+    cache_style = w2k_wallpaper_style; cache_w = w; cache_h = h; cache_method = w2k_resample;
 
     /* The screen the preview stands for, so the picture keeps its scale. */
     const W2kMonitor *m = w2k_monitor_primary();
@@ -691,8 +692,32 @@ static void wallpaper_preview(Drawable d, int x, int y, int w, int h)
     XImage *im = pixels ? XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap, 0,
                                        pixels, (unsigned)w, (unsigned)h, 32, 0) : NULL;
     if (!im) { free(pixels); free(rgba); return; }
+    /* The stretched styles are shown through the chosen resampler, as
+     * the desktop will draw them: the picture at the size it takes on
+     * the little screen, then placed. */
+    unsigned char *sc = NULL;
+    int scw = 0, sch = 0, offx = 0, offy = 0;
+    if (w2k_resample != RS_NEAREST && (st == 2 || st == 3 || st == 4 || st == 5)) {
+        if (st == 2 || st == 5) { scw = w; sch = h; }
+        else {
+            scw = (int)((((long)iw << 16) + fx / 2) / fx * w / SW);
+            sch = (int)((((long)ih << 16) + fx / 2) / fx * h / SH);
+            offx = (w - scw) / 2; offy = (h - sch) / 2;
+        }
+        if (scw > 0 && sch > 0) sc = w2k_rgba_resample(rgba, iw, ih, scw, sch, w2k_resample);
+    }
     for (int py = 0; py < h; py++)
         for (int px = 0; px < w; px++) {
+            if (sc) {
+                int qx = px - offx, qy = py - offy;
+                unsigned long c = w2k.col[C_DESKTOP];
+                if (qx >= 0 && qy >= 0 && qx < scw && qy < sch) {
+                    const unsigned char *p = sc + ((size_t)qy * scw + qx) * 4;
+                    c = w2k_rgb(p[0], p[1], p[2]);
+                }
+                XPutPixel(im, px, py, c);
+                continue;
+            }
             int X = px * SW / w, Y = py * SH / h, sx, sy;
             if (st == 2 || st == 5) { sx = X * iw / SW; sy = Y * ih / SH; }
             else if (st == 3 || st == 4) { sx = (int)((fx * X + ox) >> 16); sy = (int)((fx * Y + oy) >> 16); }
@@ -708,6 +733,7 @@ static void wallpaper_preview(Drawable d, int x, int y, int w, int h)
         }
     XPutImage(w2k.dpy, cache, w2k_copy_gc(), im, 0, 0, 0, 0, (unsigned)w, (unsigned)h);
     XDestroyImage(im);
+    free(sc);
     free(rgba);
     XCopyArea(w2k.dpy, cache, d, w2k_copy_gc(), 0, 0, (unsigned)w, (unsigned)h, x, y);
 }
@@ -853,6 +879,16 @@ static void on_method(void *u, int i)
     if (i < 0 || i > 2) return;
     scale_method = method_modes[i];
     for (int k = 0; k < nmons; k++) snap_monitor(k);   /* virtual sizes change */
+    dl.dirty = 1;
+    w2k_win_dirty(dl.win);
+}
+
+static void on_resample(void *u, int i)
+{
+    (void)u;
+    static const int methods[4] = { RS_LANCZOS, RS_CUBIC, RS_BILINEAR, RS_NEAREST };
+    if (i < 0 || i > 3) return;
+    w2k_resample = methods[i];
     dl.dirty = 1;
     w2k_win_dirty(dl.win);
 }
@@ -1132,6 +1168,8 @@ static void paint(W2kWin *w, Drawable d)
                           !valid || !mons[cur].want_enabled);
         w2k_text_mnemonic(d, F_UI, c.x + 10, dl.method->r.y + (21 - fh) / 2, "Scaling &method:", C_TEXT, 1);
         w2k_combo_draw(d, dl.method);
+        w2k_text_mnemonic(d, F_UI, c.x + 10, dl.resample->r.y + (21 - fh) / 2, "Resa&mpling:", C_TEXT, 1);
+        w2k_combo_draw(d, dl.resample);
         if (valid) {
             char info[200];
             int mw, mh;
@@ -1284,7 +1322,8 @@ static int event(W2kWin *w, XEvent *e)
                 w2k_combo_press(dl.mode, &e->xbutton) ||
                 w2k_combo_press(dl.rate, &e->xbutton) ||
                 w2k_combo_press(dl.scale, &e->xbutton) ||
-                w2k_combo_press(dl.method, &e->xbutton)) {
+                w2k_combo_press(dl.method, &e->xbutton) ||
+                w2k_combo_press(dl.resample, &e->xbutton)) {
                 w2k_win_dirty(w);
                 return 1;
             }
@@ -1579,6 +1618,15 @@ int main(void)
     scale_method = w2k_scale_mode;
     dl.method->sel = scale_method == SCALE_SUPER ? 1 : scale_method == SCALE_DESKTOP ? 2 : 0;
     dl.method->r = (W2kRect){ c.x + 100, c.y + 322, c.w - 110, 21 };
+    dl.resample = w2k_combo_new(0);
+    dl.resample->on_change = on_resample;
+    w2k_combo_add(dl.resample, "Lanczos (crispest)");
+    w2k_combo_add(dl.resample, "Cubic spline (crisp)");
+    w2k_combo_add(dl.resample, "Bilinear (soft)");
+    w2k_combo_add(dl.resample, "Nearest (blocks)");
+    dl.resample->sel = w2k_resample == RS_LANCZOS ? 0 : w2k_resample == RS_CUBIC ? 1
+                     : w2k_resample == RS_BILINEAR ? 2 : 3;
+    dl.resample->r = (W2kRect){ c.x + 100, c.y + 352, c.w - 110, 21 };
     fill_monitor_combos();
 
     /* Programs */

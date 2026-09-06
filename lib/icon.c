@@ -200,12 +200,12 @@ static void draw_scaled(Drawable d, int x, int y, int id, int size, int dimmed)
     if (!w2k_icon_valid(id) || size < 4 || size > 128) return;
     int ps = w2k_px(size);
     if (ps < 1 || ps > 512) return;
-    static struct { int id, size, dimmed; Cached c; } scaled[N_SCALED];
+    static struct { int id, size, dimmed, method; Cached c; } scaled[N_SCALED];
     static int nscaled, next_slot;
     int slot = -1;
     for (int i = 0; i < nscaled; i++)
         if (scaled[i].id == id && scaled[i].size == ps &&
-            scaled[i].dimmed == dimmed) { slot = i; break; }
+            scaled[i].dimmed == dimmed && scaled[i].method == w2k_resample) { slot = i; break; }
     if (slot < 0) {
         /* From the 32-pixel art unless the wanted size is exactly the
          * 16-pixel one, which has its own drawing. */
@@ -213,7 +213,10 @@ static void draw_scaled(Drawable d, int x, int y, int id, int size, int dimmed)
         const unsigned char *src = rgba_for(id, from);
         if (!src) { from = 32; src = rgba_for(id, 32); }
         if (!src) return;
-        unsigned char *px = w2k_rgba_scale(src, from, from, ps);
+        /* Shrinking from the 32-pixel art is a box average, which suits
+         * pixel art; enlarging by a fraction uses the chosen filter. */
+        unsigned char *px = ps < from ? w2k_rgba_scale(src, from, from, ps)
+                          : w2k_rgba_resample(src, from, from, ps, ps, w2k_resample_for(from, ps));
         if (!px) return;
         if (nscaled < N_SCALED) slot = nscaled++;
         else {
@@ -224,6 +227,7 @@ static void draw_scaled(Drawable d, int x, int y, int id, int size, int dimmed)
         scaled[slot].id = id;
         scaled[slot].size = ps;
         scaled[slot].dimmed = dimmed;
+        scaled[slot].method = w2k_resample;
         memset(&scaled[slot].c, 0, sizeof scaled[slot].c);
         build(&scaled[slot].c, px, ps, dimmed);
         free(px);

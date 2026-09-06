@@ -660,15 +660,37 @@ static void rebuild_pixmap(void)
                                          (unsigned)pw, (unsigned)ph, 32, 0) : NULL;
         if (dst) {
             int sc = w2k_ui_scale;
+            unsigned char *rs = NULL;
+            if (sc % 100 != 0 && w2k_resample != RS_NEAREST) {
+                /* A fraction: through the resampler, from the picture
+                 * with its ink. */
+                unsigned char *rgba = malloc((size_t)st.iw * st.ih * 4);
+                if (rgba) {
+                    for (int y = 0; y < st.ih; y++)
+                        for (int x = 0; x < st.iw; x++) {
+                            unsigned long v = XGetPixel(src, x, y);
+                            unsigned char *p = rgba + ((size_t)y * st.iw + x) * 4;
+                            p[0] = (v >> 16) & 0xff; p[1] = (v >> 8) & 0xff; p[2] = v & 0xff; p[3] = 255;
+                        }
+                    rs = w2k_rgba_resample(rgba, st.iw, st.ih, pw, ph, w2k_resample);
+                    free(rgba);
+                }
+            }
             for (int y = 0; y < ph; y++) {
                 int sy = (int)(((long)(y + 1) * 100 + sc - 1) / sc) - 1;
                 if (sy >= st.ih) sy = st.ih - 1;
                 for (int x = 0; x < pw; x++) {
+                    if (rs) {
+                        const unsigned char *p = rs + ((size_t)y * pw + x) * 4;
+                        XPutPixel(dst, x, y, w2k_rgb(p[0], p[1], p[2]));
+                        continue;
+                    }
                     int sx = (int)(((long)(x + 1) * 100 + sc - 1) / sc) - 1;
                     if (sx >= st.iw) sx = st.iw - 1;
                     XPutPixel(dst, x, y, XGetPixel(src, sx, sy));
                 }
             }
+            free(rs);
             st.dpm = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)pw, (unsigned)ph, w2k.depth);
             XPutImage(w2k.dpy, st.dpm, w2k.gc, dst, 0, 0, 0, 0, (unsigned)pw, (unsigned)ph);
             XDestroyImage(dst);

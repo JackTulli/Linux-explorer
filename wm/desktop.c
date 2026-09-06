@@ -364,7 +364,8 @@ static void draw_label(Drawable d, int cx, int y, const char *text, int selected
 }
 
 /* Render the wallpaper once into a screen-sized pixmap (centre / tile /
- * stretch, nearest neighbour -- what the 2000 shell did too). */
+ * stretch; the stretched styles go through the resampler the user chose
+ * -- the 2000 shell used nearest neighbour, which is still on offer). */
 static void build_wallpaper(void)
 {
     if (wall) { w2k_free_pixmap(wall); wall = 0; }
@@ -372,6 +373,10 @@ static void build_wallpaper(void)
     int iw, ih;
     unsigned char *rgba = w2k_image_load(w2k_wallpaper, &iw, &ih);   /* BMP, PNG or JPEG */
     if (!rgba || iw <= 0 || ih <= 0) { free(rgba); return; }
+    /* Span: the picture over every monitor at once, resampled once. */
+    unsigned char *span = NULL;
+    if (w2k_wallpaper_style == 5 && w2k_resample != RS_NEAREST)
+        span = w2k_rgba_resample(rgba, iw, ih, w2k.sw, w2k.sh, w2k_resample);
 
     wall = XCreatePixmap(w2k.dpy, w2k.root, w2k.sw, w2k.sh, w2k.depth);
     w2k_fill(wall, 0, 0, w2k.sw, w2k.sh, C_DESKTOP);
@@ -400,9 +405,35 @@ static void build_wallpaper(void)
             ox = (((long)iw << 16) - f * W) / 2;
             oy = (((long)ih << 16) - f * H) / 2;
         }
+        /* Filtered stretch, fit and fill: the picture resampled to the
+         * size it takes on this monitor, then placed. */
+        unsigned char *sc = NULL;
+        int scw = 0, sch = 0, offx = 0, offy = 0;
+        if (w2k_resample != RS_NEAREST && (st == 2 || st == 3 || st == 4)) {
+            if (st == 2) { scw = W; sch = H; }
+            else {
+                scw = (int)((((long)iw << 16) + fx / 2) / fx);
+                sch = (int)((((long)ih << 16) + fy / 2) / fy);
+                offx = (W - scw) / 2; offy = (H - sch) / 2;
+            }
+            if (scw > 0 && sch > 0 && (long)scw * sch <= 64L * 1024 * 1024)
+                sc = w2k_rgba_resample(rgba, iw, ih, scw, sch, w2k_resample);
+        } else if (st == 5 && span) {
+            sc = span; scw = w2k.sw; sch = w2k.sh; offx = -m->x; offy = -m->y;
+        }
         for (int y = 0; y < H; y++)
             for (int x = 0; x < W; x++) {
                 int sx, sy;
+                if (sc) {
+                    sx = x - offx; sy = y - offy;
+                    unsigned long px = w2k.col[C_DESKTOP];
+                    if (sx >= 0 && sy >= 0 && sx < scw && sy < sch) {
+                        const unsigned char *p = sc + ((size_t)sy * scw + sx) * 4;
+                        px = w2k_rgb(p[0], p[1], p[2]);
+                    }
+                    XPutPixel(im, x, y, px);
+                    continue;
+                }
                 if (st == 2) { sx = x * iw / W; sy = y * ih / H; }
                 else if (st == 5) {
                     sx = (int)((long)(m->x + x) * iw / w2k.sw);
@@ -424,8 +455,10 @@ static void build_wallpaper(void)
                 XPutPixel(im, x, y, px);
             }
         XPutImage(w2k.dpy, wall, w2k.gc, im, 0, 0, m->x, m->y, W, H);
+        if (sc != span) free(sc);
         XDestroyImage(im);
     }
+    free(span);
     free(rgba);
 }
 

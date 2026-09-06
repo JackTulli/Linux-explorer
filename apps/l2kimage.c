@@ -106,10 +106,18 @@ static void rescale(void)
     if (!xi) { free(pixels); drop_scaled(); return; }
 
     int shrink = (tw < im.iw || th < im.ih);
+    /* Anything but a whole-number enlargement goes through the chosen
+     * resampler; a whole one stays blocks, as pixel art should. */
+    unsigned char *rs = NULL;
+    if (w2k_resample != RS_NEAREST && !(tw >= im.iw && tw % im.iw == 0 && th % im.ih == 0 && th >= im.ih))
+        rs = w2k_rgba_resample(im.rgba, im.iw, im.ih, tw, th, w2k_resample);
     for (int y = 0; y < th; y++) {
         for (int x = 0; x < tw; x++) {
             unsigned long px;
-            if (shrink) {
+            if (rs) {
+                const unsigned char *p = rs + ((size_t)y * tw + x) * 4;
+                px = w2k_rgb(p[0], p[1], p[2]);
+            } else if (shrink) {
                 int x0 = x * im.iw / tw, x1 = (x + 1) * im.iw / tw;
                 int y0 = y * im.ih / th, y1 = (y + 1) * im.ih / th;
                 if (x1 <= x0) x1 = x0 + 1;
@@ -135,6 +143,7 @@ static void rescale(void)
     }
     XPutImage(w2k.dpy, im.scaled, w2k.gc, xi, 0, 0, 0, 0, tw, th);
     XDestroyImage(xi);
+    free(rs);
     im.sw = tw;
     im.sh = th;
 }
