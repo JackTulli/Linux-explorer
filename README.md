@@ -255,7 +255,8 @@ of Microsoft Corporation, used here only to describe what this desktop
 resembles. The code in this repository is the project's own work and is
 released under the MIT licence (see [LICENSE](LICENSE)). The icons,
 cursors, sounds and the pieces of window chrome cut from Windows
-screenshots are not covered by it and remain the copyright of their owner; they are included so that the desktop
+screenshots are not covered by it ([THIRD-PARTY.md](THIRD-PARTY.md)) and
+remain the copyright of their owner; they are included so that the desktop
 looks the way it does, and no ownership of them is claimed. If you are the
 rights holder and want any of it removed, open an issue.
 
