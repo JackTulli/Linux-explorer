@@ -221,7 +221,10 @@ static void startdlg_commit(StartDlg *sd)
 
 /* The banner strip as the edits describe it, `w` wide and `h` tall, with
  * the name up it. Windows drew the same picture on this page. */
-static void startdlg_banner(StartDlg *sd, Drawable d, int x, int y, int w, int h)
+/* `visible` is how much of the strip's height the picture can show above
+ * its bottom: a name longer than that is shortened with an ellipsis
+ * rather than cut mid-word at the picture's edge. */
+static void startdlg_banner(StartDlg *sd, Drawable d, int x, int y, int w, int h, int visible)
 {
     int save_dither = w2k_start_banner_dither, save_top[3], save_bot[3];
     for (int k = 0; k < 3; k++) {
@@ -236,8 +239,10 @@ static void startdlg_banner(StartDlg *sd, Drawable d, int x, int y, int w, int h
     w2k_start_banner_mode = sd->mode;
     const char *banner = sd->mode == SB_CUSTOM ? w2k_edit_text(sd->custom)
                                                : w2k_start_banner_text();
+    char shown[128];
+    w2k_ellipsis(F_UI_BOLD, banner, (visible > 0 ? visible : h) - 10, shown, sizeof shown);
     w2k_clip_set(x, y, w, h);
-    w2k_text_vertical(d, F_UI_BOLD, x + 4, y + h - 6, banner, C_WHITE);
+    w2k_text_vertical(d, F_UI_BOLD, x + 4, y + h - 6, shown, C_WHITE);
     w2k_clip_clear();
     w2k_start_banner_mode = save_mode;
     w2k_start_banner_dither = save_dither;
@@ -317,7 +322,7 @@ static void startdlg_preview(StartDlg *sd, Drawable d)
         int my = tby - mh, mx = x0 + 2;   /* the top runs off the picture */
         w2k_fill(d, mx, my, mw, mh, C_MENU);
         w2k_edge(d, mx, my, mw, mh, EDGE_RAISED, BF_RECT);
-        startdlg_banner(sd, d, mx + 3, my + 3, 21, mh - 6);
+        startdlg_banner(sd, d, mx + 3, my + 3, 21, mh - 6, (my + 3 + mh - 6) - y0);
         w2k_clip_set(x0, y0, w, h);        /* the banner cleared it */
         int y = my + 3;
         for (int i = 0; i < n; i++) {
@@ -368,7 +373,7 @@ static void startdlg_paint(W2kWin *w, Drawable d)
         W2kRect pv = sd->preview2;
         w2k_edge(d, pv.x, pv.y, pv.w, pv.h, EDGE_SUNKEN, BF_RECT);
         w2k_fill(d, pv.x + 2, pv.y + 2, pv.w - 4, pv.h - 4, C_MENU);
-        startdlg_banner(sd, d, pv.x + 4, pv.y + 4, 21, pv.h - 8);
+        startdlg_banner(sd, d, pv.x + 4, pv.y + 4, 21, pv.h - 8, pv.h - 8);
         w2k_bigicon_draw(d, pv.x + 4 + 21 + 4, pv.y + 6, ICO_PROGRAMS);
         w2k_text(d, F_UI, pv.x + 4 + 21 + 42, pv.y + 6 + (34 - fh) / 2, "Programs", C_MENUTEXT);
         w2k_bigicon_draw(d, pv.x + 4 + 21 + 4, pv.y + 6 + 34, ICO_DOCUMENTS);
