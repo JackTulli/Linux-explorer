@@ -1,5 +1,8 @@
 # Linux 2000
 
+![Linux2000logo](./docs/l2logo.png)
+
+----
 A window manager and desktop environment that recreates the Windows 2000
 shell on X11: the classic 3D look, the gradient title bars, the taskbar
 and Start menu, the logon screen, and the applications that came with it,
