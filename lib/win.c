@@ -408,6 +408,17 @@ static void dispatch_win(W2kWin *w, XEvent *e)
     if (w->event && w->event(w, e)) return;
 }
 
+int w2k_win_handle_event(XEvent *e)
+{
+    W2kWin *w = win_for(e->xany.window);
+    if (!w) return 0;
+    dispatch(e);
+    for (W2kWin *k = win_list; k; k = k->next)
+        if (k->alive && k->dirty) repaint(k);
+    XFlush(w2k.dpy);
+    return 1;
+}
+
 static int any_alive(void)
 {
     for (W2kWin *w = win_list; w; w = w->next)

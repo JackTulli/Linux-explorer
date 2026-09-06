@@ -41,6 +41,10 @@ W2kWin *w2k_win_new(const char *title, const char *cls,
 void    w2k_win_show(W2kWin *w);
 /* Resize to a logical size; the X window follows at the desktop scale. */
 void    w2k_win_resize(W2kWin *w, int width, int height);
+/* For a program that runs event loops of its own (the window manager's
+ * drags, its Start panel): an event for one of the toolkit's windows is
+ * handled here -- an exposure repainted at once -- and 1 returned. */
+int     w2k_win_handle_event(XEvent *e);
 void    w2k_win_dirty(W2kWin *w);
 void    w2k_win_close(W2kWin *w, int result);
 void    w2k_win_title(W2kWin *w, const char *title);

@@ -480,6 +480,14 @@ static void shell_dnd_drop(Window w, int x, int y, const char *uris, int move)
 
 void wm_handle_event(XEvent *e)
 {
+    /* The shell's own dialogs are toolkit windows: while a drag, the
+     * Start panel or a menu is running its loop, an exposure of one of
+     * them arrives here, and it must be repainted -- the windows carry
+     * no background, so an uncovered area shows whatever was there. */
+    if (e->xany.window != w2k.root && w2k_win_owns(e->xany.window)) {
+        w2k_win_handle_event(e);
+        return;
+    }
     /* Alt reveals the mnemonic underlines on the shell's own menus, the
      * way it does inside an application. */
     if (e->type == KeyPress && !w2k_accel_shown) {
