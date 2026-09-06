@@ -222,10 +222,44 @@ static void scale_image(CurImage *im)
     if (w2 <= im->w || h2 <= im->h || w2 > 256 || h2 > 256) return;
     unsigned *big = malloc((size_t)w2 * h2 * sizeof *big);
     if (!big) return;
+    int whole = w2k_ui_scale % 100 == 0;
     for (int y = 0; y < h2; y++) {
-        int sy = (int)((long)y * im->h / h2);
-        for (int x = 0; x < w2; x++)
-            big[(size_t)y * w2 + x] = im->px[(size_t)sy * im->w + (long)x * im->w / w2];
+        for (int x = 0; x < w2; x++) {
+            if (whole) {
+                /* An exact multiple: every pixel becomes a block. */
+                int sy = (int)((long)y * im->h / h2), sx = (int)((long)x * im->w / w2);
+                big[(size_t)y * w2 + x] = im->px[(size_t)sy * im->w + sx];
+                continue;
+            }
+            /* A fraction: bilinear, on premultiplied colour, so the
+             * pointer's edges are smooth rather than stepped. */
+            double fx = (x + 0.5) * im->w / w2 - 0.5, fy = (y + 0.5) * im->h / h2 - 0.5;
+            int x0 = (int)fx, y0 = (int)fy;
+            if (fx < 0) { fx = 0; x0 = 0; }
+            if (fy < 0) { fy = 0; y0 = 0; }
+            int x1 = x0 + 1 < im->w ? x0 + 1 : x0, y1 = y0 + 1 < im->h ? y0 + 1 : y0;
+            double tx = fx - x0, ty = fy - y0;
+            double acc[4] = { 0, 0, 0, 0 };
+            const int xs[2] = { x0, x1 }, ys[2] = { y0, y1 };
+            const double wx[2] = { 1 - tx, tx }, wy[2] = { 1 - ty, ty };
+            for (int j = 0; j < 2; j++)
+                for (int i = 0; i < 2; i++) {
+                    unsigned p = im->px[(size_t)ys[j] * im->w + xs[i]];
+                    double a = (p >> 24) / 255.0, wgt = wx[i] * wy[j];
+                    acc[0] += wgt * a;
+                    acc[1] += wgt * a * ((p >> 16) & 0xff);
+                    acc[2] += wgt * a * ((p >> 8) & 0xff);
+                    acc[3] += wgt * a * (p & 0xff);
+                }
+            unsigned a = (unsigned)(acc[0] * 255 + 0.5);
+            unsigned r = 0, g = 0, b = 0;
+            if (acc[0] > 0) {
+                r = (unsigned)(acc[1] / acc[0] + 0.5);
+                g = (unsigned)(acc[2] / acc[0] + 0.5);
+                b = (unsigned)(acc[3] / acc[0] + 0.5);
+            }
+            big[(size_t)y * w2 + x] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
     }
     free(im->px);
     im->px = big;

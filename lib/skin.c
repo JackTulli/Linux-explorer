@@ -119,10 +119,21 @@ static int ensure_scaled(W2kSkin *s)
     if (pw < 1 || ph < 1) return 0;
     unsigned char *big = malloc((size_t)pw * ph * 4);
     if (!big) return 0;
+    /* Each source pixel c owns the destination columns w2k_px(c) up to
+     * w2k_px(c + 1): the inverse of the mapping the callers' source
+     * rectangles go through, so a rectangle cut from the sheet lands on
+     * exactly the pixels it names. (Dividing by the enlarged size instead
+     * drifts at a fractional scale and cut a neighbour's column into the
+     * caption's tile.) */
+    int sc = w2k_ui_scale;
     for (int y = 0; y < ph; y++) {
-        int sy = (int)((long)y * s->h / ph);
+        int sy = (int)(((long)(y + 1) * 100 + sc - 1) / sc) - 1;
+        if (sy < 0) sy = 0;
+        if (sy >= s->h) sy = s->h - 1;
         for (int x = 0; x < pw; x++) {
-            int sx = (int)((long)x * s->w / pw);
+            int sx = (int)(((long)(x + 1) * 100 + sc - 1) / sc) - 1;
+            if (sx < 0) sx = 0;
+            if (sx >= s->w) sx = s->w - 1;
             memcpy(big + ((size_t)y * pw + x) * 4,
                    s->rgba + ((size_t)sy * s->w + sx) * 4, 4);
         }
@@ -222,8 +233,14 @@ void w2k_skin_tile(Drawable d, W2kSkin *s, int x, int y, int w, int h,
          * rebuilt. */
         int pw = w2k_cw(x, w), ph = w2k_cw(y, h);
         x = w2k_cx(x); y = w2k_cx(y); w = pw; h = ph;
+        /* A one-pixel column of the sheet is meant as a single colour
+         * ramp to repeat: at a fractional scale the enlarged column can
+         * be two physical columns of different sources, and tiling both
+         * would stripe the caption. Take one. */
         int sx0 = w2k_px(sx), sy0 = w2k_px(sy);
-        sw = w2k_px(sx + sw) - sx0; sh = w2k_px(sy + sh) - sy0;
+        int sw1 = sw == 1, sh1 = sh == 1;
+        sw = sw1 ? 1 : w2k_px(sx + sw) - sx0;
+        sh = sh1 ? 1 : w2k_px(sy + sh) - sy0;
         sx = sx0; sy = sy0;
         sheet = s->spm;
         if (w <= 0 || h <= 0 || sw <= 0 || sh <= 0) return;

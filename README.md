@@ -197,9 +197,12 @@ pointer are all drawn to scale, and the programs keep laying out in
 Windows pixels -- the toolkit multiplies on the way to the screen. GTK
 and Qt programs started from the desktop are told the scale (`GDK_SCALE`,
 `GDK_DPI_SCALE`, `QT_SCALE_FACTOR`, `XCURSOR_SIZE`, `Xft.dpi`). It takes
-effect at the next logon and follows the primary monitor's scale. It is
-experimental: at fractional scales some one-pixel lines come out uneven,
-and screenshots from the Snipping Tool are in screen pixels.
+effect at the next logon and follows the primary monitor's scale. Lines
+stay one pixel thick at any fraction, as Windows draws them; the design,
+and how it compares with Windows, Qt and GTK, is in
+[docs/SCALING.md](docs/SCALING.md). It is experimental: screenshots from
+the Snipping Tool are in screen pixels, and GTK 3 programs render at a
+whole scale.
 
 ## Configuration
 

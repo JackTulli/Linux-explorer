@@ -86,6 +86,57 @@ void w2k_vline(Drawable d, int x, int y, int h, int color)
                    (unsigned)w2k_t1(x), (unsigned)w2k_cw(y, h));
 }
 
+/* The rings of an edge, in screen pixels.
+ *
+ * Every line is th(1) thick whatever the scale -- one pixel up to 199%,
+ * two from 200% -- as Windows draws them at any DPI. In logical mode
+ * the rings are anchored to where the control's inside begins (its
+ * rectangle inset by the number of rings), not to its outer corner: at a
+ * fractional scale two logical pixels can be three on the screen, and
+ * anchoring outward would leave a coloured gap between the edge and the
+ * white of an edit box. Anchored inward, any spare pixel falls outside,
+ * on the parent's background, where it is invisible. In raw mode the
+ * rectangle is already screen pixels and the rings sit at its corner. */
+static void ring_bounds(int x, int y, int w, int h, int n, int k, int t,
+                        int *x0, int *y0, int *x1, int *y1)
+{
+    if (w2k_scale_raw) {
+        *x0 = x + k * t; *y0 = y + k * t;
+        *x1 = x + w - k * t; *y1 = y + h - k * t;
+    } else {
+        *x0 = w2k_cx(x + n) - (n - k) * t;
+        *y0 = w2k_cx(y + n) - (n - k) * t;
+        *x1 = w2k_cx(x + w - n) + (n - k) * t;
+        *y1 = w2k_cx(y + h - n) + (n - k) * t;
+    }
+}
+
+/* One ring: (x0,y0)-(x1,y1) exclusive, t thick, in screen pixels.
+ * Bottom/right win at the corners, as in Windows. */
+static void ring_phys(Drawable d, int x0, int y0, int x1, int y1, int t,
+                      int lt, int rb, int flags)
+{
+    if (x1 - x0 < t || y1 - y0 < t) return;
+    if (lt >= 0) {
+        XSetForeground(w2k.dpy, w2k.gc, w2k.col[lt]);
+        if (flags & BF_TOP) {
+            int r = x1 - ((flags & BF_RIGHT) ? t : 0);
+            if (r > x0) XFillRectangle(w2k.dpy, d, w2k.gc, x0, y0, (unsigned)(r - x0), (unsigned)t);
+        }
+        if (flags & BF_LEFT) {
+            int b = y1 - ((flags & BF_BOTTOM) ? t : 0);
+            if (b > y0) XFillRectangle(w2k.dpy, d, w2k.gc, x0, y0, (unsigned)t, (unsigned)(b - y0));
+        }
+    }
+    if (rb >= 0) {
+        XSetForeground(w2k.dpy, w2k.gc, w2k.col[rb]);
+        if (flags & BF_BOTTOM)
+            XFillRectangle(w2k.dpy, d, w2k.gc, x0, y1 - t, (unsigned)(x1 - x0), (unsigned)t);
+        if (flags & BF_RIGHT)
+            XFillRectangle(w2k.dpy, d, w2k.gc, x1 - t, y0, (unsigned)t, (unsigned)(y1 - y0));
+    }
+}
+
 void w2k_frame(Drawable d, int x, int y, int w, int h, int color)
 {
     if (w <= 0 || h <= 0) return;
@@ -94,57 +145,48 @@ void w2k_frame(Drawable d, int x, int y, int w, int h, int color)
         XDrawRectangle(w2k.dpy, d, w2k.gc, x, y, w - 1, h - 1);
         return;
     }
-    /* In raw mode the strokes are th(1) thick and sit inside the rectangle
-     * given, as XDrawRectangle's would. */
-    int t = w2k_scale_raw ? w2k_th(1) : 1;
-    w2k_hline(d, x, y, w, color);
-    w2k_hline(d, x, y + h - t, w, color);
-    w2k_vline(d, x, y, h, color);
-    w2k_vline(d, x + w - t, y, h, color);
-}
-
-/* One ring of an edge. Bottom/right win at the corners, as in Windows. */
-static void ring(Drawable d, int x, int y, int w, int h,
-                 int lt, int rb, int flags)
-{
-    if (w <= 0 || h <= 0) return;
-    int t = w2k_scale_raw ? w2k_th(1) : 1;   /* one logical pixel */
-    if (lt >= 0) {
-        if (flags & BF_TOP)  w2k_hline(d, x, y, w - ((flags & BF_RIGHT) ? t : 0), lt);
-        if (flags & BF_LEFT) w2k_vline(d, x, y, h - ((flags & BF_BOTTOM) ? t : 0), lt);
-    }
-    if (rb >= 0) {
-        if (flags & BF_BOTTOM) w2k_hline(d, x, y + h - t, w, rb);
-        if (flags & BF_RIGHT)  w2k_vline(d, x + w - t, y, h, rb);
-    }
+    int t = w2k_th(1), x0, y0, x1, y1;
+    ring_bounds(x, y, w, h, 1, 0, t, &x0, &y0, &x1, &y1);
+    ring_phys(d, x0, y0, x1, y1, t, color, color, BF_RECT);
 }
 
 void w2k_edge(Drawable d, int x, int y, int w, int h, int style, int flags)
 {
     if (style == EDGE_FLAT || w <= 0 || h <= 0) return;
     const signed char *e = edge_tab[style];
-    ring(d, x, y, w, h, e[0], e[2], flags);
-    if (e[1] >= 0) {
-        int t = w2k_scale_raw ? w2k_th(1) : 1;
-        int dx = (flags & BF_LEFT) ? t : 0, dy = (flags & BF_TOP) ? t : 0;
-        int dw = dx + ((flags & BF_RIGHT) ? t : 0);
-        int dh = dy + ((flags & BF_BOTTOM) ? t : 0);
-        ring(d, x + dx, y + dy, w - dw, h - dh, e[1], e[3], flags);
+    int n = e[1] >= 0 ? 2 : 1;
+    int t = w2k_ui_scale == 100 ? 1 : w2k_th(1);
+    for (int k = 0; k < n; k++) {
+        int x0, y0, x1, y1;
+        if (w2k_ui_scale == 100) {
+            /* Rings that are missing a side do not inset on that side. */
+            int dx = (flags & BF_LEFT) ? k : 0, dy = (flags & BF_TOP) ? k : 0;
+            x0 = x + dx; y0 = y + dy;
+            x1 = x + w - ((flags & BF_RIGHT) ? k : 0);
+            y1 = y + h - ((flags & BF_BOTTOM) ? k : 0);
+        } else {
+            ring_bounds(x, y, w, h, n, k, t, &x0, &y0, &x1, &y1);
+            if (!(flags & BF_LEFT))   x0 = w2k_cx(x);
+            if (!(flags & BF_TOP))    y0 = w2k_cx(y);
+            if (!(flags & BF_RIGHT))  x1 = w2k_cx(x + w);
+            if (!(flags & BF_BOTTOM)) y1 = w2k_cx(y + h);
+        }
+        ring_phys(d, x0, y0, x1, y1, t, k ? e[1] : e[0], k ? e[3] : e[2], flags);
     }
 }
 
 void w2k_button(Drawable d, int x, int y, int w, int h, int pressed)
 {
     if (w <= 0 || h <= 0) return;
-    int t = w2k_scale_raw ? w2k_th(1) : 1;
+    /* The face first, over the whole rectangle, then the edge on top: at
+     * a fractional scale an inset fill and the rings would not meet. */
+    w2k_fill(d, x, y, w, h, C_FACE);
     if (pressed) {
         /* A depressed pushbutton loses the highlight entirely: a single
          * shadow ring, with the face pushed in by one pixel. */
         w2k_frame(d, x, y, w, h, C_SHADOW);
-        w2k_fill(d, x + t, y + t, w - 2 * t, h - 2 * t, C_FACE);
     } else {
         w2k_edge(d, x, y, w, h, EDGE_BUTTON, BF_RECT);
-        w2k_fill(d, x + 2 * t, y + 2 * t, w - 4 * t, h - 4 * t, C_FACE);
     }
 }
 

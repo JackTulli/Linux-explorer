@@ -278,11 +278,14 @@ int frame_render(const char *path, int cw, int ch, int active, int maximized)
     int fw = client_frame_w(&c), fh = client_frame_h(&c);
     Pixmap pm = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)fw, (unsigned)fh,
                               w2k.depth);
+    int raw = w2k_scale_raw;
+    w2k_scale_raw = 1;                 /* everything here is screen pixels */
     w2k_fill(pm, 0, 0, fw, fh, C_DESKTOP);
     frame_draw(&c, pm);
     /* A patch of client area, so the frame is seen around something. */
     int b = client_border(&c), cap = client_caption_h(&c);
     w2k_fill(pm, b, b + cap, cw, ch, C_WINDOW);
+    w2k_scale_raw = raw;
     focused = saved;
 
     XImage *im = XGetImage(w2k.dpy, pm, 0, 0, (unsigned)fw, (unsigned)fh,

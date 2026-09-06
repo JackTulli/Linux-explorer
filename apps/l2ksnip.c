@@ -67,6 +67,7 @@ static struct {
     unsigned char *rgba;         /* the snip */
     int         iw, ih;
     Pixmap      pm;              /* the snip, with the strokes drawn over it */
+    Pixmap      dpm;             /* the same enlarged for a scaled desktop, or 0 */
     int         pm_dirty;
     Stroke     *strokes;
     int         nstrokes, strokes_cap;
@@ -607,9 +608,17 @@ static void draw_stroke(Drawable d, const Stroke *s, int ox, int oy)
         XSetStipple(w2k.dpy, w2k.gc, w2k.pm_dither);
     } else
         XSetLineAttributes(w2k.dpy, w2k.gc, 2, LineSolid, CapRound, JoinRound);
+    /* Into the picture itself (raw mode) the ink is in its pixels; on the
+     * screen it is mapped and thickened like everything else. */
+    if (!w2k_scale_raw && w2k_ui_scale != 100)
+        XSetLineAttributes(w2k.dpy, w2k.gc, (unsigned)w2k_th(s->type == TOOL_HIGHLIGHT ? 14 : 2),
+                           LineSolid, s->type == TOOL_HIGHLIGHT ? CapButt : CapRound, JoinRound);
     XPoint *pts = malloc(sizeof *pts * (size_t)(s->n > 1 ? s->n : 2));
     if (pts) {
-        for (int i = 0; i < s->n; i++) { pts[i].x = (short)(s->x[i] + ox); pts[i].y = (short)(s->y[i] + oy); }
+        for (int i = 0; i < s->n; i++) {
+            pts[i].x = (short)w2k_cx(s->x[i] + ox);
+            pts[i].y = (short)w2k_cx(s->y[i] + oy);
+        }
         if (s->n == 1) { pts[1] = pts[0]; pts[1].x++; }
         XDrawLines(w2k.dpy, d, w2k.gc, pts, s->n > 1 ? s->n : 2, CoordModeOrigin);
         free(pts);
@@ -633,8 +642,39 @@ static void rebuild_pixmap(void)
         }
     XPutImage(w2k.dpy, st.pm, w2k.gc, im, 0, 0, 0, 0, (unsigned)st.iw, (unsigned)st.ih);
     XDestroyImage(im);
+    int raw = w2k_scale_raw;
+    w2k_scale_raw = 1;                 /* the picture's own pixels */
     for (int i = 0; i < st.nstrokes; i++) draw_stroke(st.pm, &st.strokes[i], 0, 0);
+    w2k_scale_raw = raw;
     st.pm_dirty = 0;
+
+    /* On a scaled desktop the view shows the picture enlarged, one of
+     * its pixels per logical pixel, so it sits in the window the way it
+     * did on the screen. Saving uses st.pm, which stays as captured. */
+    if (st.dpm) { w2k_free_pixmap(st.dpm); st.dpm = 0; }
+    if (w2k_ui_scale != 100) {
+        int pw = w2k_px(st.iw), ph = w2k_px(st.ih);
+        XImage *src = XGetImage(w2k.dpy, st.pm, 0, 0, (unsigned)st.iw, (unsigned)st.ih, AllPlanes, ZPixmap);
+        char *big = src ? malloc((size_t)pw * ph * 4) : NULL;
+        XImage *dst = big ? XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap, 0, big,
+                                         (unsigned)pw, (unsigned)ph, 32, 0) : NULL;
+        if (dst) {
+            int sc = w2k_ui_scale;
+            for (int y = 0; y < ph; y++) {
+                int sy = (int)(((long)(y + 1) * 100 + sc - 1) / sc) - 1;
+                if (sy >= st.ih) sy = st.ih - 1;
+                for (int x = 0; x < pw; x++) {
+                    int sx = (int)(((long)(x + 1) * 100 + sc - 1) / sc) - 1;
+                    if (sx >= st.iw) sx = st.iw - 1;
+                    XPutPixel(dst, x, y, XGetPixel(src, sx, sy));
+                }
+            }
+            st.dpm = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)pw, (unsigned)ph, w2k.depth);
+            XPutImage(w2k.dpy, st.dpm, w2k.gc, dst, 0, 0, 0, 0, (unsigned)pw, (unsigned)ph);
+            XDestroyImage(dst);
+        } else free(big);
+        if (src) XDestroyImage(src);
+    }
 }
 
 /* The picture with the strokes burnt in, for saving and the clipboard. */
@@ -779,9 +819,16 @@ static void paint(W2kWin *w, Drawable d)
     w2k_fill(d, v.x + 2, v.y + 2, cw, ch, C_WINDOW);
     if (st.rgba) {
         if (st.pm_dirty || !st.pm) rebuild_pixmap();
-        int dw = st.iw < cw ? st.iw : cw, dh = st.ih < ch ? st.ih : ch;
-        XCopyArea(w2k.dpy, st.pm, d, w2k_copy_gc(), st.hsb.pos, st.vsb.pos,
-                  (unsigned)dw, (unsigned)dh, v.x + 2, v.y + 2);
+        /* Screen pixels: the view's inside and the scroll position mapped,
+         * the picture from its enlarged copy when there is one. */
+        Pixmap src = st.dpm ? st.dpm : st.pm;
+        int sw = st.dpm ? w2k_px(st.iw) : st.iw, sh = st.dpm ? w2k_px(st.ih) : st.ih;
+        int sx = w2k_px(st.hsb.pos), sy = w2k_px(st.vsb.pos);
+        int vw = w2k_cw(v.x + 2, cw), vh = w2k_cw(v.y + 2, ch);
+        int dw = sw - sx < vw ? sw - sx : vw, dh = sh - sy < vh ? sh - sy : vh;
+        if (dw > 0 && dh > 0)
+            XCopyArea(w2k.dpy, src, d, w2k_copy_gc(), sx, sy, (unsigned)dw, (unsigned)dh,
+                      w2k_cx(v.x + 2), w2k_cx(v.y + 2));
         if (st.cur) draw_stroke(d, st.cur, v.x + 2 - st.hsb.pos, v.y + 2 - st.vsb.pos);
     }
     if (st.vsb.total) w2k_scroll_draw(d, &st.vsb);
@@ -1176,6 +1223,7 @@ static void capture_now(void)
     if (!ok) { w2k_win_dirty(st.win); return; }
     strokes_free();
     if (st.pm) { w2k_free_pixmap(st.pm); st.pm = 0; }
+    if (st.dpm) { w2k_free_pixmap(st.dpm); st.dpm = 0; }
     st.pm_dirty = 1;
     st.saved = 0;
     st.vsb.pos = st.hsb.pos = 0;

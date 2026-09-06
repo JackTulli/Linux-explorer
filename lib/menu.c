@@ -3,6 +3,7 @@
  * One nested event loop drives an entire chain of open menus, which is how
  * Windows does it and is far simpler than a retained widget hierarchy. */
 #include "w2k.h"
+#include <stdio.h>
 #include <X11/extensions/shape.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -648,6 +649,31 @@ static int menu_popup(W2kMenu *m, int x, int y, int flags)
     Level lv[MAXLEVEL];
     int n = 1;
     open_level(&lv[0], m, x, y, flags, -1, -1);
+
+    /* Development aid, like W2K_RENDER: with W2K_RENDER_MENU=<file.ppm>
+     * the first menu opened is painted, written out and closed. */
+    const char *dump = getenv("W2K_RENDER_MENU");
+    if (dump && *dump) {
+        menu_paint(m, lv[0].win, lv[0].w, lv[0].h, -1);
+        Pixmap pm = menu_buffer(lv[0].win, lv[0].pw, lv[0].ph);
+        XImage *im = XGetImage(w2k.dpy, pm, 0, 0, (unsigned)lv[0].pw,
+                               (unsigned)lv[0].ph, AllPlanes, ZPixmap);
+        FILE *f = fopen(dump, "wb");
+        if (f && im) {
+            fprintf(f, "P6\n%d %d\n255\n", lv[0].pw, lv[0].ph);
+            for (int yy = 0; yy < lv[0].ph; yy++)
+                for (int xx = 0; xx < lv[0].pw; xx++) {
+                    unsigned long v = XGetPixel(im, xx, yy);
+                    unsigned char rgb[3] = { (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff };
+                    fwrite(rgb, 1, 3, f);
+                }
+        }
+        if (f) fclose(f);
+        if (im) XDestroyImage(im);
+        level_destroy(&lv[0]);
+        unsetenv("W2K_RENDER_MENU");
+        return 0;
+    }
     w2k_sound_play(SND_MENUPOPUP);
 
     if (XGrabPointer(w2k.dpy, lv[0].win, True,

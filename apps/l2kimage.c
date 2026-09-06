@@ -91,6 +91,9 @@ static void rescale(void)
 {
     int tw, th;
     target_size(&tw, &th);
+    /* The picture is built at the size it has on the panel: a scaled
+     * desktop shows it that much larger, like everything else. */
+    tw = w2k_px(tw); th = w2k_px(th);
     if (!im.rgba || tw <= 0 || th <= 0) return;
     if (im.scaled && tw == im.sw && th == im.sh) return;
     drop_scaled();
@@ -252,13 +255,16 @@ static void paint(W2kWin *w, Drawable d)
     if (im.rgba) {
         rescale();
         if (im.scaled) {
-            int x = v.x + 2 + (v.w - 4 - im.sw) / 2;
-            int y = v.y + 2 + (v.h - 4 - im.sh) / 2;
+            /* In screen pixels from here: the view's inside, mapped. */
+            int vx = w2k_cx(v.x + 2), vy = w2k_cx(v.y + 2);
+            int vw = w2k_cw(v.x + 2, v.w - 4), vh = w2k_cw(v.y + 2, v.h - 4);
+            int x = vx + (vw - im.sw) / 2;
+            int y = vy + (vh - im.sh) / 2;
             int sx = 0, sy = 0, cw = im.sw, ch = im.sh;
             /* Bigger than the view: show the middle of it. */
-            if (cw > v.w - 4) { sx = (cw - (v.w - 4)) / 2; cw = v.w - 4; x = v.x + 2; }
-            if (ch > v.h - 4) { sy = (ch - (v.h - 4)) / 2; ch = v.h - 4; y = v.y + 2; }
-            XCopyArea(w2k.dpy, im.scaled, d, w2k.gc, sx, sy, cw, ch, x, y);
+            if (cw > vw) { sx = (cw - vw) / 2; cw = vw; x = vx; }
+            if (ch > vh) { sy = (ch - vh) / 2; ch = vh; y = vy; }
+            XCopyArea(w2k.dpy, im.scaled, d, w2k.gc, sx, sy, (unsigned)cw, (unsigned)ch, x, y);
         }
     } else {
         const char *msg = "No picture open.  File - Open...";

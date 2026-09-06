@@ -744,6 +744,13 @@ int main(int argc, char **argv)
         else if (which && !strcmp(which, "startpanel")) {
             startpanel_render(getenv("W2K_RENDER"));
         }
+        else if (which && !strcmp(which, "startmenuclassic")) {
+            /* The classic Start menu is an ordinary popup: the menu code
+             * writes the picture. */
+            w2k_start_panel = 0;
+            setenv("W2K_RENDER_MENU", getenv("W2K_RENDER"), 1);
+            startmenu_open();
+        }
         else if (which && !strcmp(which, "balloon")) {
             balloon_render(getenv("W2K_RENDER"));
         }

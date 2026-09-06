@@ -33,12 +33,18 @@ static int S(int v) { return w2k_scale_raw ? w2k_px(v) : v; }
 static void draw_glyph(Drawable d, int x, int y, const char *const *rows,
                        int color)
 {
-    int t = w2k_scale_raw ? w2k_th(1) : 1;
     XSetForeground(w2k.dpy, w2k.gc, w2k.col[color]);
     for (int r = 0; rows[r]; r++)
         for (int c = 0; rows[r][c]; c++)
-            if (rows[r][c] == '#')
-                w2k_fill_fg(d, x + c * t, y + r * t, t, t);
+            if (rows[r][c] == '#') {
+                /* Each art pixel covers its own share of the scaled
+                 * glyph, so the X grows with the button at any scale. */
+                if (w2k_scale_raw)
+                    w2k_fill_fg(d, x + w2k_px(c), y + w2k_px(r),
+                                w2k_px(c + 1) - w2k_px(c), w2k_px(r + 1) - w2k_px(r));
+                else
+                    w2k_fill_fg(d, x + c, y + r, 1, 1);
+            }
 }
 
 /* The title-bar box: an outline whose top bar is two pixels thick, standing

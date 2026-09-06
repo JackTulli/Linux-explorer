@@ -631,6 +631,12 @@ static void wallpaper_preview(Drawable d, int x, int y, int w, int h)
     static Pixmap cache;
     static char cache_path[1024];
     static int cache_style = -1, cache_w, cache_h;
+    /* Built and blitted in screen pixels: the picture is resampled once
+     * at the size the little monitor has on the panel. */
+    int px0 = w2k_cx(x), py0 = w2k_cx(y);
+    int pw = w2k_cw(x, w), ph = w2k_cw(y, h);
+    if (pw <= 0 || ph <= 0) return;
+    x = px0; y = py0; w = pw; h = ph;
     if (cache && !strcmp(cache_path, w2k_wallpaper) && cache_style == w2k_wallpaper_style &&
         cache_w == w && cache_h == h) {
         XCopyArea(w2k.dpy, cache, d, w2k_copy_gc(), 0, 0, (unsigned)w, (unsigned)h, x, y);
@@ -638,7 +644,12 @@ static void wallpaper_preview(Drawable d, int x, int y, int w, int h)
     }
     int iw, ih;
     unsigned char *rgba = w2k_image_load(w2k_wallpaper, &iw, &ih);
-    if (!rgba || iw <= 0 || ih <= 0) { free(rgba); w2k_fill(d, x, y, w, h, C_DESKTOP); return; }
+    if (!rgba || iw <= 0 || ih <= 0) {
+        free(rgba);
+        XSetForeground(w2k.dpy, w2k.gc, w2k.col[C_DESKTOP]);
+        XFillRectangle(w2k.dpy, d, w2k.gc, x, y, (unsigned)w, (unsigned)h);
+        return;
+    }
     if (cache) w2k_free_pixmap(cache);
     cache = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)w, (unsigned)h, w2k.depth);
     snprintf(cache_path, sizeof cache_path, "%s", w2k_wallpaper);
