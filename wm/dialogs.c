@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
 
 static void blink(void *v);
 
@@ -605,6 +606,135 @@ static const char *run_blurb =
     "Type the name of a program, folder, document, or\n"
     "Internet resource, and Windows will open it for you.";
 
+/* Longest common prefix length of a and b. */
+static int run_common_prefix(const char *a, const char *b)
+{
+    int i = 0;
+    while (a[i] && a[i] == b[i]) i++;
+    return i;
+}
+
+/* Tab-complete a path that starts with '/'.  Returns 1 if the text changed. */
+static int run_complete_path(W2kEdit *e)
+{
+    const char *text = w2k_edit_text(e);
+    if (!text || text[0] != '/') return 0;
+
+    char dir[1024], prefix[256];
+    const char *slash = strrchr(text, '/');
+    size_t dlen = (size_t)(slash - text);
+    if (dlen >= sizeof dir) return 0;
+    if (dlen == 0) {
+        dir[0] = '/'; dir[1] = 0;
+    } else {
+        memcpy(dir, text, dlen);
+        dir[dlen] = 0;
+    }
+    snprintf(prefix, sizeof prefix, "%s", slash + 1);
+
+    DIR *dp = opendir(dir);
+    if (!dp) return 0;
+
+    char best[256] = "";
+    int  best_len = -1, nmatch = 0;
+    struct dirent *de;
+    while ((de = readdir(dp))) {
+        if (de->d_name[0] == '.' && prefix[0] != '.') continue;
+        if (strncmp(de->d_name, prefix, strlen(prefix)) != 0) continue;
+        nmatch++;
+        if (best_len < 0) {
+            snprintf(best, sizeof best, "%s", de->d_name);
+            best_len = (int)strlen(best);
+        } else {
+            int c = run_common_prefix(best, de->d_name);
+            if (c < best_len) {
+                best[c] = 0;
+                best_len = c;
+            }
+        }
+    }
+    closedir(dp);
+    if (nmatch == 0 || best_len <= (int)strlen(prefix)) return 0;
+
+    char out[1024];
+    if (dir[0] == '/' && dir[1] == 0)
+        snprintf(out, sizeof out, "/%s", best);
+    else
+        snprintf(out, sizeof out, "%s/%s", dir, best);
+
+    /* Exact unique match that is a directory: append '/'. */
+    if (nmatch == 1) {
+        struct stat st;
+        if (stat(out, &st) == 0 && S_ISDIR(st.st_mode))
+            strncat(out, "/", sizeof out - strlen(out) - 1);
+    }
+
+    w2k_edit_set(e, out);
+    e->caret = e->sel = (int)strlen(out);
+    return 1;
+}
+
+/* Tab-complete the first word against $PATH binaries. */
+static int run_complete_cmd(W2kEdit *e)
+{
+    const char *text = w2k_edit_text(e);
+    if (!text || !*text || text[0] == '/' || text[0] == '.') return 0;
+
+    char word[256];
+    size_t wlen = strcspn(text, " \t");
+    if (wlen == 0 || wlen >= sizeof word) return 0;
+    memcpy(word, text, wlen);
+    word[wlen] = 0;
+
+    const char *pathenv = getenv("PATH");
+    if (!pathenv) return 0;
+    char *path = strdup(pathenv);
+    if (!path) return 0;
+
+    char best[256] = "";
+    int  best_len = -1, nmatch = 0;
+    for (char *dir = strtok(path, ":"); dir; dir = strtok(NULL, ":")) {
+        DIR *dp = opendir(dir);
+        if (!dp) continue;
+        struct dirent *de;
+        while ((de = readdir(dp))) {
+            if (strncmp(de->d_name, word, wlen) != 0) continue;
+            nmatch++;
+            if (best_len < 0) {
+                snprintf(best, sizeof best, "%s", de->d_name);
+                best_len = (int)strlen(best);
+            } else {
+                int c = run_common_prefix(best, de->d_name);
+                if (c < best_len) {
+                    best[c] = 0;
+                    best_len = c;
+                }
+            }
+        }
+        closedir(dp);
+    }
+    free(path);
+    if (nmatch == 0 || best_len <= (int)wlen) return 0;
+
+    char out[1024];
+    if (text[wlen])
+        snprintf(out, sizeof out, "%s%s", best, text + wlen);
+    else
+        snprintf(out, sizeof out, "%s", best);
+
+    w2k_edit_set(e, out);
+    e->caret = e->sel = (int)strlen(best);
+    return 1;
+}
+
+static int run_tab_complete(W2kCombo *c)
+{
+    const char *t = w2k_edit_text(c->edit);
+    if (!t || !*t) return 0;
+    if (t[0] == '/') return run_complete_path(c->edit);
+    return run_complete_cmd(c->edit);
+}
+
 static void run_paint(W2kWin *w, Drawable d)
 {
     RunDlg *r = w->user;
@@ -664,6 +794,11 @@ static int run_event(W2kWin *w, XEvent *e)
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         if (ks == XK_Escape) { w2k_win_close(w, ID_CANCEL); return 1; }
         if (ks == XK_Return || ks == XK_KP_Enter) { w2k_win_close(w, ID_OK); return 1; }
+        if (ks == XK_Tab) {
+            if (run_tab_complete(r->open))
+                w2k_win_dirty(w);
+            return 1;
+        }
         if (w2k_combo_key(r->open, &e->xkey)) { w2k_win_dirty(w); return 1; }
         return 1;
     }
@@ -714,17 +849,27 @@ void wm_run_dialog(void)
         const char *cmd = w2k_combo_text(r.open);
         if (*cmd) {
             run_mru_save(r.open, cmd);
-            /* "cmd" and "command" open the terminal, as they open the
-             * command prompt in Windows. */
-            char word[64];
-            snprintf(word, sizeof word, "%.63s", cmd);
-            word[strcspn(word, " \t")] = 0;
-            if ((!strcasecmp(word, "cmd") || !strcasecmp(word, "cmd.exe") ||
-                 !strcasecmp(word, "command") || !strcasecmp(word, "command.com")) &&
-                wm_terminal_cmd())
-                wm_spawn(wm_terminal_cmd());
-            else
-                wm_spawn(cmd);
+            /* Absolute paths and URLs go through the desktop handler. */
+            if (cmd[0] == '/' ||
+                !strncasecmp(cmd, "https://", 8) ||
+                !strncasecmp(cmd, "http://", 7) ||
+                !strncasecmp(cmd, "file://", 7)) {
+                char open[1100];
+                snprintf(open, sizeof open, "xdg-open %s", cmd);
+                wm_spawn(open);
+            } else {
+                /* "cmd" and "command" open the terminal, as they open the
+                 * command prompt in Windows. */
+                char word[64];
+                snprintf(word, sizeof word, "%.63s", cmd);
+                word[strcspn(word, " \t")] = 0;
+                if ((!strcasecmp(word, "cmd") || !strcasecmp(word, "cmd.exe") ||
+                     !strcasecmp(word, "command") || !strcasecmp(word, "command.com")) &&
+                    wm_terminal_cmd())
+                    wm_spawn(wm_terminal_cmd());
+                else
+                    wm_spawn(cmd);
+            }
         }
     }
     w2k_combo_free(r.open);

@@ -279,9 +279,20 @@ int  w2k_fs_drives(W2kDrive *out, int max);
 int  w2k_fs_write_url_shortcut(const char *dir, const char *url);
 int  w2k_uri_list_urls(const char *uris, char urls[][1024], int max);
 
+/* Path tab-completion shared by the explorer address bar, the file
+ * dialog, and anything else that types a path.  `cwd` is used when
+ * `text` is relative (NULL means "/").  W2K_TABCOMP_DIRS limits the
+ * match to directories.  Returns 1 and fills `out` when the completed
+ * string differs from `text`.  Expands a leading ~. */
+enum { W2K_TABCOMP_DIRS = 1 };
+int  w2k_tabcomp(const char *text, const char *cwd, char *out, int n, int flags);
+
 /* Writing pictures: RGBA in, a file out. 1 on success. */
 int  w2k_png_save(const char *path, const unsigned char *rgba, int w, int h);
 int  w2k_jpeg_save(const char *path, const unsigned char *rgba, int w, int h);
+/* Same as w2k_jpeg_save with explicit quality 1–100 (clamped). */
+int  w2k_jpeg_save_quality(const char *path, const unsigned char *rgba,
+                           int w, int h, int quality);
 int  w2k_bmp_save(const char *path, const unsigned char *rgba, int w, int h);
 /* The PNG file's bytes in memory (malloc'd), for the clipboard. */
 unsigned char *w2k_png_encode(const unsigned char *rgba, int w, int h, size_t *out_n);

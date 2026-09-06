@@ -25,7 +25,9 @@ typedef struct {
     W2kWin  *w;
     W2kTabs *tabs;
     W2kEdit *name;
+    W2kEdit *mode_edit;             /* tiny octal chmod box, e.g. "644" */
     W2kRect  ok, cancel, apply, ro_box, hid_box;
+    W2kRect  perm_box[9];           /* owner/group/other × r/w/x */
     int      down;
 
     char     dir[1024];             /* the containing directory */
@@ -33,6 +35,8 @@ typedef struct {
     int      isdir, islink;
     int      readonly, hidden;      /* working copies */
     int      was_ro, was_hidden;
+    mode_t   mode;                  /* working permission bits (07777) */
+    mode_t   was_mode;
     char     type[64];
     int      icon;
     long long size, ondisk;
@@ -105,6 +109,7 @@ static void measure(Props *p)
     }
     p->readonly = p->was_ro = !(p->st.st_mode & S_IWUSR);
     p->hidden = p->was_hidden = p->file[0] == '.';
+    p->mode = p->was_mode = p->st.st_mode & 07777;
     p->icon = w2k_file_icon_stat(full, p->file, p->isdir);
     w2k_file_type(p->file, p->isdir, p->type, sizeof p->type);
 
@@ -115,6 +120,30 @@ static void measure(Props *p)
         p->size = (long long)p->st.st_size;
         p->ondisk = (long long)p->st.st_blocks * 512;
     }
+}
+
+/* ---- Mode helpers --------------------------------------------------- */
+
+static void mode_to_edit(Props *p)
+{
+    if (!p->mode_edit) return;
+    char buf[8];
+    snprintf(buf, sizeof buf, "%03o", (unsigned)(p->mode & 0777));
+    w2k_edit_set(p->mode_edit, buf);
+}
+
+/* Read the octal box into p->mode (low 9 bits). Returns 1 if valid. */
+static int mode_from_edit(Props *p)
+{
+    if (!p->mode_edit) return 0;
+    const char *t = w2k_edit_text(p->mode_edit);
+    if (!t || !t[0]) return 0;
+    char *end = NULL;
+    unsigned long v = strtoul(t, &end, 8);
+    if (end == t || v > 0777) return 0;
+    p->mode = (p->mode & ~0777) | (mode_t)v;
+    p->readonly = !(p->mode & S_IWUSR);
+    return 1;
 }
 
 /* ---- Painting ------------------------------------------------------- */
@@ -212,6 +241,43 @@ static void paint(W2kWin *w, Drawable d)
                       p->readonly, 0, 0);
     w2k_draw_checkbox(d, p->hid_box.x, p->hid_box.y, "&Hidden",
                       p->hidden, 0, 0);
+    y += fh + 8;
+    sep(d, x, y, wid);
+    y += 6;
+
+    /* Unix mode: tiny octal edit plus owner/group/other rwx checkboxes. */
+    {
+        w2k_text(d, F_UI, x, y, "Permissions:", C_TEXT);
+        if (p->mode_edit) {
+            p->mode_edit->r = (W2kRect){ vx, y - 2, 44, fh + 6 };
+            w2k_edit_draw(d, p->mode_edit);
+            w2k_text(d, F_UI, vx + 50, y, "(octal)", C_GRAYTEXT);
+        }
+        y += fh + 8;
+        static const mode_t bits[9] = {
+            S_IRUSR, S_IWUSR, S_IXUSR,
+            S_IRGRP, S_IWGRP, S_IXGRP,
+            S_IROTH, S_IWOTH, S_IXOTH
+        };
+        static const char *const labels[9] = {
+            "Owner read", "write", "exec",
+            "Group read", "write", "exec",
+            "Other read", "write", "exec"
+        };
+        int py = y;
+        for (int rowi = 0; rowi < 3; rowi++) {
+            int px = vx;
+            for (int coli = 0; coli < 3; coli++) {
+                int i = rowi * 3 + coli;
+                int bw = (coli == 0) ? 90 : 52;
+                p->perm_box[i] = (W2kRect){ px, py - 1, bw, fh + 2 };
+                w2k_draw_checkbox(d, px, py - 1, labels[i],
+                                  (p->mode & bits[i]) != 0, 0, 0);
+                px += bw + 2;
+            }
+            py += fh + 3;
+        }
+    }
 
     w2k_draw_pushbutton(d, &p->ok, "OK",
                         BS_DEFAULT | (p->down == 1 ? BS_PRESSED : 0));
@@ -233,12 +299,27 @@ static int apply(Props *p)
     char full[2048];
     snprintf(full, sizeof full, "%s/%s", p->dir, p->file);
 
-    if (p->readonly != p->was_ro) {
-        mode_t m = p->st.st_mode & 07777;
+    /* Prefer the octal box when it holds a valid value; otherwise keep the
+     * mode the checkboxes last set. */
+    mode_from_edit(p);
+
+    if (p->readonly != p->was_ro && (p->mode & 0777) == (p->was_mode & 0777)) {
+        mode_t m = p->mode;
         if (p->readonly) m &= (mode_t)~(S_IWUSR | S_IWGRP | S_IWOTH);
         else             m |= S_IWUSR;
-        if (chmod(full, m) != 0) { fail(p, "set the read-only attribute"); return 0; }
-        p->was_ro = p->readonly;
+        p->mode = m;
+        mode_to_edit(p);
+    }
+    if ((p->mode & 07777) != (p->was_mode & 07777) || p->readonly != p->was_ro) {
+        if (chmod(full, p->mode & 07777) != 0) {
+            fail(p, "set permissions");
+            return 0;
+        }
+        p->was_mode = p->mode & 07777;
+        p->was_ro = !(p->mode & S_IWUSR);
+        p->readonly = p->was_ro;
+        p->st.st_mode = (p->st.st_mode & ~07777) | p->was_mode;
+        mode_to_edit(p);
     }
 
     /* The name and the hidden dot are the same operation: one rename. */
@@ -270,8 +351,13 @@ static int apply(Props *p)
          * so a second Apply works from the right file. */
         snprintf(full, sizeof full, "%s/%s", p->dir, p->file);
     }
-    if (lstat(full, &p->st) == 0)
+    if (lstat(full, &p->st) == 0) {
         p->was_ro = !(p->st.st_mode & S_IWUSR);
+        p->was_mode = p->st.st_mode & 07777;
+        p->mode = p->was_mode;
+        p->readonly = p->was_ro;
+        mode_to_edit(p);
+    }
     return 1;
 }
 
@@ -282,12 +368,40 @@ static int event(W2kWin *w, XEvent *e)
     case ButtonPress: {
         int x = e->xbutton.x, y = e->xbutton.y;
         if (w2k_tabs_press(p->tabs, &e->xbutton)) { w2k_win_dirty(w); return 1; }
-        if (w2k_edit_press(p->name, &e->xbutton)) { w2k_win_dirty(w); return 1; }
-        if (w2k_rect_hit(&p->ro_box, x, y)) p->readonly = !p->readonly;
-        else if (w2k_rect_hit(&p->hid_box, x, y)) p->hidden = !p->hidden;
-        else if (w2k_rect_hit(&p->ok, x, y)) p->down = 1;
-        else if (w2k_rect_hit(&p->cancel, x, y)) p->down = 2;
-        else if (w2k_rect_hit(&p->apply, x, y)) p->down = 3;
+        if (w2k_edit_press(p->name, &e->xbutton)) {
+            if (p->mode_edit) p->mode_edit->focused = 0;
+            w2k_win_dirty(w);
+            return 1;
+        }
+        if (p->mode_edit && w2k_edit_press(p->mode_edit, &e->xbutton)) {
+            p->name->focused = 0;
+            w2k_win_dirty(w);
+            return 1;
+        }
+        if (w2k_rect_hit(&p->ro_box, x, y)) {
+            p->readonly = !p->readonly;
+            if (p->readonly) p->mode &= (mode_t)~(S_IWUSR | S_IWGRP | S_IWOTH);
+            else             p->mode |= S_IWUSR;
+            mode_to_edit(p);
+        } else if (w2k_rect_hit(&p->hid_box, x, y)) {
+            p->hidden = !p->hidden;
+        } else {
+            static const mode_t bits[9] = {
+                S_IRUSR, S_IWUSR, S_IXUSR,
+                S_IRGRP, S_IWGRP, S_IXGRP,
+                S_IROTH, S_IWOTH, S_IXOTH
+            };
+            int hit = -1;
+            for (int i = 0; i < 9; i++)
+                if (w2k_rect_hit(&p->perm_box[i], x, y)) { hit = i; break; }
+            if (hit >= 0) {
+                p->mode ^= bits[hit];
+                p->readonly = !(p->mode & S_IWUSR);
+                mode_to_edit(p);
+            } else if (w2k_rect_hit(&p->ok, x, y)) p->down = 1;
+            else if (w2k_rect_hit(&p->cancel, x, y)) p->down = 2;
+            else if (w2k_rect_hit(&p->apply, x, y)) p->down = 3;
+        }
         w2k_win_dirty(w);
         return 1;
     }
@@ -295,6 +409,7 @@ static int event(W2kWin *w, XEvent *e)
         int b = p->down, x = e->xbutton.x, y = e->xbutton.y;
         p->down = 0;
         w2k_edit_release(p->name);
+        if (p->mode_edit) w2k_edit_release(p->mode_edit);
         if (b == 1 && w2k_rect_hit(&p->ok, x, y)) {
             if (apply(p)) w2k_win_close(w, ID_OK);
             return 1;
@@ -309,6 +424,10 @@ static int event(W2kWin *w, XEvent *e)
     }
     case MotionNotify:
         if (w2k_edit_motion(p->name, &e->xmotion)) { w2k_win_dirty(w); return 1; }
+        if (p->mode_edit && w2k_edit_motion(p->mode_edit, &e->xmotion)) {
+            w2k_win_dirty(w);
+            return 1;
+        }
         return 0;
     case KeyPress: {
         KeySym ks = XLookupKeysym(&e->xkey, 0);
@@ -316,6 +435,14 @@ static int event(W2kWin *w, XEvent *e)
         if (ks == XK_Return || ks == XK_KP_Enter) {
             if (apply(p)) w2k_win_close(w, ID_OK);
             return 1;
+        }
+        if (p->mode_edit && p->mode_edit->focused) {
+            if (w2k_edit_key(p->mode_edit, &e->xkey)) {
+                /* Live-sync checkboxes while typing a valid octal value. */
+                if (mode_from_edit(p)) w2k_win_dirty(w);
+                else w2k_win_dirty(w);
+                return 1;
+            }
         }
         if (w2k_edit_key(p->name, &e->xkey)) { w2k_win_dirty(w); return 1; }
         return 1;
@@ -339,7 +466,7 @@ int w2k_file_properties(W2kWin *over, const char *path)
     if (!p.file[0]) return 0;
     measure(&p);
 
-    int W = 350, H = p.isdir ? 330 : 372;
+    int W = 400, H = p.isdir ? 440 : 500;
     char title[300];
     snprintf(title, sizeof title, "%s Properties", p.file);
     W2kWin *w = w2k_win_new(title, "w2kdialog", W, H, 0);
@@ -363,6 +490,10 @@ int w2k_file_properties(W2kWin *over, const char *path)
     p.name->focused = 1;
     w2k_edit_select_all(p.name);
 
+    p.mode_edit = w2k_edit_new(0);
+    w2k_edit_bind(p.mode_edit, w);
+    mode_to_edit(&p);
+
     p.ok     = (W2kRect){ W - 12 - 75 * 3 - 12, H - 12 - 23, 75, 23 };
     p.cancel = (W2kRect){ W - 12 - 75 * 2 - 6, H - 12 - 23, 75, 23 };
     p.apply  = (W2kRect){ W - 12 - 75, H - 12 - 23, 75, 23 };
@@ -370,9 +501,12 @@ int w2k_file_properties(W2kWin *over, const char *path)
     w2k_win_center(w, over);
     if (over) XSetTransientForHint(w2k.dpy, w->win, over->win);
     w2k_add_timer(w2k_caret_blink, blink_cb, p.name);
+    w2k_add_timer(w2k_caret_blink, blink_cb, p.mode_edit);
     int r = w2k_win_modal(w);
     w2k_del_timer(blink_cb, p.name);
+    w2k_del_timer(blink_cb, p.mode_edit);
     w2k_edit_free(p.name);
+    w2k_edit_free(p.mode_edit);
     w2k_tabs_free(p.tabs);
     return r == ID_OK;
 }

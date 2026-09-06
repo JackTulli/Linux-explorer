@@ -7,6 +7,7 @@
  * when the destination exists, through `confirm`: 1 replaces it, 0 skips
  * it, -1 stops the whole operation. */
 #include "w2k.h"
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -233,4 +234,114 @@ int w2k_uri_list_urls(const char *uris, char urls[][1024], int max)
         p = end;
     }
     return n;
+}
+
+/* ------------------------------------------------------------------ *
+ * Path tab-completion
+ * ------------------------------------------------------------------ */
+int w2k_tabcomp(const char *text, const char *cwd, char *out, int n, int flags)
+{
+    if (!text || !out || n <= 0) return 0;
+    out[0] = 0;
+
+    char path[1024];
+    snprintf(path, sizeof path, "%s", text);
+
+    /* Expand a leading ~ to $HOME. */
+    if (path[0] == '~' && (path[1] == '/' || path[1] == 0)) {
+        const char *home = getenv("HOME");
+        if (home && home[0]) {
+            char tmp[1024];
+            snprintf(tmp, sizeof tmp, "%s%s", home, path[1] ? path + 1 : "");
+            snprintf(path, sizeof path, "%s", tmp);
+        }
+    }
+
+    char dir[1024], prefix[256];
+    int had_slash = 0;
+    const char *slash = strrchr(path, '/');
+    if (slash) {
+        had_slash = 1;
+        size_t dl = (size_t)(slash - path);
+        if (dl == 0) {
+            snprintf(dir, sizeof dir, "/");
+        } else {
+            if (dl >= sizeof dir) dl = sizeof dir - 1;
+            memcpy(dir, path, dl);
+            dir[dl] = 0;
+        }
+        snprintf(prefix, sizeof prefix, "%s", slash + 1);
+    } else {
+        snprintf(dir, sizeof dir, "%s",
+                 (cwd && cwd[0]) ? cwd : "/");
+        snprintf(prefix, sizeof prefix, "%s", path);
+    }
+
+    DIR *dp = opendir(dir[0] ? dir : "/");
+    if (!dp) return 0;
+
+    char best[256] = "";
+    int nmatch = 0;
+    size_t plen = strlen(prefix);
+    struct dirent *de;
+    while ((de = readdir(dp))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        if (de->d_name[0] == '.' && (!prefix[0] || prefix[0] != '.'))
+            continue;
+        if (plen && strncasecmp(de->d_name, prefix, plen) != 0) continue;
+        if (flags & W2K_TABCOMP_DIRS) {
+            char full[1200];
+            snprintf(full, sizeof full, "%s/%s",
+                     strcmp(dir, "/") ? dir : "", de->d_name);
+            struct stat st;
+            if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        }
+        nmatch++;
+        if (!best[0]) {
+            snprintf(best, sizeof best, "%s", de->d_name);
+        } else {
+            size_t i = 0;
+            while (best[i] && de->d_name[i] &&
+                   tolower((unsigned char)best[i]) ==
+                   tolower((unsigned char)de->d_name[i]))
+                i++;
+            best[i] = 0;
+        }
+    }
+    closedir(dp);
+    if (!nmatch || !best[0]) return 0;
+
+    char built[1024];
+    if (had_slash) {
+        if (dir[0] == '/' && dir[1] == 0)
+            snprintf(built, sizeof built, "/%s", best);
+        else
+            snprintf(built, sizeof built, "%s/%s", dir, best);
+    } else {
+        /* Relative completion: return only the leaf (caller was typing
+         * a name in the current folder). */
+        snprintf(built, sizeof built, "%s", best);
+    }
+
+    /* Unique directory match: append a trailing slash. */
+    if (nmatch == 1) {
+        char full[1200];
+        if (built[0] == '/')
+            snprintf(full, sizeof full, "%s", built);
+        else
+            snprintf(full, sizeof full, "%s/%s",
+                     strcmp(dir, "/") ? dir : "", best);
+        struct stat st;
+        if (stat(full, &st) == 0 && S_ISDIR(st.st_mode)) {
+            size_t L = strlen(built);
+            if (L + 1 < sizeof built && built[L - 1] != '/') {
+                built[L] = '/';
+                built[L + 1] = 0;
+            }
+        }
+    }
+
+    if (!strcmp(built, text)) return 0;
+    snprintf(out, (size_t)n, "%s", built);
+    return 1;
 }
