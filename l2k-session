@@ -125,13 +125,23 @@ if [ "$(sed -n 's/^Compositor=//p' "$HOME/.w2k/scheme" 2>/dev/null | head -n 1)"
         if command -v xauth >/dev/null 2>&1 && command -v mcookie >/dev/null 2>&1; then
             xauth add ":$n" . "$(mcookie)" 2>/dev/null && nauth="-auth ${XAUTHORITY:-$HOME/.Xauthority}"
         fi
-        # Xephyr draws with the GPU (glamor) and gives its programs GL, and
-        # its window on this screen is read straight into the scaler's
-        # texture; Xvfb is the fallback, in software, read through memory.
+        # Xephyr draws its own screen with the GPU (glamor); Xvfb is the
+        # fallback, in software. Either way the programs inside render in
+        # software: Xephyr offers them neither DRI2 nor DRI3, so their GL is
+        # llvmpipe -- the price of the nested compositor.
+        #
+        # The scaler reads the nested screen through shared memory, so
+        # Xephyr's own window on this screen, which the scaler covers, need
+        # not be drawn at all: -glamor-skip-present saves that copy on every
+        # change. Not when the scaler takes that very window's pixmap
+        # (CompositorCapture=pixmap), nor from an Xephyr that lacks it.
         nested_kind=
         if command -v Xephyr >/dev/null 2>&1; then
+            skip_present=
+            [ "$(sed -n 's/^CompositorCapture=//p' "$HOME/.w2k/scheme" 2>/dev/null | head -n 1)" = pixmap ] || \
+                ! Xephyr -help 2>&1 | grep -q -- -glamor-skip-present || skip_present=-glamor-skip-present
             # shellcheck disable=SC2086
-            Xephyr ":$n" -glamor -screen "${n_w}x${n_h}x24" -title l2k-nested -no-host-grab \
+            Xephyr ":$n" -glamor $skip_present -screen "${n_w}x${n_h}x24" -title l2k-nested -no-host-grab \
                 -nolisten tcp -noreset -dpi 96 $nauth >>"$LOG" 2>&1 &
             NESTED_PID=$!
             i=0; while [ ! -e "/tmp/.X11-unix/X$n" ] && kill -0 "$NESTED_PID" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
@@ -177,6 +187,80 @@ if [ "$(sed -n 's/^Compositor=//p' "$HOME/.w2k/scheme" 2>/dev/null | head -n 1)"
             DISPLAY=$host_display l2kscaler --nested ":$n" --layout "$n_layout" $scaler_args >>"$LOG" 2>&1 &
             SCALER_PID=$!
             export DISPLAY=":$n" W2K_MONITORS="$n_mon" W2K_UI_SCALE=100
+        fi
+    fi
+fi
+
+# ------------------------------------------------------------------
+# The composited scaler (experimental)
+# ------------------------------------------------------------------
+# Compositor=composite: no second server. l2kscaler composites this one,
+# as picom does -- every window drawn off screen, put together on the GPU
+# and scaled -- so the programs keep the GPU. The monitors run at their
+# own modes; the desktop lives at their logical sizes in the screen's
+# top-left, which programs are told through RandR monitors of that size
+# and the desktop through W2K_MONITORS and W2K_SCREEN. l2kscaler scales
+# the pointer to match. If it will not start, the session runs plainly.
+COMP_MONS=
+if [ -z "$SCALER_PID" ] && \
+   [ "$(sed -n 's/^Compositor=//p' "$HOME/.w2k/scheme" 2>/dev/null | head -n 1)" = composite ]; then
+    # From the Monitor= lines: each monitor's real rectangle and its
+    # logical one (the real position over the scale), the desktop's size,
+    # and the plain xrandr layout.
+    plan=$(awk -F'[ =]' '/^Monitor=/ {
+        name=$2; mode=$3; split(mode, wh, "x"); W=wh[1]+0; H=wh[2]+0; x=$4+0; y=$5+0; pri=$6+0; en=$7+0; sc=$9+0
+        if (sc <= 0) sc = 100; if (en != 1 || W <= 0 || H <= 0) next
+        lw = int(W * 100 / sc + 0.5); lh = int(H * 100 / sc + 0.5)
+        lx = int(x * 100 / sc + 0.5); ly = int(y * 100 / sc + 0.5)
+        layout = layout name "," W "," H "," x "," y "," lw "," lh "," lx "," ly ";"
+        mon = mon name ":" lw "x" lh "+" lx "+" ly ":" pri ";"
+        rr = rr name ":" lw "x" lh "+" lx "+" ly ";"
+        if (lx + lw > sw) sw = lx + lw; if (ly + lh > sh) sh = ly + lh
+        xr = xr " --output " name " --mode " mode " --pos " x "x" y " --scale 1x1 --filter bilinear" (pri == 1 ? " --primary" : "")
+        if (sc > 100) any = 1; if (sc < 100) small = 1
+    } END { print layout; print mon; print sw + 0; print sh + 0; print xr; print any + 0; print rr; print small + 0 }' "$HOME/.w2k/scheme")
+    c_layout=$(printf '%s\n' "$plan" | sed -n 1p)
+    c_mon=$(printf '%s\n' "$plan" | sed -n 2p)
+    c_w=$(printf '%s\n' "$plan" | sed -n 3p)
+    c_h=$(printf '%s\n' "$plan" | sed -n 4p)
+    c_xr=$(printf '%s\n' "$plan" | sed -n 5p)
+    c_any=$(printf '%s\n' "$plan" | sed -n 6p)
+    c_rr=$(printf '%s\n' "$plan" | sed -n 7p)
+    c_small=$(printf '%s\n' "$plan" | sed -n 8p)
+    if [ "$c_any" != 1 ] || [ -z "$c_layout" ]; then
+        echo "l2k-session: composited scaler: no scaled monitor in the scheme; running plainly"
+    elif [ "$c_small" = 1 ]; then
+        echo "l2k-session: composited scaler: a scale under 100% cannot be composited; running plainly"
+    elif ! command -v l2kscaler >/dev/null 2>&1; then
+        echo "l2k-session: composited scaler: l2kscaler is not installed; running plainly"
+    else
+        # shellcheck disable=SC2086
+        xrandr $c_xr >/dev/null 2>&1 || echo "l2k-session: xrandr refused the plain layout; carrying on"
+        scaler_args=
+        c_filter=$(sed -n 's/^CompositorFilter=//p' "$HOME/.w2k/scheme" 2>/dev/null | head -n 1)
+        c_light=$(sed -n 's/^CompositorLight=//p' "$HOME/.w2k/scheme" 2>/dev/null | head -n 1)
+        c_ar=$(sed -n 's/^CompositorAntiring=//p' "$HOME/.w2k/scheme" 2>/dev/null | head -n 1)
+        [ -n "$c_filter" ] && scaler_args="$scaler_args --filter $c_filter"
+        [ "$c_light" = linear ] && scaler_args="$scaler_args --linear-light"
+        [ "$c_ar" = 0 ] && scaler_args="$scaler_args --antiring 0"
+        # shellcheck disable=SC2086
+        l2kscaler --composite --layout "$c_layout" $scaler_args >>"$LOG" 2>&1 &
+        SCALER_PID=$!
+        sleep 1
+        if ! kill -0 "$SCALER_PID" 2>/dev/null; then
+            echo "l2k-session: composited scaler: l2kscaler did not start (see above); running plainly"
+            SCALER_PID=
+        else
+            # Programs ask RandR where the monitors are: each output gets a
+            # monitor of its logical size, which stands in for its own.
+            printf '%s\n' "$c_rr" | tr ';' '\n' | while IFS=: read -r mname mgeo; do
+                [ -n "$mname" ] || continue
+                mw=${mgeo%%x*}; rest=${mgeo#*x}; mh=${rest%%+*}; rest=${rest#*+}; mx=${rest%%+*}; my=${rest#*+}
+                xrandr --setmonitor "l2k-$mname" "${mw}/0x${mh}/0+${mx}+${my}" "$mname" >/dev/null 2>&1
+            done
+            COMP_MONS=$c_rr
+            echo "    composited: layout $c_layout; the desktop at ${c_w}x${c_h}"
+            export W2K_MONITORS="$c_mon" W2K_SCREEN="${c_w}x${c_h}" W2K_UI_SCALE=100
         fi
     fi
 fi
@@ -258,6 +342,15 @@ echo "=== $(date) : l2kwm exited with $rc ==="
 command -v systemctl >/dev/null 2>&1 && systemctl --user stop l2k-session.target 2>/dev/null
 [ -n "$SCALER_PID" ] && kill "$SCALER_PID" 2>/dev/null
 [ -n "$NESTED_PID" ] && kill "$NESTED_PID" 2>/dev/null
+# The composited scaler puts the pointers back as it goes; if it died, this
+# does. The logical monitors go, and the outputs' own come back.
+if [ -n "$COMP_MONS" ]; then
+    sleep 0.3
+    l2kscaler --restore-input >/dev/null 2>&1
+    printf '%s\n' "$COMP_MONS" | tr ';' '\n' | while IFS=: read -r mname mgeo; do
+        [ -n "$mname" ] && xrandr --delmonitor "l2k-$mname" >/dev/null 2>&1
+    done
+fi
 case $rc in
     0)  ;;
     10) systemctl poweroff 2>/dev/null || loginctl poweroff 2>/dev/null || poweroff ;;

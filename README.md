@@ -314,13 +314,17 @@ it: at 2:1 its bilinear is a clean 2x2 box, so the whole picture is
 supersampled rather than stretched. Four times the pixels of the scale;
 best when the monitors share a scale.
 
-Behind an experimental switch on the same page, the desktop can instead
-run inside a nested X server (Xephyr with glamor, so programs keep their
-GPU; Xvfb without it) and be shown through `l2kscaler`, a small GPU
-compositor that scales every monitor with mpv's EWA Lanczos-sharp -- the
-whole picture, text and all, past xrandr's two filters, with nearest,
-bilinear, bicubic, Lanczos and EWA Lanczos to choose from while it runs.
-Off unless you ask (see docs/SCALING.md).
+Behind an experimental Compositor box on the same page, `l2kscaler`, a
+small GPU compositor, can scale every monitor with mpv's EWA
+Lanczos-sharp -- the whole picture, text and all, past xrandr's two
+filters, with nearest, bilinear, bicubic, Lanczos and EWA Lanczos to
+choose from while it runs; what moves is drawn bilinear and sharpened
+when it stops. **Composited** does it as picom does: every window is
+drawn off screen and put together on the GPU, on the one X server, so
+programs keep the GPU; the desktop runs at the monitors' logical size and
+the pointer is scaled to match. **Nested server** runs the desktop inside
+Xephyr or Xvfb instead, where programs render in software. Off unless you
+ask (see docs/SCALING.md).
 
 A Resampling box beside it picks the filter the desktop uses for its own
 artwork at a fraction -- icons, the XP and 7 chrome, the pointer, the

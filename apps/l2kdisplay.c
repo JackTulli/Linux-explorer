@@ -476,9 +476,9 @@ typedef struct {
     int       down;
     int       dirty;                        /* something to Apply */
     int       mon_dirty;                    /* a Settings-tab change to apply */
-    W2kRect   compositor_box;               /* the experimental nested compositor */
+    W2kCombo *comp;                         /* the experimental compositor: none, composited, nested */
     W2kRect   filter_btn;                   /* its filter, a dialog of its own */
-    int       compositor;
+    int       compositor;                   /* COMPOSITOR_* */
 
     /* Background */
     W2kList  *walls;
@@ -1005,6 +1005,36 @@ static void on_method(void *u, int i)
     w2k_win_dirty(dl.win);
 }
 
+/* The compositor's list, in its order: none, composited, nested. */
+static const int comp_modes[3] = { COMPOSITOR_NONE, COMPOSITOR_COMPOSITE, COMPOSITOR_NESTED };
+
+static void on_comp(void *u, int i)
+{
+    (void)u;
+    if (i < 0 || i > 2 || comp_modes[i] == dl.compositor) return;
+    dl.compositor = comp_modes[i];
+    dl.dirty = dl.mon_dirty = 1;
+    if (dl.compositor == COMPOSITOR_COMPOSITE)
+        w2k_msgbox(dl.win, "Display Properties",
+                   "This is experimental.\n\nAt the next logon l2kscaler composites the desktop, "
+                   "as picom does: every window is drawn off screen and put together on the GPU, and "
+                   "the whole picture is scaled with EWA Lanczos-sharp -- the filter mpv uses -- "
+                   "instead of xrandr's bilinear blur. Programs keep the GPU.\n\nThe desktop runs at "
+                   "each monitor's logical size; the pointer is scaled to match, and one scale is "
+                   "best for all the monitors. The layout is fixed for the session. If it cannot "
+                   "start, the desktop starts plainly. Choose None here to go back.",
+                   MB_OK | MB_ICONWARNING);
+    else if (dl.compositor == COMPOSITOR_NESTED)
+        w2k_msgbox(dl.win, "Display Properties",
+                   "This is experimental.\n\nAt the next logon the desktop runs inside a nested X "
+                   "server (Xephyr or Xvfb) at each monitor's logical size, and l2kscaler shows it "
+                   "on the real screen, scaled on the GPU.\n\nThe price: programs inside render in "
+                   "software, since the nested server gives them no GPU. Composited keeps the GPU "
+                   "and is the better choice where it works.",
+                   MB_OK | MB_ICONWARNING);
+    w2k_win_dirty(dl.win);
+}
+
 static void on_resample(void *u, int i)
 {
     (void)u;
@@ -1315,9 +1345,8 @@ static void paint(W2kWin *w, Drawable d)
         w2k_combo_draw(d, dl.method);
         w2k_text_mnemonic(d, F_UI, c.x + 10, dl.resample->r.y + (21 - fh) / 2, "Resa&mpling:", C_TEXT, 1);
         w2k_combo_draw(d, dl.resample);
-        w2k_draw_checkbox(d, dl.compositor_box.x, dl.compositor_box.y,
-                          "E&xperimental: the nested compositor scales the whole picture",
-                          dl.compositor, 0, 0);
+        w2k_text_mnemonic(d, F_UI, c.x + 10, dl.comp->r.y + (21 - fh) / 2, "Com&positor:", C_TEXT, 1);
+        w2k_combo_draw(d, dl.comp);
         w2k_draw_pushbutton(d, &dl.filter_btn, "&Filter...", dl.down == 5 ? BS_PRESSED : 0);
         if (valid) {
             char info[200];
@@ -1341,7 +1370,7 @@ static void paint(W2kWin *w, Drawable d)
                 how = want == render ? " (desktop drawn larger; takes effect at the next logon)"
                                      : " (desktop scale follows the primary; the screen makes up the rest)";
             if (getenv("W2K_MONITORS") && *getenv("W2K_MONITORS"))
-                how = " (through the nested compositor; layout changes need a logon)";
+                how = " (through the compositor; layout changes need a logon)";
             snprintf(info, sizeof info, "%s -- %d x %d at %d, %d%s",
                      mons[cur].name, mw, mh, mons[cur].px, mons[cur].py, how);
             w2k_text(d, F_UI, c.x + 10, c.y + c.h - fh - 6, info, C_GRAYTEXT);
@@ -1636,7 +1665,8 @@ static int event(W2kWin *w, XEvent *e)
                 w2k_combo_press(dl.rate, &e->xbutton) ||
                 w2k_combo_press(dl.scale, &e->xbutton) ||
                 w2k_combo_press(dl.method, &e->xbutton) ||
-                w2k_combo_press(dl.resample, &e->xbutton)) {
+                w2k_combo_press(dl.resample, &e->xbutton) ||
+                w2k_combo_press(dl.comp, &e->xbutton)) {
                 w2k_win_dirty(w);
                 return 1;
             }
@@ -1652,22 +1682,6 @@ static int event(W2kWin *w, XEvent *e)
             }
             if (w2k_rect_hit(&dl.filter_btn, x, y)) {
                 dl.down = 5;
-                w2k_win_dirty(w);
-                return 1;
-            }
-            if (w2k_rect_hit(&dl.compositor_box, x, y)) {
-                dl.compositor = !dl.compositor;
-                dl.dirty = dl.mon_dirty = 1;
-                if (dl.compositor)
-                    w2k_msgbox(w, "Display Properties",
-                               "This is experimental.\n\nAt the next logon the desktop will run inside a "
-                               "software X server (Xvfb) at each monitor's logical size, and l2kscaler will "
-                               "show it on the real screen, scaled on the GPU with EWA Lanczos-sharp -- the "
-                               "filter mpv uses -- instead of xrandr's bilinear blur.\n\nThe price: programs "
-                               "lose 3D acceleration (everything renders in software), the monitor layout is "
-                               "fixed for the session, and it needs Xvfb and l2kscaler installed. If either "
-                               "is missing the desktop starts plainly. Turn it off here to go back.",
-                               MB_OK | MB_ICONWARNING);
                 w2k_win_dirty(w);
                 return 1;
             }
@@ -1996,9 +2010,15 @@ int main(int argc, char **argv)
     dl.resample->sel = w2k_resample == RS_LANCZOS ? 0 : w2k_resample == RS_CUBIC ? 1
                      : w2k_resample == RS_BILINEAR ? 2 : 3;
     dl.resample->r = (W2kRect){ c.x + 100, c.y + 352, c.w - 110, 21 };
-    dl.compositor_box = (W2kRect){ c.x + 10, c.y + 384, c.w - 20 - 80, 16 };
-    dl.filter_btn = (W2kRect){ c.x + c.w - 10 - 70, c.y + 381, 70, 21 };
+    dl.comp = w2k_combo_new(0);
+    dl.comp->on_change = on_comp;
+    w2k_combo_add(dl.comp, "None");
+    w2k_combo_add(dl.comp, "Composited (keeps the GPU)");
+    w2k_combo_add(dl.comp, "Nested (software only)");
     dl.compositor = w2k_compositor;
+    dl.comp->sel = dl.compositor == COMPOSITOR_COMPOSITE ? 1 : dl.compositor == COMPOSITOR_NESTED ? 2 : 0;
+    dl.comp->r = (W2kRect){ c.x + 100, c.y + 382, c.w - 110 - 78, 21 };
+    dl.filter_btn = (W2kRect){ c.x + c.w - 10 - 70, c.y + 382, 70, 21 };
     fill_monitor_combos();
 
     /* Programs */

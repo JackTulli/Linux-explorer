@@ -19,6 +19,16 @@ char w2k_compositor_filter[32] = "ewa_lanczossharp";
 int  w2k_compositor_light = 0;
 int  w2k_compositor_antiring = 1;
 
+/* Under the composited scaler (l2k-session sets W2K_SCREEN) the screen is
+ * the monitors' full size but the desktop is their logical size, in its
+ * top-left corner: that is the screen as far as the desktop is concerned. */
+void w2k_screen_override(void)
+{
+    const char *s = getenv("W2K_SCREEN");
+    int w, h;
+    if (s && sscanf(s, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) { w2k.sw = w; w2k.sh = h; }
+}
+
 void w2k_compositor_push(void)
 {
     if (!w2k.dpy) return;
@@ -770,7 +780,8 @@ int w2k_scheme_load(const char *path)
             continue;
         }
         if (!strcasecmp(line, "Compositor")) {
-            w2k_compositor = !strcasecmp(val, "nested");
+            w2k_compositor = !strcasecmp(val, "nested") ? COMPOSITOR_NESTED :
+                             !strcasecmp(val, "composite") ? COMPOSITOR_COMPOSITE : COMPOSITOR_NONE;
             continue;
         }
         if (!strcasecmp(line, "CompositorFilter")) {
@@ -1044,7 +1055,8 @@ int w2k_scheme_save(const char *path)
             w2k_theme == THEME_VISTA ? "vista" :
             w2k_theme == THEME_AERO ? "aero" : "classic");
     fprintf(f, "ModernFrame=%s\n", w2k_modern_classic_frame ? "classic" : "modern");
-    fprintf(f, "Compositor=%s\n", w2k_compositor ? "nested" : "none");
+    fprintf(f, "Compositor=%s\n", w2k_compositor == COMPOSITOR_NESTED ? "nested" :
+                                  w2k_compositor == COMPOSITOR_COMPOSITE ? "composite" : "none");
     fprintf(f, "CompositorFilter=%s\n", w2k_compositor_filter);
     fprintf(f, "CompositorLight=%s\n", w2k_compositor_light ? "linear" : "gamma");
     fprintf(f, "CompositorAntiring=%d\n", w2k_compositor_antiring);
@@ -1228,6 +1240,7 @@ int w2k_init(const char *appname)
     w2k.depth  = DefaultDepth(d, w2k.screen);
     w2k.sw     = DisplayWidth(d, w2k.screen);
     w2k.sh     = DisplayHeight(d, w2k.screen);
+    w2k_screen_override();
 
     w2k_scheme_load(NULL);
 

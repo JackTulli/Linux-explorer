@@ -99,7 +99,7 @@ if [ "$DO_DEPS" = 1 ]; then
             pulseaudio-utils alsa-utils xterm python3 git curl fonts-dejavu-core dbus-x11 \
             cabextract qt5ct qt6ct libpam0g-dev xauth libdbus-1-dev libnotify-bin \
             qt5-style-plugins qt-style-kvantum lxpolkit brightnessctl \
-            xserver-xephyr xvfb libgl1-mesa-dev libxtst-dev libxdamage-dev libxfixes-dev libxcomposite-dev \
+            xserver-xephyr xvfb libgl1-mesa-dev libxtst-dev libxdamage-dev libxfixes-dev libxcomposite-dev libxi-dev \
             wine icoutils udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g ;;
     *fedora*|*rhel*|*centos*|*rocky*|*alma*)
         # strict=0: a name this release no longer has is skipped, not fatal.
@@ -109,7 +109,7 @@ if [ "$DO_DEPS" = 1 ]; then
             tar p7zip p7zip-plugins pulseaudio-utils alsa-utils xterm python3 git curl \
             dejavu-sans-fonts dbus-x11 cabextract qt5ct qt6ct pam-devel xorg-x11-xauth dbus-devel libnotify \
             qt5-qtstyleplugins kvantum kvantum-qt5 lxpolkit brightnessctl \
-            xorg-x11-server-Xephyr xorg-x11-server-Xvfb mesa-libGL-devel libXtst-devel libXdamage-devel libXfixes-devel libXcomposite-devel \
+            xorg-x11-server-Xephyr xorg-x11-server-Xvfb mesa-libGL-devel libXtst-devel libXdamage-devel libXfixes-devel libXcomposite-devel libXi-devel \
             wine icoutils udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfsprogs ;;
     *arch*|*manjaro*|*endeavouros*)
         # -Syu, never -Sy: a refreshed database with an unrefreshed system
@@ -119,7 +119,7 @@ if [ "$DO_DEPS" = 1 ]; then
             xorg-xset xorg-xsetroot xorg-xrdb xorg-xmessage xdg-utils zip unzip tar \
             p7zip libpulse alsa-utils xterm python git curl ttf-dejavu dbus cabextract qt5ct qt6ct pam xorg-xauth libnotify \
             kvantum kvantum-qt5 polkit-gnome brightnessctl \
-            xorg-server-xephyr xorg-server-xvfb mesa libxtst libxdamage libxfixes libxcomposite \
+            xorg-server-xephyr xorg-server-xvfb mesa libxtst libxdamage libxfixes libxcomposite libxi \
             wine icoutils udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g ;;
     *suse*)
         as_root zypper --non-interactive install gcc make libX11-devel libXext-devel \

@@ -48,6 +48,46 @@ at other scales are shrunk by more than two -- a 100% monitor beside a
 suits a desktop whose monitors share a scale. Like Sharp it takes
 effect at the next logon. `ScaleMode=supersample2`.
 
+## The composited scaler (experimental)
+
+`Compositor=composite` in the scheme, **Composited** in the Compositor
+box on the Settings page: the scaler of the next section without the
+second server. `l2kscaler --composite` composites the one X server as
+picom does -- every top-level window redirected into a pixmap of its own
+(Composite), each pixmap bound to a texture on the GPU without a copy
+(texture-from-pixmap), the windows put together bottom to top in their
+stacking order, within their shapes, the 32-bit ones blended -- and then
+scales that picture onto each monitor through the overlay window, with
+the same filters, the same bilinear-in-motion and the same pointer drawn
+to scale. The programs never leave the server, so they keep DRI3 and the
+GPU: OpenGL, Vulkan, video decoding, as on the plain desktop.
+
+The monitors run at their own modes, unscaled. The desktop lives at their
+logical size -- 1280x720 for a 1920x1080 panel at 150% -- in the screen's
+top-left corner: l2k-session tells the desktop so (`W2K_MONITORS`,
+`W2K_SCREEN`) and every other program through a RandR monitor of that
+size standing in for each output, which is where GTK, Qt and the browsers
+look. The pointer has to live there too, and X has no way to scale input
+between a window and the screen, so the scaler scales the pointers
+themselves: each pointer device's Coordinate Transformation Matrix is
+multiplied by 1/scale, which moves the pointer the same distance across
+the scaled picture as before, and pointer barriers keep it on the
+logical desktop. A touch screen or tablet is mapped the same way. The
+matrices as they were are kept on the root window (`_L2K_SAVED_CTM`) and
+put back when the scaler stops; a scaler that died leaves them there for
+the next to find rather than scaling twice, and `l2kscaler
+--restore-input`, which the session runs at logoff, puts them back from
+outside. Absolute input sent by other programs -- a VNC server, an
+on-screen keyboard -- is mapped the same way, which suits it: they see
+the scaled picture and give its positions.
+
+What it asks: one scale for all the monitors (the pointer has one), no
+scale under 100%, a GPU with texture-from-pixmap (every Mesa driver),
+and no other compositor running; if the scaler cannot start, the session
+starts plainly and says why in `~/.w2k/session.log`. A full-screen
+program is composited like any window, never shown directly, so the
+filter always applies.
+
 ## The nested compositor (experimental)
 
 Everything above ends at xrandr, which stretches a scaled monitor with
@@ -69,10 +109,25 @@ l2kscaler, scaled, since the real one is hidden. One window waits for
 the vertical blank per frame; the others do not, so three monitors do
 not mean a third of the frame rate.
 
+The expensive filters cost more than a frame when much of the screen
+changes at once: EWA Lanczos over all of 1920x1080 takes some 26 ms on
+an Intel HD 620, where bilinear takes 2. So a large area in motion -- a
+window dragged, a page scrolled, a video -- is drawn bilinear while it
+moves, and drawn again with the chosen filter once nothing has changed
+for 150 ms; the settled picture is exactly what the filter alone would
+have drawn. Small changes, typing or a clock, get the chosen filter at
+once, as their cost is small.
+
 The nested server is Xephyr when it is installed, started with glamor:
-it draws with the GPU and gives its programs hardware GL, so the desktop
-inside is as quick as the plain one. Without Xephyr it is Xvfb, where
-every program renders in software -- fine for a desktop, not for 3D.
+it draws its own screen with the GPU. It does not pass the GPU on:
+Xephyr offers its programs neither DRI2 nor DRI3, so their OpenGL is
+Mesa's llvmpipe, in software, exactly as under Xvfb, the fallback.
+The desktop's own windows are drawn by the server and do not mind;
+browsers, Electron programs and anything 3D are slower than on the plain
+desktop, and on a two-core laptop noticeably so. The Sharp scaling
+methods above keep programs on the GPU. Xephyr is started with
+-glamor-skip-present, where it has it, since its own window on the real
+screen lies under the scaler's and need not be drawn.
 The screen is read out of the nested server through shared memory. With
 Xephyr the scaler can instead bind the nested window's own pixmap into
 its texture on the GPU (`CompositorCapture=pixmap` in the scheme; no copy

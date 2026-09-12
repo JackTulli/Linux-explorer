@@ -30,7 +30,7 @@ APPS    := $(filter-out bin/l2kswatch,$(patsubst apps/%.c,bin/%,$(wildcard apps/
 ifeq ($(wildcard /usr/include/GL/glx.h),)
 APPS    := $(filter-out bin/l2kscaler,$(APPS))
 endif
-bin/l2kscaler: LDLIBS += -lGL -lXtst -lXdamage -lXfixes -lXcomposite
+bin/l2kscaler: LDLIBS += -lGL -lXtst -lXdamage -lXfixes -lXcomposite -lXi
 # The display manager needs PAM; without its header it still builds, as the
 # picture alone (W2K_RENDER).
 ifneq ($(wildcard /usr/include/security/pam_appl.h),)

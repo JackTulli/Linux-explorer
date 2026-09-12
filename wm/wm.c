@@ -633,6 +633,7 @@ void wm_handle_event(XEvent *e)
         if (e->xconfigure.window == w2k.root) {
             w2k.sw = e->xconfigure.width;
             w2k.sh = e->xconfigure.height;
+            w2k_screen_override();
             w2k_monitors_refresh();
             wm_layout_changed();
         }

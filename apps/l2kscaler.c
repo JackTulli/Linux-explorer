@@ -11,12 +11,18 @@
  * pointer is drawn here, scaled, since the real one is hidden.
  *
  * Experimental, off unless Display Properties turns it on; l2k-session
- * starts it. Programs in the nested server render in software (Xvfb has
- * no GPU), which a desktop bears and a game does not.
+ * starts it. With --composite there is no nested server: this display's
+ * own windows are composited, as picom does it, and the programs keep the
+ * GPU (see "--composite" below). Programs in a nested server render in
+ * software -- Xvfb
+ * has no GPU, and Xephyr, which draws with one, passes it on to nobody
+ * (no DRI2 or DRI3) -- which a desktop bears and a game does not.
  *
  *   l2kscaler --nested :1 --layout "name,hW,hH,hX,hY,nW,nH,nX,nY;..."
  *             [--nested-window TITLE] [--filter NAME] [--antiring 0|1]
  *             [--linear-light] [--window] [--no-input]
+ *   l2kscaler --composite --layout "..." [--filter NAME] ...
+ *   l2kscaler --restore-input
  *   l2kscaler --set "filter=NAME;light=gamma|linear;antiring=0|1"
  *
  * The filters: nearest, bilinear, bicubic (Catmull-Rom), lanczos (3),
@@ -46,6 +52,8 @@
 #include <X11/extensions/Xfixes.h>
 #include <X11/extensions/XTest.h>
 #include <X11/extensions/Xcomposite.h>
+#include <X11/extensions/shape.h>
+#include <X11/extensions/XInput2.h>
 #include <GL/gl.h>
 #include <GL/glx.h>
 #include <GL/glxext.h>
@@ -323,7 +331,20 @@ typedef struct {
     GLuint fbo, fbo_tex;            /* the scaled picture, kept (scale != 1) */
     int    dirty;                   /* needs presenting */
     int    fbo_x0, fbo_y0, fbo_x1, fbo_y1;   /* pending EWA rect, host px */
+    int    hq_x0, hq_y0, hq_x1, hq_y1;       /* drawn cheaply in motion: redo when it settles */
 } Mon;
+
+/* While a large part of the screen keeps changing -- a window dragged, a
+ * page scrolled, a video -- the expensive filters cost more than a frame
+ * (EWA Lanczos: some 26 ms for all of 1920x1080 on an integrated GPU), so
+ * those frames are drawn bilinear, and the area is drawn again with the
+ * chosen filter once nothing has changed for SETTLE_MS. Small changes --
+ * typing, a clock, a cursor -- cost little and get the real filter at
+ * once. */
+#define MOTION_MS    100      /* damage this soon after the last is motion */
+#define SETTLE_MS    150      /* quiet this long and the picture is redone */
+#define MOTION_SHARE 16       /* a pass over 1/16 of the window or more is large */
+static long last_damage, prev_damage;
 
 static Display *hd, *nd;            /* host, nested */
 static int hscreen, nscreen;
@@ -415,8 +436,18 @@ static long now_ms(void)
     return tv.tv_sec * 1000L + tv.tv_usec / 1000;
 }
 
+static int composite;             /* --composite: this display's own windows */
+static Window cow;                /* compositing: the overlay window, ours to draw on */
+static int access_denied;         /* a BadAccess came back: someone else composites */
+
 static int xerror(Display *d, XErrorEvent *e)
 {
+    if (e->error_code == BadAccess) access_denied = 1;
+    /* Compositing, windows come and go between a request and its answer:
+     * a window gone or unviewable is the ordinary case, not news. */
+    if (composite && (e->error_code == BadWindow || e->error_code == BadDrawable ||
+                      e->error_code == BadMatch || e->error_code == BadPixmap ||
+                      e->error_code == BadValue)) return 0;
     char buf[128];
     XGetErrorText(d, e->error_code, buf, sizeof buf);
     fprintf(stderr, "l2kscaler: X error: %s (request %d.%d)\n", buf,
@@ -531,9 +562,17 @@ static void mon_window(Mon *m)
     a.event_mask = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask |
                    PointerMotionMask | EnterWindowMask | LeaveWindowMask | ExposureMask |
                    StructureNotifyMask | FocusChangeMask;
-    m->win = XCreateWindow(hd, RootWindow(hd, hscreen), m->hx, m->hy, (unsigned)m->hw, (unsigned)m->hh,
-                           0, vi->depth, InputOutput, vi->visual,
+    /* Compositing, the monitors' windows are the overlay window's, and let
+     * every click and key through to the windows under them. */
+    if (composite) a.event_mask = ExposureMask | StructureNotifyMask;
+    m->win = XCreateWindow(hd, composite ? cow : RootWindow(hd, hscreen), m->hx, m->hy,
+                           (unsigned)m->hw, (unsigned)m->hh, 0, vi->depth, InputOutput, vi->visual,
                            CWColormap | CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
+    if (composite) {
+        XserverRegion none = XFixesCreateRegion(hd, NULL, 0);
+        XFixesSetWindowShapeRegion(hd, m->win, ShapeInput, 0, 0, none);
+        XFixesDestroyRegion(hd, none);
+    }
     char title[128];
     snprintf(title, sizeof title, "Linux 2000 (%s)", m->name);
     XStoreName(hd, m->win, title);
@@ -725,6 +764,489 @@ static int shm_init(void)
     return 1;
 }
 
+/* ------------------------------------------------------------------ *
+ * --composite: this display's own windows, composited
+ *
+ * The picom way, all on the one X server: every top-level window is
+ * redirected into a pixmap of its own (Composite, manually), each pixmap
+ * is a texture (texture-from-pixmap: no copy), and the windows are put
+ * together, bottom to top, into the logical desktop -- the monitors'
+ * logical rectangles, from the screen's top-left -- which is then scaled
+ * onto the monitors through the overlay window, as the nested screen is.
+ * The programs never leave the server, so they keep the GPU.
+ *
+ * The desktop lives in logical pixels, so the pointer must too: every
+ * pointer's Coordinate Transformation Matrix is scaled by 1/scale, so a
+ * mouse moves the logical pointer as far as it would have moved the real
+ * one over the scaled picture (a touch screen or a tablet is mapped onto
+ * the logical desktop the same way), and pointer barriers keep it there.
+ * The matrices as they were are kept on the root (_L2K_SAVED_CTM) until
+ * they are put back, so a scaler that dies and is started again does not
+ * scale them twice, and --restore-input puts them back from outside. The
+ * pointer has one scale: the first monitor's that is scaled at all.
+ * ------------------------------------------------------------------ */
+typedef struct {
+    Window     id;
+    int        x, y, w, h, bw, depth;
+    int        mapped, input_only;
+    Pixmap     pix;
+    GLXPixmap  glx;
+    GLuint     tex;
+    int        flip, damaged;
+    Damage     dmg;
+    XRectangle *shape;              /* the bounding shape, window-relative */
+    int        nshape;
+} CWin;
+
+static CWin *cws;
+static int ncws, capcws;             /* the bottom of the stack first */
+static GLuint desk_fbo;              /* the composed desktop, drawn into desk_tex */
+static int shape_base = -1, xi_opcode = -1;
+static PointerBarrier barriers[2];
+static int nbarriers;
+static GLXFBConfig fbc_depth[2];     /* binds a 24-bit, a 32-bit pixmap */
+static int have_fbc[2];
+static double ptr_scale = 1.0;
+
+static int cw_index(Window id)
+{
+    for (int i = 0; i < ncws; i++) if (cws[i].id == id) return i;
+    return -1;
+}
+
+/* Part of the logical desktop to put together again. */
+static void damage_rect(int x0, int y0, int x1, int y1)
+{
+    if (x1 <= x0 || y1 <= y0) return;
+    if (!dmg_any) { dmg_x0 = x0; dmg_y0 = y0; dmg_x1 = x1; dmg_y1 = y1; dmg_any = 1; return; }
+    if (x0 < dmg_x0) dmg_x0 = x0;
+    if (y0 < dmg_y0) dmg_y0 = y0;
+    if (x1 > dmg_x1) dmg_x1 = x1;
+    if (y1 > dmg_y1) dmg_y1 = y1;
+}
+
+static void damage_win(const CWin *c)
+{
+    damage_rect(c->x, c->y, c->x + c->w + 2 * c->bw, c->y + c->h + 2 * c->bw);
+}
+
+static void cw_unbind(CWin *c)
+{
+    if (c->glx) {
+        glBindTexture(GL_TEXTURE_2D, c->tex);
+        p_glXReleaseTexImageEXT(hd, c->glx, GLX_FRONT_LEFT_EXT);
+        glXDestroyPixmap(hd, c->glx);
+        c->glx = 0;
+    }
+    if (c->pix) { XFreePixmap(hd, c->pix); c->pix = 0; }
+}
+
+static void cw_shape(CWin *c)
+{
+    if (c->shape) { XFree(c->shape); c->shape = NULL; }
+    c->nshape = 0;
+    if (shape_base < 0) return;
+    int n = 0, order;
+    XRectangle *r = XShapeGetRectangles(hd, c->id, ShapeBounding, &n, &order);
+    if (r && n > 0) { c->shape = r; c->nshape = n; }
+    else if (r) XFree(r);
+}
+
+/* A mapped window's pixmap, as a texture. Named again after every map and
+ * every resize, which is when Composite gives the window a new one. */
+static void cw_bind(CWin *c)
+{
+    cw_unbind(c);
+    if (!c->mapped || c->input_only) return;
+    XWindowAttributes wa;
+    if (!XGetWindowAttributes(hd, c->id, &wa) || wa.map_state != IsViewable) return;
+    c->depth = wa.depth;
+    int k = wa.depth == 32 ? 1 : 0;
+    if (!have_fbc[k]) return;
+    c->pix = XCompositeNameWindowPixmap(hd, c->id);
+    int pattrs[] = { GLX_TEXTURE_TARGET_EXT, GLX_TEXTURE_2D_EXT,
+                     GLX_TEXTURE_FORMAT_EXT, k ? GLX_TEXTURE_FORMAT_RGBA_EXT : GLX_TEXTURE_FORMAT_RGB_EXT,
+                     None };
+    c->glx = glXCreatePixmap(hd, fbc_depth[k], c->pix, pattrs);
+    if (!c->glx) { XFreePixmap(hd, c->pix); c->pix = 0; return; }
+    unsigned inv = 0;
+    glXQueryDrawable(hd, c->glx, GLX_Y_INVERTED_EXT, &inv);
+    c->flip = inv != 0;
+    if (!c->tex) glGenTextures(1, &c->tex);
+    glBindTexture(GL_TEXTURE_2D, c->tex);
+    p_glXBindTexImageEXT(hd, c->glx, GLX_FRONT_LEFT_EXT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    c->damaged = 0;
+}
+
+/* A new top-level window, on top of the stack as X puts it. */
+static CWin *cw_add(Window id)
+{
+    if (id == cow || cw_index(id) >= 0) return NULL;
+    for (int i = 0; i < nmons; i++) if (mons[i].win == id) return NULL;
+    XWindowAttributes wa;
+    if (!XGetWindowAttributes(hd, id, &wa)) return NULL;
+    if (ncws == capcws) {
+        int cap = capcws ? capcws * 2 : 64;
+        CWin *n = realloc(cws, sizeof *cws * (size_t)cap);
+        if (!n) return NULL;
+        cws = n; capcws = cap;
+    }
+    CWin *c = &cws[ncws++];
+    memset(c, 0, sizeof *c);
+    c->id = id;
+    c->x = wa.x; c->y = wa.y; c->w = wa.width; c->h = wa.height; c->bw = wa.border_width;
+    c->depth = wa.depth;
+    c->input_only = wa.class == InputOnly;
+    c->mapped = wa.map_state != IsUnmapped;
+    if (!c->input_only) {
+        c->dmg = XDamageCreate(hd, id, XDamageReportBoundingBox);
+        if (shape_base >= 0) XShapeSelectInput(hd, id, ShapeNotifyMask);
+        cw_shape(c);
+        if (c->mapped) { cw_bind(c); damage_win(c); }
+    }
+    return c;
+}
+
+static void cw_remove(int i, int destroyed)
+{
+    CWin *c = &cws[i];
+    if (c->mapped) damage_win(c);
+    cw_unbind(c);
+    if (c->tex) glDeleteTextures(1, &c->tex);
+    if (c->dmg && !destroyed) XDamageDestroy(hd, c->dmg);   /* a destroyed window takes its own */
+    if (c->shape) XFree(c->shape);
+    memmove(&cws[i], &cws[i + 1], sizeof *cws * (size_t)(ncws - i - 1));
+    ncws--;
+}
+
+/* Put window i just above `above` (None: at the bottom). */
+static void cw_restack(int i, Window above)
+{
+    CWin c = cws[i];
+    memmove(&cws[i], &cws[i + 1], sizeof *cws * (size_t)(ncws - i - 1));
+    ncws--;
+    int pos = 0;
+    if (above) { int a = cw_index(above); pos = a >= 0 ? a + 1 : ncws; }
+    memmove(&cws[pos + 1], &cws[pos], sizeof *cws * (size_t)(ncws - pos));
+    cws[pos] = c;
+    ncws++;
+}
+
+/* Put the logical desktop together again inside (x0,y0)-(x1,y1): black,
+ * then every window that reaches into it, bottom to top, each within its
+ * shape, a 32-bit one blended as premultiplied alpha. */
+static void compose(int x0, int y0, int x1, int y1)
+{
+    for (int i = 0; i < ncws; i++) {
+        CWin *c = &cws[i];
+        if (!c->damaged || !c->glx) continue;
+        /* The pixmap was drawn into: let go and take it again, as the
+         * extension asks of a reader. */
+        XDamageSubtract(hd, c->dmg, None, None);
+        glBindTexture(GL_TEXTURE_2D, c->tex);
+        p_glXReleaseTexImageEXT(hd, c->glx, GLX_FRONT_LEFT_EXT);
+        p_glXBindTexImageEXT(hd, c->glx, GLX_FRONT_LEFT_EXT, NULL);
+        c->damaged = 0;
+    }
+    p_glBindFramebuffer(GL_FRAMEBUFFER, desk_fbo);
+    glViewport(0, 0, NW, NH);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(x0, NH - y1, x1 - x0, y1 - y0);               /* rows from the bottom */
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    for (int i = 0; i < ncws; i++) {
+        CWin *c = &cws[i];
+        if (!c->glx) continue;
+        int pw = c->w + 2 * c->bw, ph = c->h + 2 * c->bw;
+        if (c->x >= x1 || c->y >= y1 || c->x + pw <= x0 || c->y + ph <= y0) continue;
+        if (c->depth == 32) { glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); }
+        else glDisable(GL_BLEND);
+        bind_common(prog_blit, c->tex, pw, ph, -c->x, -c->y, 1.0, c->flip);
+        if (c->nshape)
+            for (int k = 0; k < c->nshape; k++) {
+                XRectangle *r = &c->shape[k];
+                int rx = c->x + c->bw + r->x, ry = c->y + c->bw + r->y;   /* the shape is inside the border */
+                quad(rx, ry, rx + r->width, ry + r->height, NW, NH);
+            }
+        else quad(c->x, c->y, c->x + pw, c->y + ph, NW, NH);
+    }
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+static void composite_event(XEvent *e)
+{
+    int i;
+    if (e->type == damage_base + XDamageNotify) {
+        XDamageNotifyEvent *d = (XDamageNotifyEvent *)e;
+        if ((i = cw_index(d->drawable)) < 0) return;
+        CWin *c = &cws[i];
+        c->damaged = 1;
+        damage_rect(c->x + c->bw + d->area.x, c->y + c->bw + d->area.y,
+                    c->x + c->bw + d->area.x + d->area.width, c->y + c->bw + d->area.y + d->area.height);
+        return;
+    }
+    if (shape_base >= 0 && e->type == shape_base + ShapeNotify) {
+        XShapeEvent *s = (XShapeEvent *)e;
+        if ((i = cw_index(s->window)) < 0) return;
+        damage_win(&cws[i]);
+        cw_shape(&cws[i]);
+        damage_win(&cws[i]);
+        return;
+    }
+    switch (e->type) {
+    case CreateNotify:
+        if (e->xcreatewindow.parent == RootWindow(hd, hscreen)) cw_add(e->xcreatewindow.window);
+        break;
+    case DestroyNotify:
+        if ((i = cw_index(e->xdestroywindow.window)) >= 0) cw_remove(i, 1);
+        break;
+    case ReparentNotify:
+        if (e->xreparent.parent == RootWindow(hd, hscreen)) cw_add(e->xreparent.window);
+        else if ((i = cw_index(e->xreparent.window)) >= 0) cw_remove(i, 0);
+        break;
+    case MapNotify:
+        if ((i = cw_index(e->xmap.window)) < 0) break;
+        cws[i].mapped = 1;
+        cw_shape(&cws[i]);
+        cw_bind(&cws[i]);
+        damage_win(&cws[i]);
+        break;
+    case UnmapNotify:
+        if ((i = cw_index(e->xunmap.window)) < 0) break;
+        damage_win(&cws[i]);
+        cws[i].mapped = 0;
+        cw_unbind(&cws[i]);
+        break;
+    case ConfigureNotify: {
+        XConfigureEvent *c = &e->xconfigure;
+        if (c->window == RootWindow(hd, hscreen) || (i = cw_index(c->window)) < 0) break;
+        CWin *w = &cws[i];
+        damage_win(w);
+        int resized = c->width != w->w || c->height != w->h || c->border_width != w->bw;
+        w->x = c->x; w->y = c->y; w->w = c->width; w->h = c->height; w->bw = c->border_width;
+        cw_restack(i, c->above);
+        w = &cws[cw_index(c->window)];
+        if (resized && w->mapped) { cw_shape(w); cw_bind(w); }
+        damage_win(w);
+        break;
+    }
+    case CirculateNotify:
+        if ((i = cw_index(e->xcirculate.window)) < 0) break;
+        if (e->xcirculate.place == PlaceOnTop) cw_restack(i, ncws > 1 ? cws[ncws - 1].id : None);
+        else cw_restack(i, None);
+        damage_win(&cws[cw_index(e->xcirculate.window)]);
+        break;
+    }
+}
+
+/* ---- the pointer, in logical pixels ---- */
+static Atom a_ctm, a_float, a_saved;
+
+typedef struct { int id; float m[9]; } SavedCtm;
+static SavedCtm saved[32];
+static int nsaved;
+
+static void saved_load(Display *d, Window root)
+{
+    nsaved = 0;
+    Atom type; int fmt; unsigned long n, after; unsigned char *data = NULL;
+    if (XGetWindowProperty(d, root, a_saved, 0, 4096, False, XA_STRING, &type, &fmt, &n, &after, &data) != Success || !data)
+        return;
+    char *save = NULL;
+    for (char *t = strtok_r((char *)data, ";", &save); t && nsaved < 32; t = strtok_r(NULL, ";", &save)) {
+        SavedCtm *s = &saved[nsaved];
+        if (sscanf(t, "%d:%f,%f,%f,%f,%f,%f,%f,%f,%f", &s->id, &s->m[0], &s->m[1], &s->m[2], &s->m[3],
+                   &s->m[4], &s->m[5], &s->m[6], &s->m[7], &s->m[8]) == 10) nsaved++;
+    }
+    XFree(data);
+}
+
+static void saved_store(Display *d, Window root)
+{
+    char buf[4096];
+    int o = 0;
+    for (int i = 0; i < nsaved && o < (int)sizeof buf - 200; i++)
+        o += snprintf(buf + o, sizeof buf - (size_t)o, "%d:%g,%g,%g,%g,%g,%g,%g,%g,%g;", saved[i].id,
+                      saved[i].m[0], saved[i].m[1], saved[i].m[2], saved[i].m[3], saved[i].m[4],
+                      saved[i].m[5], saved[i].m[6], saved[i].m[7], saved[i].m[8]);
+    XChangeProperty(d, root, a_saved, XA_STRING, 8, PropModeReplace, (unsigned char *)buf, o);
+}
+
+static int ctm_get(Display *d, int dev, float *m)
+{
+    Atom type; int fmt; unsigned long n, after; unsigned char *data = NULL;
+    if (XIGetProperty(d, dev, a_ctm, 0, 9, False, a_float, &type, &fmt, &n, &after, &data) != Success || !data)
+        return 0;
+    int ok = fmt == 32 && n == 9;
+    if (ok) memcpy(m, data, sizeof(float) * 9);
+    XFree(data);
+    return ok;
+}
+
+/* Scale one pointer: its matrix as it was, times 1/scale -- or, putting
+ * back, as it was. */
+static void ctm_device(Display *d, int dev, int restore)
+{
+    float orig[9];
+    int k;
+    for (k = 0; k < nsaved; k++) if (saved[k].id == dev) break;
+    if (k < nsaved) memcpy(orig, saved[k].m, sizeof orig);
+    else {
+        if (restore || !ctm_get(d, dev, orig) || nsaved >= 32) return;
+        saved[nsaved].id = dev;
+        memcpy(saved[nsaved].m, orig, sizeof orig);
+        nsaved++;
+    }
+    float m[9];
+    memcpy(m, orig, sizeof m);
+    if (!restore) {
+        float s = (float)(1.0 / ptr_scale);
+        for (int j = 0; j < 6; j++) m[j] *= s;
+    }
+    XIChangeProperty(d, dev, a_ctm, a_float, 32, PropModeReplace, (unsigned char *)m, 9);
+}
+
+static void ctm_all(Display *d, int restore)
+{
+    int n = 0;
+    XIDeviceInfo *di = XIQueryDevice(d, XIAllDevices, &n);
+    for (int i = 0; i < n; i++) if (di[i].use == XISlavePointer) ctm_device(d, di[i].deviceid, restore);
+    if (di) XIFreeDeviceInfo(di);
+}
+
+static void input_init(void)
+{
+    Window root = RootWindow(hd, hscreen);
+    a_ctm = XInternAtom(hd, "Coordinate Transformation Matrix", False);
+    a_float = XInternAtom(hd, "FLOAT", False);
+    a_saved = XInternAtom(hd, "_L2K_SAVED_CTM", False);
+    saved_load(hd, root);                  /* a scaler before us may have died */
+    ctm_all(hd, 0);
+    saved_store(hd, root);
+    /* New mice and touch screens are scaled as they come. */
+    XIEventMask em;
+    unsigned char mask[XIMaskLen(XI_LASTEVENT)] = { 0 };
+    XISetMask(mask, XI_HierarchyChanged);
+    em.deviceid = XIAllDevices; em.mask_len = sizeof mask; em.mask = mask;
+    XISelectEvents(hd, root, &em, 1);
+    /* Fences at the logical desktop's right and bottom edges. */
+    int rw = DisplayWidth(hd, hscreen), rh = DisplayHeight(hd, hscreen);
+    if (NW < rw) barriers[nbarriers++] = XFixesCreatePointerBarrier(hd, root, NW, 0, NW, rh, BarrierNegativeX, 0, NULL);
+    if (NH < rh) barriers[nbarriers++] = XFixesCreatePointerBarrier(hd, root, 0, NH, rw, NH, BarrierNegativeY, 0, NULL);
+    Window rr, cc; int px, py, wx, wy; unsigned mk;
+    if (XQueryPointer(hd, root, &rr, &cc, &px, &py, &wx, &wy, &mk) && (px >= NW || py >= NH))
+        XWarpPointer(hd, None, root, 0, 0, 0, 0, NW / 2, NH / 2);
+}
+
+static void input_event(XEvent *e)
+{
+    if (e->type != GenericEvent || e->xcookie.extension != xi_opcode) return;
+    if (!XGetEventData(hd, &e->xcookie)) return;
+    if (e->xcookie.evtype == XI_HierarchyChanged) {
+        XIHierarchyEvent *h = e->xcookie.data;
+        for (int i = 0; i < h->num_info; i++)
+            if ((h->info[i].flags & XISlaveAdded) && h->info[i].use == XISlavePointer)
+                ctm_device(hd, h->info[i].deviceid, 0);
+        saved_store(hd, RootWindow(hd, hscreen));
+    }
+    XFreeEventData(hd, &e->xcookie);
+}
+
+static void input_restore(Display *d)
+{
+    Window root = DefaultRootWindow(d);
+    if (!a_ctm) {
+        a_ctm = XInternAtom(d, "Coordinate Transformation Matrix", False);
+        a_float = XInternAtom(d, "FLOAT", False);
+        a_saved = XInternAtom(d, "_L2K_SAVED_CTM", False);
+        saved_load(d, root);
+    }
+    ctm_all(d, 1);
+    XDeleteProperty(d, root, a_saved);
+    XFlush(d);
+}
+
+/* The pixmap configs, one per depth a window can have. */
+static int composite_fbconfigs(void)
+{
+    for (int k = 0; k < 2; k++) {
+        int attrs[] = { k ? GLX_BIND_TO_TEXTURE_RGBA_EXT : GLX_BIND_TO_TEXTURE_RGB_EXT, True,
+                        GLX_DRAWABLE_TYPE, GLX_PIXMAP_BIT,
+                        GLX_BIND_TO_TEXTURE_TARGETS_EXT, GLX_TEXTURE_2D_BIT_EXT, GLX_DOUBLEBUFFER, False,
+                        GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8, k ? GLX_ALPHA_SIZE : None, 8,
+                        None };
+        int n = 0;
+        GLXFBConfig *fbc = glXChooseFBConfig(hd, hscreen, attrs, &n);
+        for (int i = 0; fbc && i < n; i++) {
+            XVisualInfo *v = glXGetVisualFromFBConfig(hd, fbc[i]);
+            int ok = v && v->depth == (k ? 32 : 24);
+            if (v) XFree(v);
+            if (ok) { fbc_depth[k] = fbc[i]; have_fbc[k] = 1; break; }
+        }
+        if (fbc) XFree(fbc);
+    }
+    if (!have_fbc[0]) fprintf(stderr, "l2kscaler: no framebuffer config binds a 24-bit pixmap to a texture\n");
+    return have_fbc[0];
+}
+
+/* Take over the screen's drawing: every top-level window redirected, the
+ * overlay window ours, input passing straight through it. */
+static int composite_init(void)
+{
+    Window root = RootWindow(hd, hscreen);
+    int ev, err, maj = 0, min = 2;
+    if (!XCompositeQueryExtension(hd, &ev, &err)) { fprintf(stderr, "l2kscaler: this server has no Composite\n"); return 0; }
+    XCompositeQueryVersion(hd, &maj, &min);
+    if (maj == 0 && min < 3) { fprintf(stderr, "l2kscaler: Composite 0.3 is needed for the overlay window\n"); return 0; }
+    if (!XDamageQueryExtension(hd, &damage_base, &err)) { fprintf(stderr, "l2kscaler: this server has no DAMAGE\n"); return 0; }
+    int xmaj = 5, xmin = 0;
+    XFixesQueryVersion(hd, &xmaj, &xmin);
+    if (xmaj < 5) { fprintf(stderr, "l2kscaler: XFixes 5 is needed for pointer barriers\n"); return 0; }
+    int xi_ev, xi_err;
+    if (!XQueryExtension(hd, "XInputExtension", &xi_opcode, &xi_ev, &xi_err)) { fprintf(stderr, "l2kscaler: this server has no XInput\n"); return 0; }
+    int shape_err;
+    if (!XShapeQueryExtension(hd, &shape_base, &shape_err)) shape_base = -1;
+    if (!p_glXBindTexImageEXT || !p_glXReleaseTexImageEXT) { fprintf(stderr, "l2kscaler: no GLX_EXT_texture_from_pixmap\n"); return 0; }
+
+    XGrabServer(hd);
+    access_denied = 0;
+    XCompositeRedirectSubwindows(hd, root, CompositeRedirectManual);
+    XSync(hd, False);
+    if (access_denied) {
+        XUngrabServer(hd);
+        fprintf(stderr, "l2kscaler: another compositor is running on this display\n");
+        return 0;
+    }
+    XSelectInput(hd, root, SubstructureNotifyMask);
+    cow = XCompositeGetOverlayWindow(hd, root);
+    XserverRegion none = XFixesCreateRegion(hd, NULL, 0);
+    XFixesSetWindowShapeRegion(hd, cow, ShapeInput, 0, 0, none);
+    XFixesDestroyRegion(hd, none);
+    XUngrabServer(hd);
+    XSync(hd, False);
+    return 1;
+}
+
+/* Every top-level window there already, bottom to top; the server held
+ * still meanwhile so nothing is missed between the list and the events. */
+static void composite_windows(void)
+{
+    Window root = RootWindow(hd, hscreen), r, p, *kids = NULL;
+    unsigned n = 0;
+    XGrabServer(hd);
+    if (XQueryTree(hd, root, &r, &p, &kids, &n))
+        for (unsigned i = 0; i < n; i++) cw_add(kids[i]);
+    if (kids) XFree(kids);
+    XUngrabServer(hd);
+    XSync(hd, False);
+}
+
 /* Fetch the damaged rectangle of the nested root into the texture. The
  * image is told the rectangle's size for the call: the server writes
  * rows of exactly that width. */
@@ -737,7 +1259,12 @@ static void fetch_damage(void)
     if (x1 > NW) x1 = NW;
     if (y1 > NH) y1 = NH;
     if (x1 <= x0 || y1 <= y0) { dmg_any = 0; return; }
-    if (xwin) {
+    prev_damage = last_damage;
+    last_damage = now_ms();
+    if (composite) {
+        dmg_any = 0;
+        compose(x0, y0, x1, y1);
+    } else if (xwin) {
         /* The texture is the pixmap: let go and take it again, which is
          * what the extension asks of a reader after the drawer has drawn. */
         dmg_any = 0;
@@ -806,7 +1333,21 @@ static void draw_mon(Mon *m)
 {
     glXMakeCurrent(hd, m->win, ctx);
     if (m->fbo && m->fbo_x1 > m->fbo_x0 && m->fbo_y1 > m->fbo_y0) {
-        /* The scaled pass, only where the nested screen changed. */
+        /* The scaled pass, only where the nested screen changed: bilinear
+         * for a large area in motion, remembered to be redone. */
+        int pass = method, ar = antiring;
+        long area = (long)(m->fbo_x1 - m->fbo_x0) * (m->fbo_y1 - m->fbo_y0);
+        if (method >= 2 && last_damage - prev_damage < MOTION_MS &&
+            area * MOTION_SHARE >= (long)m->hw * m->hh) {
+            pass = 1; ar = 0;
+            if (m->hq_x1 <= m->hq_x0) { m->hq_x0 = m->fbo_x0; m->hq_y0 = m->fbo_y0; m->hq_x1 = m->fbo_x1; m->hq_y1 = m->fbo_y1; }
+            else {
+                if (m->fbo_x0 < m->hq_x0) m->hq_x0 = m->fbo_x0;
+                if (m->fbo_y0 < m->hq_y0) m->hq_y0 = m->fbo_y0;
+                if (m->fbo_x1 > m->hq_x1) m->hq_x1 = m->fbo_x1;
+                if (m->fbo_y1 > m->hq_y1) m->hq_y1 = m->fbo_y1;
+            }
+        }
         p_glBindFramebuffer(GL_FRAMEBUFFER, m->fbo);
         glViewport(0, 0, m->hw, m->hh);
         bind_common(prog_ewa, desk_tex, NW, NH, m->nx, m->ny, m->scale, 0);
@@ -821,8 +1362,8 @@ static void draw_mon(Mon *m)
         p_glUniform1f(uloc(prog_ewa, "radius"), (float)EWA_RADIUS);
         p_glUniform1f(uloc(prog_ewa, "linlight"), linear_light ? 1.0f : 0.0f);
         p_glUniform1f(uloc(prog_ewa, "texflip"), tex_flip ? 1.0f : 0.0f);
-        p_glUniform1f(uloc(prog_ewa, "antiring"), antiring ? 1.0f : 0.0f);
-        p_glUniform1i(uloc(prog_ewa, "method"), method);
+        p_glUniform1f(uloc(prog_ewa, "antiring"), ar ? 1.0f : 0.0f);
+        p_glUniform1i(uloc(prog_ewa, "method"), pass);
         p_glActiveTexture(GL_TEXTURE0);
         glEnable(GL_SCISSOR_TEST);
         /* The framebuffer texture is y-up; our quad is y-down, so the
@@ -886,6 +1427,7 @@ static Mon *mon_of(Window w)
 
 static void host_event(XEvent *e)
 {
+    if (composite) { composite_event(e); input_event(e); }
     if (xwin && e->type == hdamage_base + XDamageNotify) {
         XDamageNotifyEvent *d = (XDamageNotifyEvent *)e;
         int x0 = d->area.x, y0 = d->area.y, x1 = x0 + d->area.width, y1 = y0 + d->area.height;
@@ -977,6 +1519,8 @@ static void nested_event(XEvent *e)
 static void usage(void)
 {
     fprintf(stderr, "usage: l2kscaler --nested DISPLAY --layout \"name,hW,hH,hX,hY,nW,nH,nX,nY;...\" [--nested-window TITLE]\n"
+                    "       l2kscaler --composite --layout \"...\"   (this display's own windows, composited)\n"
+                    "       l2kscaler --restore-input   (put the pointers' matrices back after a scaler that died)\n"
                     "                 [--filter NAME] [--antiring 0|1] [--linear-light] [--window] [--no-input]\n"
                     "       l2kscaler --set \"filter=NAME;light=gamma|linear;antiring=0|1\"   (while one runs)\n"
                     "       l2kscaler --list-filters\n");
@@ -988,6 +1532,14 @@ int main(int argc, char **argv)
     const char *nested = NULL, *layout = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--nested") && i + 1 < argc) nested = argv[++i];
+        else if (!strcmp(argv[i], "--composite")) composite = 1;
+        else if (!strcmp(argv[i], "--restore-input")) {
+            Display *d = XOpenDisplay(NULL);
+            if (!d) { fprintf(stderr, "l2kscaler: cannot open the display\n"); return 1; }
+            input_restore(d);
+            XCloseDisplay(d);
+            return 0;
+        }
         else if (!strcmp(argv[i], "--layout") && i + 1 < argc) layout = argv[++i];
         else if (!strcmp(argv[i], "--window")) windowed = 1;
         else if (!strcmp(argv[i], "--no-input")) no_input = 1;
@@ -1015,7 +1567,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--nested-window") && i + 1 < argc) nested_title = argv[++i];
         else usage();
     }
-    if (!nested || !layout || !parse_layout(layout)) usage();
+    if ((!nested && !composite) || !layout || !parse_layout(layout)) usage();
 
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
@@ -1023,22 +1575,40 @@ int main(int argc, char **argv)
 
     hd = XOpenDisplay(NULL);
     if (!hd) { fprintf(stderr, "l2kscaler: cannot open the display\n"); return 1; }
-    nd = XOpenDisplay(nested);
-    if (!nd) { fprintf(stderr, "l2kscaler: cannot open the nested display %s\n", nested); return 1; }
+    /* Compositing, the "nested" display is this one: a second
+     * connection, for the cursor, the pointer and the settings. */
+    nd = XOpenDisplay(composite ? NULL : nested);
+    if (!nd) { fprintf(stderr, "l2kscaler: cannot open the nested display %s\n", composite ? "(this one)" : nested); return 1; }
     XSetErrorHandler(xerror);
     hscreen = DefaultScreen(hd);
     nscreen = DefaultScreen(nd);
     nroot = RootWindow(nd, nscreen);
     NW = DisplayWidth(nd, nscreen);
     NH = DisplayHeight(nd, nscreen);
+    if (composite) {
+        /* The logical desktop: the monitors' logical rectangles, from the
+         * top-left. The pointer takes the first scaled monitor's scale. */
+        NW = NH = 0;
+        for (int i = 0; i < nmons; i++) {
+            if (mons[i].nx + mons[i].nw > NW) NW = mons[i].nx + mons[i].nw;
+            if (mons[i].ny + mons[i].nh > NH) NH = mons[i].ny + mons[i].nh;
+            if (ptr_scale == 1.0 && fabs(mons[i].scale - 1.0) > 1e-6) ptr_scale = mons[i].scale;
+        }
+        if (NW > DisplayWidth(hd, hscreen) || NH > DisplayHeight(hd, hscreen)) {
+            fprintf(stderr, "l2kscaler: the logical desktop (%dx%d) is larger than the screen; scales under 100%% are not composited\n", NW, NH);
+            return 1;
+        }
+        no_input = 1;                   /* input goes to the windows themselves */
+    }
 
     int ev, err, xtest_maj, xtest_min, xtest_ev, xtest_err;
     if (!XDamageQueryExtension(nd, &damage_base, &err)) { fprintf(stderr, "l2kscaler: the nested server has no DAMAGE\n"); return 1; }
     if (!XFixesQueryExtension(nd, &xfixes_base, &err)) { fprintf(stderr, "l2kscaler: the nested server has no XFIXES\n"); return 1; }
     if (!XTestQueryExtension(nd, &xtest_ev, &xtest_err, &xtest_maj, &xtest_min)) { fprintf(stderr, "l2kscaler: the nested server has no XTEST\n"); return 1; }
     if (!XFixesQueryExtension(hd, &ev, &err)) { fprintf(stderr, "l2kscaler: this server has no XFIXES\n"); return 1; }
-    if (!nested_title && !shm_init()) return 1;
+    if (!composite && !nested_title && !shm_init()) return 1;
     if (!load_gl() || !gl_init()) return 1;
+    if (composite && !composite_init()) return 1;
 
     for (int i = 0; i < nmons; i++) mon_window(&mons[i]);
     XSync(hd, False);
@@ -1050,9 +1620,23 @@ int main(int argc, char **argv)
         tfp_bind();
         for (int i = 0; i < nmons; i++) XRaiseWindow(hd, mons[i].win);
     }
-    XSetInputFocus(hd, mons[0].win, RevertToPointerRoot, CurrentTime);
+    if (composite) {
+        /* The desktop is put together in desk_tex, through a framebuffer:
+         * its rows run from the bottom. */
+        p_glGenFramebuffers(1, &desk_fbo);
+        p_glBindFramebuffer(GL_FRAMEBUFFER, desk_fbo);
+        p_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desk_tex, 0);
+        if (p_glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            fprintf(stderr, "l2kscaler: framebuffer for the desktop incomplete\n");
+        p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        tex_flip = 1;
+        if (!composite_fbconfigs()) return 1;
+        composite_windows();
+        input_init();
+        XFixesHideCursor(hd, RootWindow(hd, hscreen));
+    } else XSetInputFocus(hd, mons[0].win, RevertToPointerRoot, CurrentTime);
 
-    if (!xwin) damage = XDamageCreate(nd, nroot, XDamageReportBoundingBox);
+    if (!xwin && !composite) damage = XDamageCreate(nd, nroot, XDamageReportBoundingBox);
     XFixesSelectCursorInput(nd, nroot, XFixesDisplayCursorNotifyMask);
     a_scaler = XInternAtom(nd, "_L2K_SCALER", False);
     XSelectInput(nd, nroot, PropertyChangeMask);
@@ -1065,6 +1649,23 @@ int main(int argc, char **argv)
     while (!quit) {
         while (XPending(hd)) { XEvent e; XNextEvent(hd, &e); host_event(&e); }
         while (XPending(nd)) { XEvent e; XNextEvent(nd, &e); nested_event(&e); }
+        /* The motion is over: draw again with the real filter what was
+         * drawn bilinear while it lasted. */
+        if (now_ms() - last_damage >= SETTLE_MS)
+            for (int i = 0; i < nmons; i++) {
+                Mon *m = &mons[i];
+                if (m->hq_x1 <= m->hq_x0) continue;
+                if (m->fbo_x1 <= m->fbo_x0) { m->fbo_x0 = m->hq_x0; m->fbo_y0 = m->hq_y0; m->fbo_x1 = m->hq_x1; m->fbo_y1 = m->hq_y1; }
+                else {
+                    if (m->hq_x0 < m->fbo_x0) m->fbo_x0 = m->hq_x0;
+                    if (m->hq_y0 < m->fbo_y0) m->fbo_y0 = m->hq_y0;
+                    if (m->hq_x1 > m->fbo_x1) m->fbo_x1 = m->hq_x1;
+                    if (m->hq_y1 > m->fbo_y1) m->fbo_y1 = m->hq_y1;
+                }
+                m->hq_x0 = m->hq_y0 = m->hq_x1 = m->hq_y1 = 0;
+                m->dirty = 1;
+                prev_damage = 0;                 /* this pass is not motion */
+            }
         int any_dirty = dmg_any;
         for (int i = 0; i < nmons && !any_dirty; i++) any_dirty |= mons[i].dirty;
         /* The nested pointer moves without an event of its own when a
@@ -1073,7 +1674,7 @@ int main(int argc, char **argv)
         if (any_dirty && t - last_frame >= 8) {
             last_frame = t;
             if (xwin) XDamageSubtract(hd, hdamage, None, None);
-            else      XDamageSubtract(nd, damage, None, None);
+            else if (!composite) XDamageSubtract(nd, damage, None, None);
             glXMakeCurrent(hd, mons[0].win, ctx);
             fetch_damage();
             Window rr, cw; int rx, ry, wx, wy; unsigned mask;
@@ -1100,7 +1701,16 @@ int main(int argc, char **argv)
             }
         }
     }
-    if (xwin) { XDamageDestroy(hd, hdamage); XCompositeUnredirectWindow(hd, xwin, CompositeRedirectAutomatic); }
+    if (composite) {
+        /* Give the screen back: pointers as they were, no fences, the
+         * cursor shown, the windows drawn by the server again. */
+        input_restore(hd);
+        for (int i = 0; i < nbarriers; i++) XFixesDestroyPointerBarrier(hd, barriers[i]);
+        XFixesShowCursor(hd, RootWindow(hd, hscreen));
+        XCompositeUnredirectSubwindows(hd, RootWindow(hd, hscreen), CompositeRedirectManual);
+        XCompositeReleaseOverlayWindow(hd, RootWindow(hd, hscreen));
+        XSync(hd, False);
+    } else if (xwin) { XDamageDestroy(hd, hdamage); XCompositeUnredirectWindow(hd, xwin, CompositeRedirectAutomatic); }
     else { XDamageDestroy(nd, damage); XShmDetach(nd, &shm); shmdt(shm.shmaddr); }
     XCloseDisplay(nd);
     XCloseDisplay(hd);
