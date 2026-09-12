@@ -1,8 +1,9 @@
 /* sysprops.c -- System Properties, the sheet sysdm.cpl put up.
  *
- * General: the monitor with the flag on it, and beside it what the system
- * is, who it is registered to and what the computer is -- the processor,
- * the machine and the memory, in the words and the K Windows used.
+ * General: the monitor with the Linux 2000 logo on it, and beside it
+ * what the system is, who it is registered to and what the computer is --
+ * the processor, the machine and the memory, in the words and the K
+ * Windows used.
  * Network Identification: the computer's name and workgroup. Hardware:
  * Device Manager. User Profiles: the accounts on this computer. Advanced:
  * Performance Options and the environment. What has no counterpart here
@@ -235,8 +236,9 @@ static void gather(SysDlg *s, int textw)
 }
 
 /* ------------------------------------------------------------------ *
- * The picture: a monitor, its screen teal, the flag waving on it with
- * its trail of squares -- drawn, since there is no bitmap of it to use.
+ * The picture: a monitor, drawn, its screen teal, and on the screen the
+ * Linux 2000 logo where Windows put its flag -- or, with no logo
+ * installed, a waving flag drawn in its place.
  * ------------------------------------------------------------------ */
 #define MON_W 112
 #define MON_H 96
@@ -260,6 +262,9 @@ static void bevel(unsigned char *img, int x, int y, int w, int h, int sunk)
     for (int i = x; i < x + w; i++) { px(img, i, y, hi, hi, hi); px(img, i, y + h - 1, lo, lo, lo); }
     for (int j = y; j < y + h; j++) { px(img, x, j, hi, hi, hi); px(img, x + w - 1, j, lo, lo, lo); }
 }
+
+static int draw_logo(unsigned char *img);
+static void draw_flag(unsigned char *img);
 
 static W2kSkin *monitor_picture(void)
 {
@@ -287,7 +292,42 @@ static W2kSkin *monitor_picture(void)
     bevel(img, 22, 84, 68, 9, 0);
     for (int i = 23; i < 89; i++) px(img, i, 93, 64, 64, 64);
 
-    /* The flag: four panes, bowed as it flies, split by black. */
+    if (!draw_logo(img)) draw_flag(img);
+    W2kSkin *s = w2k_skin_from_rgba(img, MON_W, MON_H);
+    free(img);
+    return s;
+}
+
+/* The logo (skins/l2logo.png) as wide as the screen allows, centred on
+ * it, its transparent edges blended into the teal. 0 without it. */
+static int draw_logo(unsigned char *img)
+{
+    const int sx = 14, sy = 10, sw = 84, sh = 56;       /* the screen */
+    char path[1024];
+    int iw = 0, ih = 0;
+    unsigned char *rgba = w2k_skin_path("l2logo.png", path, sizeof path) ? w2k_image_load(path, &iw, &ih) : NULL;
+    if (!rgba || iw <= 0 || ih <= 0) { free(rgba); return 0; }
+    int dw = sw - 6, dh = ih * dw / iw;
+    if (dh > sh - 6) { dh = sh - 6; dw = iw * dh / ih; }
+    unsigned char *sc = w2k_rgba_resample(rgba, iw, ih, dw, dh, RS_LANCZOS);
+    free(rgba);
+    if (!sc) return 0;
+    int ox = sx + (sw - dw) / 2, oy = sy + (sh - dh) / 2;
+    for (int y = 0; y < dh; y++)
+        for (int x = 0; x < dw; x++) {
+            const unsigned char *s = sc + ((size_t)y * dw + x) * 4;
+            unsigned char *d = img + ((size_t)(oy + y) * MON_W + ox + x) * 4;
+            int a = s[3];
+            for (int c = 0; c < 3; c++) d[c] = (unsigned char)((s[c] * a + d[c] * (255 - a) + 127) / 255);
+        }
+    free(sc);
+    return 1;
+}
+
+/* The flag: four panes, bowed as it flies, split by black, and its
+ * trail of squares. */
+static void draw_flag(unsigned char *img)
+{
     const int fx = 42, fy = 22, fw = 42, fh = 30;
     for (int x = fx; x < fx + fw; x++) {
         double u = (double)(x - fx) / fw;
@@ -317,9 +357,6 @@ static W2kSkin *monitor_picture(void)
             box(img, x, y, sz, sz, blue ? 30 : 240, blue ? 80 : 40, blue ? 230 : 30);
         }
     }
-    W2kSkin *s = w2k_skin_from_rgba(img, MON_W, MON_H);
-    free(img);
-    return s;
 }
 
 /* ------------------------------------------------------------------ *
