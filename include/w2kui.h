@@ -470,6 +470,7 @@ int  w2k_color_popup(int rx, int ry, int *r, int *g, int *b);
  * `over` may be NULL. Initial *r,*g,*b are the starting colour;
  * on OK they receive the chosen colour. Returns 1 on OK. */
 int  w2k_color_picker(W2kWin *over, int *r, int *g, int *b);
+int  w2k_color_picker_rgba(W2kWin *over, int *r, int *g, int *b, int *a);
 /* Single-line prompt. Returns 1 and fills `out` on OK. */
 int  w2k_prompt(W2kWin *over, const char *title, const char *label,
                 const char *initial, char *out, int outsz, int icon);

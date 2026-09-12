@@ -250,9 +250,60 @@ static void hsv_to_rgb(float h, float s, float v, int *r, int *g, int *b)
 
 typedef struct {
     float h, s, v;
-    W2kRect sv, hue, prev, ok, cancel;
-    int down;           /* 1=sv drag, 2=hue drag, 3=ok, 4=cancel */
+    int a;
+    W2kRect sv, hue, alpha, prev, ok, cancel;
+    int down;           /* 1=sv, 2=hue, 3=alpha, 4=ok, 5=cancel */
+    W2kEdit *ed_r, *ed_g, *ed_b, *ed_a, *ed_hex;
+    int syncing;        /* avoid feedback while writing edit boxes */
 } ColorPick;
+
+static void cp_sync_edits(ColorPick *p)
+{
+    if (p->syncing) return;
+    p->syncing = 1;
+    int r, g, b;
+    hsv_to_rgb(p->h, p->s, p->v, &r, &g, &b);
+    char buf[32];
+    if (p->ed_r) { snprintf(buf, sizeof buf, "%d", r); w2k_edit_set(p->ed_r, buf); }
+    if (p->ed_g) { snprintf(buf, sizeof buf, "%d", g); w2k_edit_set(p->ed_g, buf); }
+    if (p->ed_b) { snprintf(buf, sizeof buf, "%d", b); w2k_edit_set(p->ed_b, buf); }
+    if (p->ed_a) { snprintf(buf, sizeof buf, "%d", p->a); w2k_edit_set(p->ed_a, buf); }
+    if (p->ed_hex) {
+        snprintf(buf, sizeof buf, "#%02X%02X%02X%02X", r, g, b, p->a);
+        w2k_edit_set(p->ed_hex, buf);
+    }
+    p->syncing = 0;
+}
+
+static int clamp255(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+static void cp_apply_rgb_edits(ColorPick *p)
+{
+    if (!p->ed_r || !p->ed_g || !p->ed_b) return;
+    int r = clamp255(atoi(w2k_edit_text(p->ed_r)));
+    int g = clamp255(atoi(w2k_edit_text(p->ed_g)));
+    int b = clamp255(atoi(w2k_edit_text(p->ed_b)));
+    if (p->ed_a) p->a = clamp255(atoi(w2k_edit_text(p->ed_a)));
+    rgb_to_hsv(r, g, b, &p->h, &p->s, &p->v);
+}
+
+static void cp_apply_hex_edit(ColorPick *p)
+{
+    if (!p->ed_hex) return;
+    const char *s = w2k_edit_text(p->ed_hex);
+    while (*s == ' ' || *s == '#') s++;
+    unsigned r = 0, g = 0, b = 0, a = 255;
+    size_t n = strlen(s);
+    if (n == 6 || n == 8) {
+        unsigned v = 0;
+        if (sscanf(s, "%x", &v) == 1) {
+            if (n == 6) { r = (v >> 16) & 255; g = (v >> 8) & 255; b = v & 255; }
+            else { r = (v >> 24) & 255; g = (v >> 16) & 255; b = (v >> 8) & 255; a = v & 255; }
+            p->a = (int)a;
+            rgb_to_hsv((int)r, (int)g, (int)b, &p->h, &p->s, &p->v);
+        }
+    }
+}
 
 static void cp_paint(W2kWin *w, Drawable d)
 {
@@ -317,23 +368,56 @@ static void cp_paint(W2kWin *w, Drawable d)
         w2k_fill(d, p->hue.x - 2, cy, p->hue.w + 4, 1, C_HILIGHT);
     }
 
+    /* Alpha bar: opaque at the top, transparent at the bottom. */
+    for (int y = 0; y < p->alpha.h; y++) {
+        int aa = 255 - (255 * y / (p->alpha.h - 1 > 0 ? p->alpha.h - 1 : 1));
+        int rr, gg, bb; hsv_to_rgb(p->h, p->s, p->v, &rr, &gg, &bb);
+        int cr = (rr * aa + 220 * (255-aa)) / 255;
+        int cg = (gg * aa + 220 * (255-aa)) / 255;
+        int cb = (bb * aa + 220 * (255-aa)) / 255;
+        w2k_fill_rgb(d, p->alpha.x, p->alpha.y + y, p->alpha.w, 1, cr, cg, cb);
+    }
+    w2k_edge(d, p->alpha.x - 1, p->alpha.y - 1, p->alpha.w + 2, p->alpha.h + 2, EDGE_SUNKEN_THIN, BF_RECT);
+    {
+        int ay = p->alpha.y + (255 - p->a) * (p->alpha.h - 1) / 255;
+        w2k_fill(d, p->alpha.x - 3, ay - 1, p->alpha.w + 6, 3, C_TEXT);
+    }
+
     /* Preview swatch. */
     {
         int r, g, b;
         hsv_to_rgb(p->h, p->s, p->v, &r, &g, &b);
-        w2k_fill_rgb(d, p->prev.x, p->prev.y, p->prev.w, p->prev.h, r, g, b);
+        /* Checker under alpha preview. */
+        for (int yy = 0; yy < p->prev.h; yy++)
+            for (int xx = 0; xx < p->prev.w; xx++) {
+                int base = (((xx >> 2) ^ (yy >> 2)) & 1) ? 200 : 240;
+                int cr = (r * p->a + base * (255 - p->a)) / 255;
+                int cg = (g * p->a + base * (255 - p->a)) / 255;
+                int cb = (b * p->a + base * (255 - p->a)) / 255;
+                w2k_fill_rgb(d, p->prev.x + xx, p->prev.y + yy, 1, 1, cr, cg, cb);
+            }
         w2k_edge(d, p->prev.x, p->prev.y, p->prev.w, p->prev.h,
                  EDGE_SUNKEN_THIN, BF_RECT);
-        char buf[48];
-        snprintf(buf, sizeof buf, "RGB %d, %d, %d", r, g, b);
-        w2k_text(d, F_UI, p->prev.x, p->prev.y + p->prev.h + 4, buf, C_TEXT);
         (void)fh;
     }
 
+    /* Editable RGB / A / HEX fields. */
+    int ly = p->prev.y + p->prev.h + 8;
+    w2k_text(d, F_UI, p->prev.x, ly, "R", C_TEXT);
+    w2k_text(d, F_UI, p->prev.x, ly + 24, "G", C_TEXT);
+    w2k_text(d, F_UI, p->prev.x, ly + 48, "B", C_TEXT);
+    w2k_text(d, F_UI, p->prev.x, ly + 72, "A", C_TEXT);
+    w2k_text(d, F_UI, 12, 220, "HEX", C_TEXT);
+    if (p->ed_r) w2k_edit_draw(d, p->ed_r);
+    if (p->ed_g) w2k_edit_draw(d, p->ed_g);
+    if (p->ed_b) w2k_edit_draw(d, p->ed_b);
+    if (p->ed_a) w2k_edit_draw(d, p->ed_a);
+    if (p->ed_hex) w2k_edit_draw(d, p->ed_hex);
+
     w2k_draw_pushbutton(d, &p->ok, "OK",
-                        BS_DEFAULT | (p->down == 3 ? BS_PRESSED : 0));
+                        BS_DEFAULT | (p->down == 4 ? BS_PRESSED : 0));
     w2k_draw_pushbutton(d, &p->cancel, "Cancel",
-                        p->down == 4 ? BS_PRESSED : 0);
+                        p->down == 5 ? BS_PRESSED : 0);
 }
 
 static void cp_hit_sv(ColorPick *p, int x, int y)
@@ -347,6 +431,14 @@ static void cp_hit_sv(ColorPick *p, int x, int y)
     p->v = 1.f - (float)ly / (float)(p->sv.h - 1);
 }
 
+static void cp_hit_alpha(ColorPick *p, int y)
+{
+    int ly = y - p->alpha.y;
+    if (ly < 0) ly = 0;
+    if (ly >= p->alpha.h) ly = p->alpha.h - 1;
+    p->a = 255 - 255 * ly / (p->alpha.h - 1 > 0 ? p->alpha.h - 1 : 1);
+}
+
 static void cp_hit_hue(ColorPick *p, int y)
 {
     int ly = y - p->hue.y;
@@ -356,43 +448,83 @@ static void cp_hit_hue(ColorPick *p, int y)
     if (p->h >= 360.f) p->h = 359.9f;
 }
 
+static void cp_unfocus_edits(ColorPick *p)
+{
+    if (p->ed_r) p->ed_r->focused = 0;
+    if (p->ed_g) p->ed_g->focused = 0;
+    if (p->ed_b) p->ed_b->focused = 0;
+    if (p->ed_a) p->ed_a->focused = 0;
+    if (p->ed_hex) p->ed_hex->focused = 0;
+}
+
 static int cp_event(W2kWin *w, XEvent *e)
 {
     ColorPick *p = w->user;
     switch (e->type) {
     case ButtonPress: {
         int x = e->xbutton.x, y = e->xbutton.y;
+        int hit_edit = 0;
+        if (p->ed_r && w2k_edit_press(p->ed_r, &e->xbutton)) {
+            cp_unfocus_edits(p); p->ed_r->focused = 1; hit_edit = 1;
+        } else if (p->ed_g && w2k_edit_press(p->ed_g, &e->xbutton)) {
+            cp_unfocus_edits(p); p->ed_g->focused = 1; hit_edit = 1;
+        } else if (p->ed_b && w2k_edit_press(p->ed_b, &e->xbutton)) {
+            cp_unfocus_edits(p); p->ed_b->focused = 1; hit_edit = 1;
+        } else if (p->ed_a && w2k_edit_press(p->ed_a, &e->xbutton)) {
+            cp_unfocus_edits(p); p->ed_a->focused = 1; hit_edit = 1;
+        } else if (p->ed_hex && w2k_edit_press(p->ed_hex, &e->xbutton)) {
+            cp_unfocus_edits(p); p->ed_hex->focused = 1; hit_edit = 1;
+        }
+        if (hit_edit) { w2k_win_dirty(w); return 1; }
+        cp_unfocus_edits(p);
         if (w2k_rect_hit(&p->sv, x, y)) {
             p->down = 1;
             cp_hit_sv(p, x, y);
+            cp_sync_edits(p);
         } else if (w2k_rect_hit(&p->hue, x, y)) {
-            p->down = 2;
-            cp_hit_hue(p, y);
-        } else if (w2k_rect_hit(&p->ok, x, y)) p->down = 3;
-        else if (w2k_rect_hit(&p->cancel, x, y)) p->down = 4;
+            p->down = 2; cp_hit_hue(p, y); cp_sync_edits(p);
+        } else if (w2k_rect_hit(&p->alpha, x, y)) {
+            p->down = 3; cp_hit_alpha(p, y); cp_sync_edits(p);
+        } else if (w2k_rect_hit(&p->ok, x, y)) p->down = 4;
+        else if (w2k_rect_hit(&p->cancel, x, y)) p->down = 5;
         w2k_win_dirty(w);
         return 1;
     }
     case MotionNotify:
+        if (p->ed_r && w2k_edit_motion(p->ed_r, &e->xmotion)) return 1;
+        if (p->ed_g && w2k_edit_motion(p->ed_g, &e->xmotion)) return 1;
+        if (p->ed_b && w2k_edit_motion(p->ed_b, &e->xmotion)) return 1;
+        if (p->ed_a && w2k_edit_motion(p->ed_a, &e->xmotion)) return 1;
+        if (p->ed_hex && w2k_edit_motion(p->ed_hex, &e->xmotion)) return 1;
         if (p->down == 1) {
             cp_hit_sv(p, e->xmotion.x, e->xmotion.y);
+            cp_sync_edits(p);
             w2k_win_dirty(w);
             return 1;
         }
         if (p->down == 2) {
-            cp_hit_hue(p, e->xmotion.y);
-            w2k_win_dirty(w);
-            return 1;
+            cp_hit_hue(p, e->xmotion.y); cp_sync_edits(p); w2k_win_dirty(w); return 1;
+        }
+        if (p->down == 3) {
+            cp_hit_alpha(p, e->xmotion.y); cp_sync_edits(p); w2k_win_dirty(w); return 1;
         }
         return 0;
     case ButtonRelease: {
+        if (p->ed_r) w2k_edit_release(p->ed_r);
+        if (p->ed_g) w2k_edit_release(p->ed_g);
+        if (p->ed_b) w2k_edit_release(p->ed_b);
+        if (p->ed_a) w2k_edit_release(p->ed_a);
+        if (p->ed_hex) w2k_edit_release(p->ed_hex);
         int d = p->down, x = e->xbutton.x, y = e->xbutton.y;
         p->down = 0;
-        if (d == 3 && w2k_rect_hit(&p->ok, x, y)) {
+        if (d == 4 && w2k_rect_hit(&p->ok, x, y)) {
+            /* Commit any pending typed values. */
+            if (p->ed_hex && p->ed_hex->focused) cp_apply_hex_edit(p);
+            else cp_apply_rgb_edits(p);
             w2k_win_close(w, ID_OK);
             return 1;
         }
-        if (d == 4 && w2k_rect_hit(&p->cancel, x, y)) {
+        if (d == 5 && w2k_rect_hit(&p->cancel, x, y)) {
             w2k_win_close(w, ID_CANCEL);
             return 1;
         }
@@ -400,9 +532,52 @@ static int cp_event(W2kWin *w, XEvent *e)
         return 1;
     }
     case KeyPress: {
+        W2kEdit *focused = NULL;
+        if (p->ed_r && p->ed_r->focused) focused = p->ed_r;
+        else if (p->ed_g && p->ed_g->focused) focused = p->ed_g;
+        else if (p->ed_b && p->ed_b->focused) focused = p->ed_b;
+        else if (p->ed_a && p->ed_a->focused) focused = p->ed_a;
+        else if (p->ed_hex && p->ed_hex->focused) focused = p->ed_hex;
+        if (focused) {
+            KeySym ks = XLookupKeysym(&e->xkey, 0);
+            if (ks == XK_Return || ks == XK_KP_Enter || ks == XK_Tab) {
+                if (focused == p->ed_hex) cp_apply_hex_edit(p);
+                else cp_apply_rgb_edits(p);
+                cp_sync_edits(p);
+                if (ks == XK_Tab) {
+                    cp_unfocus_edits(p);
+                    if (focused == p->ed_r) p->ed_g->focused = 1;
+                    else if (focused == p->ed_g) p->ed_b->focused = 1;
+                    else if (focused == p->ed_b) p->ed_a->focused = 1;
+                    else if (focused == p->ed_a) p->ed_hex->focused = 1;
+                    else if (focused == p->ed_hex) p->ed_r->focused = 1;
+                }
+                w2k_win_dirty(w);
+                return 1;
+            }
+            if (w2k_edit_key(focused, &e->xkey)) {
+                /* Live update from RGB/A as the user types digits. */
+                if (focused != p->ed_hex) {
+                    cp_apply_rgb_edits(p);
+                    /* Keep hex in sync without fighting the focused field. */
+                    int r, g, b; hsv_to_rgb(p->h, p->s, p->v, &r, &g, &b);
+                    char buf[32];
+                    p->syncing = 1;
+                    if (p->ed_hex) {
+                        snprintf(buf, sizeof buf, "#%02X%02X%02X%02X", r, g, b, p->a);
+                        w2k_edit_set(p->ed_hex, buf);
+                    }
+                    p->syncing = 0;
+                }
+                w2k_win_dirty(w);
+                return 1;
+            }
+        }
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         if (ks == XK_Escape) { w2k_win_close(w, ID_CANCEL); return 1; }
         if (ks == XK_Return || ks == XK_KP_Enter) {
+            if (p->ed_hex && p->ed_hex->focused) cp_apply_hex_edit(p);
+            else cp_apply_rgb_edits(p);
             w2k_win_close(w, ID_OK);
             return 1;
         }
@@ -412,33 +587,50 @@ static int cp_event(W2kWin *w, XEvent *e)
     return 0;
 }
 
-int w2k_color_picker(W2kWin *over, int *r, int *g, int *b)
+int w2k_color_picker_rgba(W2kWin *over, int *r, int *g, int *b, int *a)
 {
-    if (!r || !g || !b) return 0;
+    if (!r || !g || !b || !a) return 0;
     ColorPick p;
     memset(&p, 0, sizeof p);
     rgb_to_hsv(*r, *g, *b, &p.h, &p.s, &p.v);
-
-    int W = 320, H = 280;
+    p.a = *a < 0 ? 0 : (*a > 255 ? 255 : *a);
+    int W = 360, H = 320;
     W2kWin *w = w2k_win_new("Color", "w2kdialog", W, H, 0);
-    w->user = &p;
-    w->paint = cp_paint;
-    w->event = cp_event;
+    w->user = &p; w->paint = cp_paint; w->event = cp_event;
+    p.sv=(W2kRect){16,32,180,180}; p.hue=(W2kRect){210,32,18,180};
+    p.alpha=(W2kRect){236,32,12,180}; p.prev=(W2kRect){260,32,58,40};
+    p.ok=(W2kRect){W-12-75*2-6,H-12-23,75,23};
+    p.cancel=(W2kRect){W-12-75,H-12-23,75,23};
 
-    p.sv     = (W2kRect){ 16, 32, 180, 180 };
-    p.hue    = (W2kRect){ 210, 32, 18, 180 };
-    p.prev   = (W2kRect){ 250, 32, 50, 40 };
-    p.ok     = (W2kRect){ W - 12 - 75 * 2 - 6, H - 12 - 23, 75, 23 };
-    p.cancel = (W2kRect){ W - 12 - 75, H - 12 - 23, 75, 23 };
+    p.ed_r = w2k_edit_new(0); p.ed_g = w2k_edit_new(0);
+    p.ed_b = w2k_edit_new(0); p.ed_a = w2k_edit_new(0);
+    p.ed_hex = w2k_edit_new(0);
+    if (p.ed_r) { p.ed_r->r = (W2kRect){278, 80, 60, 21}; p.ed_r->owner = w; w2k_edit_bind(p.ed_r, w); }
+    if (p.ed_g) { p.ed_g->r = (W2kRect){278, 104, 60, 21}; p.ed_g->owner = w; w2k_edit_bind(p.ed_g, w); }
+    if (p.ed_b) { p.ed_b->r = (W2kRect){278, 128, 60, 21}; p.ed_b->owner = w; w2k_edit_bind(p.ed_b, w); }
+    if (p.ed_a) { p.ed_a->r = (W2kRect){278, 152, 60, 21}; p.ed_a->owner = w; w2k_edit_bind(p.ed_a, w); }
+    if (p.ed_hex) { p.ed_hex->r = (W2kRect){48, 218, 140, 21}; p.ed_hex->owner = w; w2k_edit_bind(p.ed_hex, w); }
+    cp_sync_edits(&p);
 
-    w2k_win_center(w, over);
-    if (over) XSetTransientForHint(w2k.dpy, w->win, over->win);
-    int res = w2k_win_modal(w);
-    if (res == ID_OK) {
-        hsv_to_rgb(p.h, p.s, p.v, r, g, b);
-        return 1;
+    w2k_win_center(w, over); if (over) XSetTransientForHint(w2k.dpy,w->win,over->win);
+    int res=w2k_win_modal(w);
+    if(res==ID_OK){
+        if (p.ed_hex && p.ed_hex->focused) cp_apply_hex_edit(&p);
+        else cp_apply_rgb_edits(&p);
+        hsv_to_rgb(p.h,p.s,p.v,r,g,b); *a=p.a;
     }
-    return 0;
+    if (p.ed_r) w2k_edit_free(p.ed_r);
+    if (p.ed_g) w2k_edit_free(p.ed_g);
+    if (p.ed_b) w2k_edit_free(p.ed_b);
+    if (p.ed_a) w2k_edit_free(p.ed_a);
+    if (p.ed_hex) w2k_edit_free(p.ed_hex);
+    return res == ID_OK;
+}
+
+int w2k_color_picker(W2kWin *over, int *r, int *g, int *b)
+{
+    int a = 255;
+    return w2k_color_picker_rgba(over, r, g, b, &a);
 }
 
 /* A modal drop-down list. Returns the chosen index, or -1. */

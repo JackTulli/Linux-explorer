@@ -1,4 +1,5 @@
 bin/
+build/
 *.o
 lib/libw2k.a
 w2k-session.bak

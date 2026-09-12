@@ -17,11 +17,11 @@ CFLAGS  += -I/usr/include/freetype2
 LDLIBS  := -lX11 -lXext -lXrandr -lXcursor -lXft -lXrender -lfontconfig -lz -ljpeg -lm
 
 LIB_SRC := $(wildcard lib/*.c)
-LIB_OBJ := $(LIB_SRC:.c=.o)
+LIB_OBJ := $(LIB_SRC:%.c=build/%.o)
 LIB     := lib/libw2k.a
 
 WM_SRC  := $(wildcard wm/*.c)
-WM_OBJ  := $(WM_SRC:.c=.o)
+WM_OBJ  := $(WM_SRC:%.c=build/%.o)
 
 # l2kswatch is a development scratch tool: buildable, never installed.
 APPS    := $(filter-out bin/l2kswatch,$(patsubst apps/%.c,bin/%,$(wildcard apps/*.c)))
@@ -34,24 +34,24 @@ bin/l2kscaler: LDLIBS += -lGL -lXtst -lXdamage -lXfixes -lXcomposite
 # The display manager needs PAM; without its header it still builds, as the
 # picture alone (W2K_RENDER).
 ifneq ($(wildcard /usr/include/security/pam_appl.h),)
-apps/l2kdm.o: CFLAGS += -DHAVE_PAM
+build/apps/l2kdm.o: CFLAGS += -DHAVE_PAM
 bin/l2kdm: LDLIBS += -lpam
 endif
 # The notification service needs libdbus; without it the shell shows only
 # its own balloons.
 ifneq ($(shell pkg-config --exists libwebp 2>/dev/null && echo y),)
-lib/image.o: CFLAGS += -DHAVE_WEBP $(shell pkg-config --cflags libwebp)
+build/lib/image.o: CFLAGS += -DHAVE_WEBP $(shell pkg-config --cflags libwebp)
 LDLIBS += $(shell pkg-config --libs libwebp)
 endif
 ifneq ($(shell pkg-config --exists xscrnsaver 2>/dev/null && echo y),)
-wm/wm.o: CFLAGS += -DHAVE_XSS
+build/wm/wm.o: CFLAGS += -DHAVE_XSS
 bin/l2kwm: LDLIBS += -lXss -lXcomposite
 endif
 ifneq ($(shell pkg-config --exists dbus-1 2>/dev/null && echo y),)
-wm/notifyd.o: CFLAGS += -DHAVE_DBUS $(shell pkg-config --cflags dbus-1)
+build/wm/notifyd.o: CFLAGS += -DHAVE_DBUS $(shell pkg-config --cflags dbus-1)
 bin/l2kwm: LDLIBS += $(shell pkg-config --libs dbus-1)
 # The file chooser portal is a D-Bus service or nothing.
-apps/l2kportal.o: CFLAGS += $(shell pkg-config --cflags dbus-1)
+build/apps/l2kportal.o: CFLAGS += $(shell pkg-config --cflags dbus-1)
 bin/l2kportal: LDLIBS += $(shell pkg-config --libs dbus-1)
 else
 APPS    := $(filter-out bin/l2kportal,$(APPS))
@@ -70,25 +70,26 @@ bin/l2kwm: $(WM_OBJ) $(LIB)
 	@mkdir -p bin
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(WM_OBJ) $(LIB) $(LDLIBS)
 
-bin/%: apps/%.o $(LIB)
+bin/%: build/apps/%.o $(LIB)
 	@mkdir -p bin
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB) $(LDLIBS)
 
 # Every object depends on the public headers; the WM also on its own.
 HDRS := include/w2k.h include/w2kui.h
-$(LIB_OBJ) $(patsubst apps/%.c,apps/%.o,$(wildcard apps/*.c)): $(HDRS)
+$(LIB_OBJ) $(patsubst apps/%.c,build/apps/%.o,$(wildcard apps/*.c)): $(HDRS)
 $(WM_OBJ): $(HDRS) wm/wm.h
-lib/icon.o: lib/icon_data.inc
+build/lib/icon.o: lib/icon_data.inc
 # The version stamp carries the commit, so the file that prints it is
 # rebuilt when the commit changes.
-wm/wm.o lib/sysprops.o: VERSION $(wildcard .git/HEAD .git/refs/heads/*)
+build/wm/wm.o build/lib/sysprops.o: VERSION $(wildcard .git/HEAD .git/refs/heads/*)
 
-%.o: %.c
+build/%.o: %.c
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
 clean:
-	rm -f lib/*.o wm/*.o apps/*.o $(LIB)
-	rm -rf bin
+	rm -rf build bin
+	rm -f $(LIB)
 
 install: all
 	install -d $(DESTDIR)$(BINDIR)
@@ -139,4 +140,4 @@ install: all
 	else echo "(no file chooser portal: no l2kportal, or /usr/share not writable)"; fi
 
 .PHONY: all clean install swatch
-.PRECIOUS: apps/%.o
+.PRECIOUS: build/apps/%.o
