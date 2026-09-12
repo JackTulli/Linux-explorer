@@ -808,8 +808,12 @@ enum {
     ICO_CP_DATETIME, ICO_CP_DISPLAY, ICO_CP_FOLDEROPTS, ICO_CP_KEYBOARD,
     ICO_CP_MOUSE, ICO_CP_NETWORK, ICO_CP_SOUNDS, ICO_CP_USERS, ICO_CP_SYSTEM,
     ICO_CP_PRINTERS, ICO_CP_SCHEDULED, ICO_TASKBAR, ICO_CP_POWER,
+    ICO_CP_BLUETOOTH,
     /* Network and Dial-up Connections. */
     ICO_NET_LAN, ICO_NET_WIRELESS, ICO_NET_NEW,
+    /* Bluetooth devices, by kind (the rest borrow the keyboard, the mouse,
+     * the speaker and the computer). */
+    ICO_BT_PHONE, ICO_BT_HEADSET, ICO_BT_GAMEPAD,
     /* The Explorer toolbar's own glyphs. */
     ICO_TB_BACK, ICO_TB_FORWARD, ICO_TB_UP, ICO_TB_SEARCH, ICO_TB_FOLDERS,
     ICO_TB_HISTORY, ICO_TB_MOVETO, ICO_TB_COPYTO, ICO_TB_DELETE, ICO_TB_UNDO,

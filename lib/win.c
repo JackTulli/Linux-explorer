@@ -45,6 +45,28 @@ void w2k_del_timer(void (*fn)(void *), void *user)
         }
 }
 
+/* Other descriptors to wait on. */
+#define MAX_FDS 4
+static struct { int fd; void (*fn)(void *); void *user; } fds[MAX_FDS];
+static int nfds;
+
+void w2k_add_fd(int fd, void (*fn)(void *), void *user)
+{
+    for (int i = 0; i < nfds; i++)
+        if (fds[i].fd == fd) { fds[i].fn = fn; fds[i].user = user; return; }
+    if (fd < 0 || nfds >= MAX_FDS) return;
+    fds[nfds].fd = fd;
+    fds[nfds].fn = fn;
+    fds[nfds].user = user;
+    nfds++;
+}
+
+void w2k_del_fd(int fd)
+{
+    for (int i = 0; i < nfds; i++)
+        if (fds[i].fd == fd) { fds[i] = fds[--nfds]; return; }
+}
+
 static int timers_run(void)
 {
     long now = w2k_now_ms();
@@ -464,8 +486,20 @@ static void pump(int *quit, W2kWin *until)
     fd_set r;
     FD_ZERO(&r);
     FD_SET(fd, &r);
+    int top = fd;
+    for (int i = 0; i < nfds; i++) {
+        FD_SET(fds[i].fd, &r);
+        if (fds[i].fd > top) top = fds[i].fd;
+    }
     struct timeval tv = { .tv_sec = wait / 1000, .tv_usec = (wait % 1000) * 1000 };
-    select(fd + 1, &r, NULL, NULL, &tv);
+    if (select(top + 1, &r, NULL, NULL, &tv) <= 0) return;
+    /* A callback may add or remove descriptors, or open a dialog whose
+     * loop comes back through here: take the ready ones first. */
+    struct { void (*fn)(void *); void *user; } ready[MAX_FDS];
+    int n = 0;
+    for (int i = 0; i < nfds; i++)
+        if (FD_ISSET(fds[i].fd, &r)) { ready[n].fn = fds[i].fn; ready[n].user = fds[i].user; n++; }
+    for (int i = 0; i < n; i++) ready[i].fn(ready[i].user);
 }
 
 int w2k_run(void)

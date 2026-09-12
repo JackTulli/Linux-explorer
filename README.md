@@ -106,7 +106,7 @@ Try it nested first, without logging out of anything:
                    sheet -- label, file system, used and free space, the pie,
                    Disk Cleanup, a read-only disk check, the disk drives
     l2kcontrol     Control Panel, the Windows 2000 folder with its web-view
-                   pane: Date/Time, Default Programs, Device Manager, Display,
+                   pane: Bluetooth Devices, Date/Time, Default Programs, Device Manager, Display,
                    Folder Options, Fonts, Keyboard, Mouse, Network and Dial-up
                    Connections, Performance Options (the visual effects,
                    Smooth edges of icons among them), Power Options (Power Schemes: turn off the
@@ -115,8 +115,8 @@ Try it nested first, without logging out of anything:
                    the Power Meter; Brightness for the backlight; Graphics:
                    which GPU the programs you start render on, on a laptop
                    with two), Sounds and
-                   Multimedia, System (System Properties: the monitor and
-                   flag beside the system, its owner, the processor, the
+                   Multimedia, System (System Properties: the monitor with the
+                   Linux 2000 logo beside the system, its owner, the processor, the
                    machine and the memory; the computer's name; Device
                    Manager; the user profiles; Performance and the
                    environment), Task Manager, Taskbar and Start Menu,
@@ -127,6 +127,16 @@ Try it nested first, without logging out of anything:
                    Activity), and a Wireless Network Connection in the same
                    style with signal strength and a Wireless Networks page
                    (scan, connect, disconnect through NetworkManager)
+    l2kbluetooth   Bluetooth Devices, XP's sheet in Windows 2000 dress, through
+                   BlueZ: Devices (paired devices by kind, with connection and
+                   battery; Add, Remove, Connect, Properties -- name, trust,
+                   block, services), Options (the radio on or off, discovery,
+                   whether devices may connect and whether to ask), Hardware
+                   (the radios and their properties); the Add Bluetooth Device
+                   Wizard (search, passkey, pair, connect). Passkeys to type or
+                   compare are asked for as pairing needs them; with --agent,
+                   started by the session, it answers devices that pair with
+                   this computer and is the Bluetooth icon in the tray
     l2kdisplay     Display Properties: wallpaper (centre, tile, stretch, fit,
                    fill, span), appearance schemes, themes, monitors with
                    their refresh rate and a per-monitor scale -- either the

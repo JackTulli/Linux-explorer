@@ -99,12 +99,18 @@ MAP = {
     "ICO_CP_USERS":      ("cp_users_16.png", "cp_users_32.png"),
     "ICO_CP_SYSTEM":     ("cp_system_16.png", "cp_system_32.png"),
     "ICO_CP_POWER":      ("cp_power_16.png", "cp_power_32.png"),   # drawn: plug, bolt, battery
+    # Drawn by tools/genbticons.py: Windows 2000 had no Bluetooth.
+    "ICO_CP_BLUETOOTH":  ("cp_bluetooth_16.png", "cp_bluetooth_32.png"),
     "ICO_CP_PRINTERS":   "w2k_printers",
     "ICO_CP_SCHEDULED":  "w2k_scheduled_tasks",
     "ICO_TASKBAR":       "w2k_taskbar",
     "ICO_NET_LAN":       "w2k_network_2",
     "ICO_NET_WIRELESS":  ("net_wireless_16.png", "net_wireless_32.png"),
     "ICO_NET_NEW":       "w2k_network_computer",
+    # Bluetooth devices, likewise drawn by tools/genbticons.py.
+    "ICO_BT_PHONE":      ("bt_phone_16.png", "bt_phone_32.png"),
+    "ICO_BT_HEADSET":    ("bt_headset_16.png", "bt_headset_32.png"),
+    "ICO_BT_GAMEPAD":    ("bt_gamepad_16.png", "bt_gamepad_32.png"),
     # The Explorer toolbar, cut from the same screenshot (16px only).
     "ICO_TB_BACK":       ["tb_back.png"],
     "ICO_TB_FORWARD":    ["tb_forward.png"],

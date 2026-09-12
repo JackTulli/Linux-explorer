@@ -50,11 +50,12 @@ endif
 ifneq ($(shell pkg-config --exists dbus-1 2>/dev/null && echo y),)
 build/wm/notifyd.o: CFLAGS += -DHAVE_DBUS $(shell pkg-config --cflags dbus-1)
 bin/l2kwm: LDLIBS += $(shell pkg-config --libs dbus-1)
-# The file chooser portal is a D-Bus service or nothing.
-build/apps/l2kportal.o: CFLAGS += $(shell pkg-config --cflags dbus-1)
-bin/l2kportal: LDLIBS += $(shell pkg-config --libs dbus-1)
+# The file chooser portal is a D-Bus service or nothing; so is Bluetooth
+# Devices, which talks to BlueZ.
+build/apps/l2kportal.o build/apps/l2kbluetooth.o: CFLAGS += $(shell pkg-config --cflags dbus-1)
+bin/l2kportal bin/l2kbluetooth: LDLIBS += $(shell pkg-config --libs dbus-1)
 else
-APPS    := $(filter-out bin/l2kportal,$(APPS))
+APPS    := $(filter-out bin/l2kportal bin/l2kbluetooth,$(APPS))
 endif
 BINS    := bin/l2kwm $(APPS)
 

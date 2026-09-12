@@ -188,6 +188,7 @@ static int pin_icon_resolve(const Pin *p)
     if (strstr(p->cmd, "l2kdiskmgmt")) return ICO_DRIVE_HDD;
     if (strstr(p->cmd, "l2kcontrol"))  return ICO_CONTROLPANEL;
     if (strstr(p->cmd, "l2kdisplay"))  return ICO_SETTINGS;
+    if (strstr(p->cmd, "l2kbluetooth")) return ICO_CP_BLUETOOTH;
     if (strstr(p->cmd, "l2kimage"))    return ICO_PAINT;
     if (strstr(p->cmd, "l2kpaint"))    return ICO_PAINT;
     if (strstr(p->cmd, "term"))        return ICO_TERMINAL;

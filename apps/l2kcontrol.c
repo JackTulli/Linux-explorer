@@ -54,6 +54,8 @@ typedef struct {
 static const Applet applets[] = {
     /* Alphabetical, as the shell lists them; the descriptions are the
      * ones Windows 2000 shows in the web-view pane. */
+    { "Bluetooth Devices", "Adds, removes and connects Bluetooth devices -- phones, headsets, keyboards and mice -- and sets whether other devices can find this computer.",
+      ICO_CP_BLUETOOTH, "l2kbluetooth", NULL },
     { "Date/Time", "Set the date, time and time zone for your computer.",
       ICO_CP_DATETIME, NULL, open_datetime },
     { "Default Programs", "Choose which programs open which kinds of files.",

@@ -19,6 +19,11 @@ shipped unchanged from 98 and that the `win2k/` set lacks: the user32
 message-box icons (error, question), the Calculator icon and the Task
 Manager icon.
 
+The Bluetooth icons -- the badge for Bluetooth Devices and the radio, and
+the phone, headphones and game controller its device list shows -- are
+drawn by `tools/genbticons.py` into `win98/` (`cp_bluetooth`, `bt_*`):
+Windows 2000 had no Bluetooth to take them from.
+
 `win95/` holds the Explorer toolbar buttons from the Chicago95 theme
 (https://github.com/grassmunk/Chicago95, Icons/Chicago95-tux/actions/16):
 Cut, Copy, Paste, Delete and Properties are the comctl32 standard toolbar

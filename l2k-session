@@ -312,6 +312,13 @@ if ! pgrep -f 'polkit.*agent' >/dev/null 2>&1 && ! pgrep -x lxpolkit >/dev/null 
     done
 fi
 
+# Bluetooth: the agent that answers devices pairing with this computer
+# while Bluetooth Devices is closed, and the icon in the notification
+# area. It keeps to itself until bluetoothd and a radio are there.
+if command -v l2kbluetooth >/dev/null 2>&1; then
+    l2kbluetooth --agent >>"$LOG" 2>&1 &
+fi
+
 # Windows programs: Wine's prefix is made the first time it is missing,
 # in the background -- it takes a while -- so an .exe opened from
 # Explorer finds one ready. Wine's own menu builder then keeps the Start

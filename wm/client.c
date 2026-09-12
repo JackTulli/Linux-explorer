@@ -157,6 +157,7 @@ static int icon_for_class(const char *cls)
     if (!strcasecmp(cls, "l2ksnip"))     return ICO_SNIP;
     if (!strcasecmp(cls, "l2kcontrol"))  return ICO_CONTROLPANEL;
     if (!strcasecmp(cls, "l2kdisplay"))  return ICO_SETTINGS;
+    if (!strcasecmp(cls, "l2kbluetooth")) return ICO_CP_BLUETOOTH;
     if (strcasestr(cls, "term"))         return ICO_TERMINAL;
     if (strcasestr(cls, "xcalc"))        return ICO_CALC;
     return ICO_APP;

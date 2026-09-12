@@ -87,6 +87,10 @@ int     w2k_win_modal(W2kWin *dlg);    /* nested loop; returns ->result */
 /* Timers. Up to eight; `fn` fires every `ms` milliseconds. */
 void    w2k_add_timer(int ms, void (*fn)(void *), void *user);
 void    w2k_del_timer(void (*fn)(void *), void *user);
+/* Other file descriptors the loop waits on beside the display's -- a
+ * D-Bus connection, a pipe: `fn` runs when `fd` is readable. Up to four. */
+void    w2k_add_fd(int fd, void (*fn)(void *), void *user);
+void    w2k_del_fd(int fd);
 
 /* ------------------------------------------------------------------ *
  * Simple drawn controls (no state of their own)
