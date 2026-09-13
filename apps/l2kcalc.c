@@ -6,11 +6,17 @@
  *     -7+5-2*3/2^3
  * Malformed input such as "2* /2" (operator with no operand) reports an error.
  *
- * Unary functions (sqrt, sin, 1/x, ...) act on the current value.
+ * Unary functions (sqrt, sin, 1/x, ...) act on the number being typed --
+ * the last one in the expression, or the whole display after "=" -- and
+ * the next digit starts a new number in its place, as Windows does. "%"
+ * is Windows' percent: after + or - it is that share of what comes
+ * before (50+10% is 50+5), after * or / a hundredth (200*10% is 20).
  * Memory works on the current value. Keyboard + - * / ^ light up the
- * matching button while held.
+ * matching button while held; ( and ) can be typed.
  *
- * Arithmetic is in double. Results are shown without trailing zeros. */
+ * Arithmetic is in double. Results are shown with as many significant
+ * digits as fit and no trailing zeros, which is what makes 0.1 + 0.2 read
+ * as 0.3 rather than 0.30000000000000004, and with thousands grouped. */
 #include "w2k.h"
 #include "w2kui.h"
 #include <X11/keysym.h>
@@ -30,17 +36,19 @@ enum { ID_COPY = 1, ID_PASTE, ID_STANDARD, ID_SCIENTIFIC, ID_ABOUT, ID_EXIT };
 
 typedef struct {
     const char *label;
-    int   row, col, w;
-    int   key;
-    int   colour;               /* 0 normal, 1 red, 2 blue */
+    int   row, col, w;          /* grid position, in button units */
+    int   key;                  /* what it does: an ASCII code or a K_* */
+    int   colour;               /* 0 normal, 1 red, 2 blue           */
 } Btn;
 
+/* Command codes that are not simple characters. */
 enum {
     K_BACK = 128, K_CE, K_C, K_MC, K_MR, K_MS, K_MPLUS, K_SIGN, K_SQRT,
     K_PCT, K_INV, K_EQ, K_SIN, K_COS, K_TAN, K_LOG, K_LN, K_EXP, K_POW,
     K_PI, K_FACT
 };
 
+/* The Standard layout, exactly as Windows arranges it. */
 static const Btn std_btns[] = {
     { "Backspace", 0, 2, 2, K_BACK, 1 }, { "CE", 0, 4, 1, K_CE, 1 },
     { "C", 0, 5, 1, K_C, 1 },
@@ -63,6 +71,7 @@ static const Btn std_btns[] = {
     { NULL, 0, 0, 0, 0, 0 }
 };
 
+/* Scientific adds a row of functions above the standard keypad. */
 static const Btn sci_btns[] = {
     { "sin", -1, 0, 1, K_SIN, 0 }, { "cos", -1, 1, 1, K_COS, 0 },
     { "tan", -1, 2, 1, K_TAN, 0 }, { "log", -1, 3, 1, K_LOG, 0 },
@@ -74,14 +83,16 @@ static const Btn sci_btns[] = {
 static struct {
     W2kWin     *win;
     W2kMenubar *mb;
-    char        expr[EXPR_MAX];
+    char        expr[EXPR_MAX];   /* what the display shows */
     int         len;
     double      memory;
     int         scientific;
-    int         error;
-    int         just_eq;
-    int         down;
-    int         glow_key;
+    int         error;            /* the display is a message         */
+    int         just_eq;          /* it is a result: a digit starts anew */
+    int         fresh_tail;       /* the last number is a function's
+                                   * result: a digit replaces it       */
+    int         down;             /* index of the button being pressed  */
+    int         glow_key;         /* the key held on the keyboard       */
     W2kRect     rect[40];
     const Btn  *btn[40];
     int         nbtn;
@@ -307,6 +318,7 @@ static void expr_clear(void)
     cal.len = 1;
     cal.error = 0;
     cal.just_eq = 0;
+    cal.fresh_tail = 0;
 }
 
 static int is_binop(int key)
@@ -328,39 +340,55 @@ static void expr_append_char(char c)
     cal.expr[cal.len] = 0;
 }
 
+/* Where the last number in the expression starts, its sign included:
+ * the number being typed. cal.len when the expression ends in an
+ * operator; 0 when the display is one number. */
+static int trailing_start(void)
+{
+    int i = cal.len - 1;
+    while (i >= 0 && (isdigit((unsigned char)cal.expr[i]) ||
+                      cal.expr[i] == '.' || cal.expr[i] == ','))
+        i--;
+    if (i >= 0 && cal.expr[i] == '-' &&
+        (i == 0 || is_binop((unsigned char)cal.expr[i - 1]) || cal.expr[i - 1] == '('))
+        i--;
+    return i + 1;
+}
+
+/* The number that starts at `start`, commas ignored. */
+static double number_at(int start)
+{
+    char tmp[96];
+    int n = 0;
+    for (int j = start; j < cal.len && n + 1 < (int)sizeof tmp; j++)
+        if (cal.expr[j] != ',') tmp[n++] = cal.expr[j];
+    tmp[n] = 0;
+    return atof(tmp);
+}
+
+/* The value of the first `n` characters of the expression. */
+static int value_of_prefix(int n, double *out)
+{
+    char tmp[EXPR_MAX];
+    const char *err = NULL;
+    snprintf(tmp, sizeof tmp, "%.*s", n, cal.expr);
+    return n > 0 && evaluate(tmp, out, &err);
+}
+
 static double current_value(void)
 {
     if (cal.error) return 0;
     double v = 0;
     const char *err = NULL;
     if (evaluate(cal.expr, &v, &err)) return v;
-    /* Fall back: trailing token, commas ignored. */
-    int i = cal.len - 1;
-    while (i >= 0 && (isdigit((unsigned char)cal.expr[i]) ||
-                      cal.expr[i] == '.' || cal.expr[i] == ','))
-        i--;
-    if (i >= 0 && cal.expr[i] == '-' &&
-        (i == 0 || is_binop((unsigned char)cal.expr[i - 1]) || cal.expr[i - 1] == '('))
-        i--;
-    char tmp[96];
-    int n = 0;
-    for (int j = i + 1; j < cal.len && n + 1 < (int)sizeof tmp; j++) {
-        if (cal.expr[j] != ',') tmp[n++] = cal.expr[j];
-    }
-    tmp[n] = 0;
-    return atof(tmp);
+    /* Not a whole expression yet: the number being typed. */
+    return number_at(trailing_start());
 }
 
+/* Put `v` in place of the last number, or after a trailing operator. */
 static void replace_trailing_number(double v)
 {
-    int i = cal.len - 1;
-    while (i >= 0 && (isdigit((unsigned char)cal.expr[i]) ||
-                      cal.expr[i] == '.' || cal.expr[i] == ','))
-        i--;
-    if (i >= 0 && cal.expr[i] == '-' &&
-        (i == 0 || is_binop((unsigned char)cal.expr[i - 1]) || cal.expr[i - 1] == '('))
-        i--;
-    int start = i + 1;
+    int start = trailing_start();
     char num[64];
     format_result(v, num, sizeof num);
     if (!isfinite(v)) { show_error("Error"); return; }
@@ -385,14 +413,63 @@ static double factorial(double v)
     return r;
 }
 
+/* The functions on the keypad; each says what is wrong with its input. */
+static double f_sqrt(double v, const char **e) { if (v < 0) *e = "Invalid input"; return sqrt(v); }
+static double f_inv(double v, const char **e)  { if (v == 0) *e = "Cannot divide by zero."; return 1.0 / v; }
+static double f_sin(double v, const char **e)  { (void)e; return sin(v); }
+static double f_cos(double v, const char **e)  { (void)e; return cos(v); }
+static double f_tan(double v, const char **e)  { (void)e; return tan(v); }
+static double f_log(double v, const char **e)  { if (v <= 0) *e = "Invalid input"; return log10(v); }
+static double f_ln(double v, const char **e)   { if (v <= 0) *e = "Invalid input"; return log(v); }
+static double f_fact(double v, const char **e)
+{
+    double r = factorial(v);
+    if (!isfinite(r)) *e = "Invalid input";
+    return r;
+}
+
+/* A function of the number being typed: the whole display after "=" or
+ * when it is one number; otherwise the last number in the expression, or,
+ * after a trailing operator, the value before it (9 + sqrt reads 9+3). */
+static void apply_unary(double (*fn)(double, const char **))
+{
+    int start = trailing_start();
+    int whole = cal.just_eq || start == 0;
+    double v;
+    if (whole) v = current_value();
+    else if (start < cal.len) v = number_at(start);
+    else if (!value_of_prefix(start - 1, &v)) v = 0;
+    const char *err = NULL;
+    double r = fn(v, &err);
+    if (err || !isfinite(r)) { show_error(err ? err : "Invalid input"); return; }
+    if (whole) {
+        show_value(r);
+        cal.just_eq = 1;
+    } else {
+        replace_trailing_number(r);
+        cal.fresh_tail = 1;
+    }
+}
+
 /* ---- key handling ------------------------------------------------ */
 
 static void press(int key)
 {
     if (cal.error && key != K_C && key != K_CE && key != K_BACK) return;
 
-    if (cal.just_eq) {
+    /* A function's result mid-expression is replaced by the next number
+     * typed, as the display's number is in Windows. */
+    if (cal.fresh_tail) {
+        cal.fresh_tail = 0;
         if ((key >= '0' && key <= '9') || key == '.') {
+            int s = trailing_start();
+            cal.expr[s] = 0;
+            cal.len = s;
+        }
+    }
+
+    if (cal.just_eq) {
+        if ((key >= '0' && key <= '9') || key == '.' || key == '(') {
             expr_clear();
             cal.just_eq = 0;
         } else if (is_binop(key)) {
@@ -420,46 +497,41 @@ static void press(int key)
         expr_append_char(',');
         return;
 
-    case K_BACK:
-        if (cal.len > 1) cal.expr[--cal.len] = 0;
-        else expr_clear();
+    case '(': case ')':
+        expr_append_char((char)key);
         return;
 
-    case K_CE:
-        if (cal.error) { expr_clear(); return; }
-        {
-            int i = cal.len - 1;
-            while (i >= 0 && (isdigit((unsigned char)cal.expr[i]) ||
-                              cal.expr[i] == '.' || cal.expr[i] == ','))
-                i--;
-            if (i >= 0 && cal.expr[i] == '-' &&
-                (i == 0 || is_binop((unsigned char)cal.expr[i - 1]) || cal.expr[i - 1] == '('))
-                i--;
-            int start = i + 1;
-            if (start <= 0) expr_clear();
-            else { cal.expr[start] = 0; cal.len = start; }
-        }
+    case K_BACK:
+        /* A message is not something to edit a letter off. */
+        if (cal.error || cal.len <= 1) expr_clear();
+        else cal.expr[--cal.len] = 0;
         return;
+
+    case K_CE: {
+        /* Clear Entry: the number being typed goes, the rest stays. */
+        int start = cal.error ? 0 : trailing_start();
+        if (start <= 0) expr_clear();
+        else { cal.expr[start] = 0; cal.len = start; }
+        return;
+    }
 
     case K_C:
         expr_clear();
         return;
 
     case K_SIGN: {
-        if (cal.just_eq || (cal.len > 0 && !strpbrk(cal.expr, "+-*/^"))) {
+        /* +/- flips the sign of the number being typed. */
+        if (cal.just_eq) {
             show_value(-current_value());
+            cal.just_eq = 1;
             return;
         }
-        int i = cal.len - 1;
-        while (i >= 0 && (isdigit((unsigned char)cal.expr[i]) ||
-                          cal.expr[i] == '.' || cal.expr[i] == ','))
-            i--;
-        if (i >= 0 && cal.expr[i] == '-' &&
-            (i == 0 || is_binop((unsigned char)cal.expr[i - 1]) || cal.expr[i - 1] == '(')) {
+        int i = trailing_start();
+        if (i < cal.len && cal.expr[i] == '-') {
             memmove(cal.expr + i, cal.expr + i + 1, (size_t)(cal.len - i));
             cal.len--;
         } else {
-            int pos = i + 1;
+            int pos = i;
             if (cal.len + 1 >= EXPR_MAX) return;
             memmove(cal.expr + pos + 1, cal.expr + pos, (size_t)(cal.len - pos + 1));
             cal.expr[pos] = '-';
@@ -488,50 +560,29 @@ static void press(int key)
         return;
     }
 
-    case K_SQRT: {
-        double v = current_value();
-        if (v < 0) { show_error("Invalid input"); return; }
-        if (cal.just_eq || !strpbrk(cal.expr, "+-*/^"))
-            show_value(sqrt(v));
-        else
-            replace_trailing_number(sqrt(v));
-        cal.just_eq = 1;
+    case K_SQRT: apply_unary(f_sqrt); return;
+    case K_INV:  apply_unary(f_inv);  return;
+    case K_SIN:  apply_unary(f_sin);  return;
+    case K_COS:  apply_unary(f_cos);  return;
+    case K_TAN:  apply_unary(f_tan);  return;
+    case K_LOG:  apply_unary(f_log);  return;
+    case K_LN:   apply_unary(f_ln);   return;
+    case K_FACT: apply_unary(f_fact); return;
+
+    case K_PCT: {
+        int start = trailing_start();
+        if (cal.just_eq || start == 0) {
+            show_value(current_value() / 100.0);
+            cal.just_eq = 1;
+            return;
+        }
+        if (start == cal.len) return;       /* a percentage of nothing yet */
+        double y = number_at(start), r = y / 100.0, base;
+        char op = cal.expr[start - 1];
+        if ((op == '+' || op == '-') && value_of_prefix(start - 1, &base)) r = base * y / 100.0;
+        replace_trailing_number(r);
+        cal.fresh_tail = 1;
         return;
-    }
-    case K_INV: {
-        double v = current_value();
-        if (v == 0) { show_error("Cannot divide by zero."); return; }
-        if (cal.just_eq || !strpbrk(cal.expr, "+-*/^"))
-            show_value(1.0 / v);
-        else
-            replace_trailing_number(1.0 / v);
-        cal.just_eq = 1;
-        return;
-    }
-    case K_PCT:
-        show_value(current_value() / 100.0);
-        cal.just_eq = 1;
-        return;
-    case K_SIN:
-        show_value(sin(current_value())); cal.just_eq = 1; return;
-    case K_COS:
-        show_value(cos(current_value())); cal.just_eq = 1; return;
-    case K_TAN:
-        show_value(tan(current_value())); cal.just_eq = 1; return;
-    case K_LOG: {
-        double v = current_value();
-        if (v <= 0) { show_error("Invalid input"); return; }
-        show_value(log10(v)); cal.just_eq = 1; return;
-    }
-    case K_LN: {
-        double v = current_value();
-        if (v <= 0) { show_error("Invalid input"); return; }
-        show_value(log(v)); cal.just_eq = 1; return;
-    }
-    case K_FACT: {
-        double v = factorial(current_value());
-        if (!isfinite(v)) { show_error("Invalid input"); return; }
-        show_value(v); cal.just_eq = 1; return;
     }
 
     case K_MC:    cal.memory = 0; return;
@@ -542,6 +593,16 @@ static void press(int key)
 }
 
 /* ---- layout / paint ---------------------------------------------- */
+
+/* A long expression keeps its end in view: that is where the typing is. */
+static void fit_tail(const char *s, int maxw, char *out, int n)
+{
+    if (w2k_text_width(F_UI, s, -1) <= maxw) { snprintf(out, (size_t)n, "%s", s); return; }
+    int dw = w2k_text_width(F_UI, "...", 3);
+    const char *p = s;
+    while (*p && w2k_text_width(F_UI, p, -1) + dw > maxw) p++;
+    snprintf(out, (size_t)n, "...%s", p);
+}
 
 static void build_buttons(void)
 {
@@ -567,18 +628,20 @@ static void paint(W2kWin *w, Drawable d)
 {
     w2k_menubar_draw(d, cal.mb);
 
+    /* The display: a sunken well with the expression right-aligned. */
     W2kRect disp = { 8, MENUBAR_H + 6, w->w - 16, DISP_H };
     w2k_edge(d, disp.x, disp.y, disp.w, disp.h, EDGE_SUNKEN, BF_RECT);
     w2k_fill(d, disp.x + 2, disp.y + 2, disp.w - 4, disp.h - 4, C_WINDOW);
 
     const char *show = cal.expr[0] ? cal.expr : "0";
-    char clipped[EXPR_MAX];
-    w2k_ellipsis(F_UI, show, disp.w - 16, clipped, sizeof clipped);
+    char clipped[EXPR_MAX + 4];
+    fit_tail(show, disp.w - 16, clipped, sizeof clipped);
     int tw = w2k_text_width(F_UI, clipped, -1);
     w2k_text(d, F_UI, disp.x + disp.w - 8 - tw,
              disp.y + (disp.h - w2k_font_height(F_UI)) / 2, clipped,
              cal.error ? C_GRAYTEXT : C_WINDOWTEXT);
 
+    /* Memory indicator, as the original shows it. */
     if (cal.memory != 0) {
         W2kRect mem = { 8, disp.y + disp.h + 6, 34, 20 };
         w2k_edge(d, mem.x, mem.y, mem.w, mem.h, EDGE_SUNKEN, BF_RECT);
@@ -595,6 +658,10 @@ static void paint(W2kWin *w, Drawable d)
         int tx = r.x + (r.w - tw2) / 2 + o;
         int ty = r.y + (r.h - w2k_font_height(F_UI)) / 2 + o;
 
+        /* The original's key colours: digits blue, operators and the
+         * memory and clear keys red, functions black. On a dark scheme
+         * the same reds and blues are lightened so they still read
+         * against the face. */
         int fr, fg, fb;
         w2k_color_rgb(C_FACE, &fr, &fg, &fb);
         int dark = (fr * 299 + fg * 587 + fb * 114) / 1000 < 128;
@@ -645,6 +712,8 @@ static void resize_window(void)
     int w = 8 * 2 + 7 * BTN_W + 6 * GAP;
     int h = MENUBAR_H + 6 + DISP_H + 8 + rows * (BTN_H + GAP) + 8;
     if (cal.scientific) h += 4;
+    /* The window is fixed-size and changes with the mode, so ask the
+     * manager for the new size and tell it this is still not resizable. */
     XSizeHints sh = { 0 };
     sh.flags = PMinSize | PMaxSize;
     sh.min_width = sh.max_width = w;
@@ -671,6 +740,7 @@ static void command(void *u, int id)
             cal.len = (int)n;
             cal.error = 0;
             cal.just_eq = 0;
+            cal.fresh_tail = 0;
             free(t);
         }
         break;
@@ -681,7 +751,7 @@ static void command(void *u, int id)
         w2k_msgbox(cal.win, "About Calculator",
                    "Calculator\nLinux 2000\nA Windows 2000-style desktop for X11\n\n"
                    "Expression mode: type -7+5*2^3 and press =\n"
-                   "Operators: + - * / ^   (keyboard glows the key)\n\n"
+                   "Operators: + - * / ^ and ( )   (keyboard glows the key)\n\n"
                    "Linux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\n"
                    "Windows is a trademark of Microsoft Corporation.",
                    MB_OK | MB_ICONINFO);
@@ -735,6 +805,8 @@ static int event(W2kWin *w, XEvent *e)
         case XK_asciicircum:                   key = K_POW; break;
         case XK_period: case XK_KP_Decimal:    key = '.'; break;
         case XK_comma:                         key = ','; break;
+        case XK_parenleft:                     key = '('; break;
+        case XK_parenright:                    key = ')'; break;
         default:
             if (ks >= XK_0 && ks <= XK_9) key = (int)('0' + (ks - XK_0));
             else if (ks >= XK_KP_0 && ks <= XK_KP_9)
@@ -782,11 +854,6 @@ int main(void)
     cal.win = w2k_win_new("Calculator", "l2kcalc", 260, 220, 0);
     cal.win->paint = paint;
     cal.win->event = event;
-
-    XSelectInput(w2k.dpy, cal.win->win,
-                 ExposureMask | KeyPressMask | KeyReleaseMask |
-                 ButtonPressMask | ButtonReleaseMask | StructureNotifyMask |
-                 FocusChangeMask | EnterWindowMask | LeaveWindowMask);
 
     cal.mb = w2k_menubar_new(NULL, command);
     w2k_menubar_add(cal.mb, "&Edit", build_edit);
