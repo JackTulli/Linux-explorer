@@ -1,12 +1,19 @@
 /* linver.c -- About Linux 2000, in the manner of winver.
  *
  * The dialog winver put up on Windows 2000: a banner across the top with
- * the logo and the product's name, an etched rule, the flag beside the
- * version and copyright lines, who the desktop is licensed to, another
+ * the logo and the product's name, an etched rule, the product's artwork
+ * beside the version and copyright lines -- Windows had its flag there,
+ * this has the Linux 2000 logo -- who the desktop is licensed to, another
  * rule, the memory line and OK. Here the banner carries the distribution's
- * own logo (from /etc/os-release and the usual pixmap places) next to the
- * name, and the lines tell you the version of Linux 2000, the distribution,
- * the kernel and the window manager. */
+ * own logo next to the name, and the lines tell you the version of Linux
+ * 2000, the distribution, the kernel and the window manager.
+ *
+ * The distribution's logo is the icon /etc/os-release names (LOGO=), from
+ * the icon theme first and the largest size there is, and only then from
+ * /usr/share/pixmaps, where distributions keep wide wordmarks as well:
+ * Fedora's fedora-logo.png is "fedora" in letters, and was squeezed into
+ * a square. Whatever is found keeps its shape, fitted into the banner's
+ * box, and its soft edges are blended into the banner's white. */
 #include "w2kui.h"
 #include <pwd.h>
 #include <stdio.h>
@@ -19,16 +26,19 @@
 #define W2K_VERSION "?"
 #endif
 
-#define DLG_W     412
+#define DLG_W     460
 #define BANNER_H  72
 #define LOGO      64
+#define ART_W     104               /* the Linux 2000 artwork, beside the lines */
 
 static struct {
     W2kWin  *win;
     W2kRect  ok;
     int      down;
-    W2kSkin *logo;                  /* the distribution's, at most LOGO square */
-    int      logo_size;
+    W2kSkin *logo;                  /* the distribution's, fitted into LOGO square */
+    int      logo_w, logo_h;
+    W2kSkin *art;                   /* the Linux 2000 logo, ART_W wide */
+    int      art_w, art_h;
     W2kFace *big;                   /* the banner's name */
     char     distro[128], distro_id[64], kernel[96], user[128], host[128];
     char     mem[64];
@@ -69,6 +79,89 @@ static void with_commas(unsigned long n, char *out, int len)
     out[o] = 0;
 }
 
+/* ---- Pictures ---------------------------------------------------------- */
+/* `rgba` fitted into a bw by bh box with its shape kept, and laid over the
+ * colour it is drawn on: a skin has only a hard mask, so the soft edge is
+ * blended in here rather than cut off. */
+static W2kSkin *fitted(const unsigned char *rgba, int iw, int ih, int bw, int bh,
+                       int bg, int *ow, int *oh)
+{
+    int w = bw, h = (int)((long)ih * bw / iw);
+    if (h > bh) { h = bh; w = (int)((long)iw * bh / ih); }
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    unsigned char *sc = w == iw && h == ih ? NULL : w2k_rgba_resample(rgba, iw, ih, w, h, RS_CUBIC);
+    const unsigned char *src = sc ? sc : rgba;
+    int r, g, b;
+    w2k_color_rgb(bg, &r, &g, &b);
+    unsigned char *out = w2k_alloc((size_t)w * (size_t)h * 4);
+    for (size_t i = 0; i < (size_t)w * (size_t)h; i++) {
+        const unsigned char *s = src + i * 4;
+        unsigned char *o = out + i * 4;
+        int a = s[3];
+        o[0] = (unsigned char)((s[0] * a + r * (255 - a) + 127) / 255);
+        o[1] = (unsigned char)((s[1] * a + g * (255 - a) + 127) / 255);
+        o[2] = (unsigned char)((s[2] * a + b * (255 - a) + 127) / 255);
+        o[3] = 255;
+    }
+    free(sc);
+    W2kSkin *sk = w2k_skin_from_rgba(out, w, h);
+    free(out);
+    *ow = w;
+    *oh = h;
+    return sk;
+}
+
+/* The distribution's logo: the name os-release gives, then the usual
+ * others, each looked for in the icon theme from the largest size down --
+ * a square icon, shrunk sharp -- and only then in /usr/share/pixmaps. */
+static unsigned char *load_logo(const char *logo_name, int *w, int *h)
+{
+    static const char *const sizes[] = { "256x256", "192x192", "128x128", "96x96",
+                                         "72x72", "64x64", "48x48", "32x32", NULL };
+    char names[5][80];
+    int nn = 0;
+    if (logo_name[0]) snprintf(names[nn++], 80, "%s", logo_name);
+    if (lv.distro_id[0]) {
+        snprintf(names[nn++], 80, "%s-logo-icon", lv.distro_id);
+        snprintf(names[nn++], 80, "%s-logo", lv.distro_id);
+        snprintf(names[nn++], 80, "%s", lv.distro_id);
+    }
+    snprintf(names[nn++], 80, "distributor-logo");
+    char path[600];
+    for (int i = 0; i < nn; i++)
+        for (int s = 0; sizes[s]; s++) {
+            snprintf(path, sizeof path, "/usr/share/icons/hicolor/%s/apps/%.80s.png", sizes[s], names[i]);
+            unsigned char *rgba = w2k_image_load(path, w, h);
+            if (rgba) return rgba;
+        }
+    for (int i = 0; i < nn; i++) {
+        snprintf(path, sizeof path, "/usr/share/pixmaps/%.80s.png", names[i]);
+        unsigned char *rgba = w2k_image_load(path, w, h);
+        if (rgba) return rgba;
+    }
+    return NULL;
+}
+
+static void find_pictures(const char *logo_name)
+{
+    int w = 0, h = 0;
+    unsigned char *rgba = load_logo(logo_name, &w, &h);
+    if (rgba && w > 0 && h > 0) lv.logo = fitted(rgba, w, h, LOGO, LOGO, C_WINDOW, &lv.logo_w, &lv.logo_h);
+    free(rgba);
+
+    /* The Linux 2000 artwork (skins/l2logo.png, the README's): beside the
+     * lines where winver had the flag, and in the banner when the
+     * distribution has no logo of its own. */
+    char path[1024];
+    rgba = w2k_skin_path("l2logo.png", path, sizeof path) ? w2k_image_load(path, &w, &h) : NULL;
+    if (rgba && w > 0 && h > 0) {
+        lv.art = fitted(rgba, w, h, ART_W, ART_W, C_FACE, &lv.art_w, &lv.art_h);
+        if (!lv.logo) lv.logo = fitted(rgba, w, h, LOGO, LOGO, C_WINDOW, &lv.logo_w, &lv.logo_h);
+    }
+    free(rgba);
+}
+
 static void gather(void)
 {
     char logo_name[64];
@@ -100,40 +193,7 @@ static void gather(void)
     }
     with_commas(kb, lv.mem, sizeof lv.mem);
 
-    /* The logo: what os-release names, then the distribution's own, then
-     * the generic name most of them install. */
-    const char *dirs[] = { "/usr/share/pixmaps", "/usr/share/icons/hicolor/128x128/apps",
-                           "/usr/share/icons/hicolor/96x96/apps",
-                           "/usr/share/icons/hicolor/64x64/apps",
-                           "/usr/share/icons/hicolor/48x48/apps", NULL };
-    char names[6][80];
-    int nn = 0;
-    if (logo_name[0]) snprintf(names[nn++], 80, "%s", logo_name);
-    if (lv.distro_id[0]) {
-        snprintf(names[nn++], 80, "%s-logo", lv.distro_id);
-        snprintf(names[nn++], 80, "%s", lv.distro_id);
-        snprintf(names[nn++], 80, "%s-logo-icon", lv.distro_id);
-    }
-    snprintf(names[nn++], 80, "distributor-logo");
-    for (int d = 0; dirs[d] && !lv.logo; d++)
-        for (int i = 0; i < nn && !lv.logo; i++) {
-            char path[600];
-            snprintf(path, sizeof path, "%.400s/%.80s.png", dirs[d], names[i]);
-            int w, h;
-            unsigned char *rgba = w2k_image_load(path, &w, &h);
-            if (!rgba) continue;
-            /* A logo up to the banner's size is shown as it is; a larger
-             * one is scaled down, never up. */
-            if (w <= LOGO && h <= LOGO && w == h) {
-                lv.logo = w2k_skin_from_rgba(rgba, w, h);
-                lv.logo_size = w;
-            } else {
-                unsigned char *sq = w2k_rgba_scale(rgba, w, h, LOGO);
-                if (sq) { lv.logo = w2k_skin_from_rgba(sq, LOGO, LOGO); free(sq); }
-                lv.logo_size = LOGO;
-            }
-            free(rgba);
-        }
+    find_pictures(logo_name);
 }
 
 /* ---- The dialog -------------------------------------------------------- */
@@ -152,8 +212,8 @@ static void paint(W2kWin *w, Drawable d)
      * under it, the way "Built on NT Technology" sat under the name. */
     w2k_fill(d, 0, 0, w->w, BANNER_H, C_WINDOW);
     if (lv.logo)
-        w2k_skin_draw(d, lv.logo, 16 + (LOGO - lv.logo_size) / 2,
-                      (BANNER_H - lv.logo_size) / 2, 0, 0, lv.logo_size, lv.logo_size);
+        w2k_skin_draw(d, lv.logo, 16 + (LOGO - lv.logo_w) / 2,
+                      (BANNER_H - lv.logo_h) / 2, 0, 0, lv.logo_w, lv.logo_h);
     else         w2k_bigicon_draw(d, 32, (BANNER_H - 32) / 2, ICO_STARTFLAG);
     int tx = 16 + LOGO + 18;
     if (lv.big) {
@@ -165,10 +225,15 @@ static void paint(W2kWin *w, Drawable d)
     w2k_text(d, F_UI, tx + 1, 48, "A Windows 2000-style desktop for X11", C_WINDOWTEXT);
     etched(d, 0, BANNER_H, w->w);
 
-    /* The flag, and the lines beside it. */
+    /* The Linux 2000 logo, and the lines beside it. */
     int y = BANNER_H + 14;
-    w2k_bigicon_draw(d, 16, y, ICO_STARTFLAG);
     int x = 64;
+    if (lv.art) {
+        w2k_skin_draw(d, lv.art, 16, y + 2, 0, 0, lv.art_w, lv.art_h);
+        x = 16 + ART_W + 16;
+    } else {
+        w2k_bigicon_draw(d, 16, y, ICO_STARTFLAG);
+    }
     char buf[256];
     w2k_text(d, F_UI, x, y, "Linux 2000", C_TEXT);                       y += lh;
     snprintf(buf, sizeof buf, "Version %s", W2K_VERSION);
@@ -250,6 +315,7 @@ int main(int argc, char **argv)
     w2k_run();
     w2k_face_close(lv.big);
     w2k_skin_free(lv.logo);
+    w2k_skin_free(lv.art);
     w2k_fini();
     return 0;
 }

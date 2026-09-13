@@ -82,7 +82,7 @@ $(WM_OBJ): $(HDRS) wm/wm.h
 build/lib/icon.o: lib/icon_data.inc
 # The version stamp carries the commit, so the file that prints it is
 # rebuilt when the commit changes.
-build/wm/wm.o build/lib/sysprops.o: VERSION $(wildcard .git/HEAD .git/refs/heads/*)
+build/wm/wm.o build/lib/sysprops.o build/apps/linver.o: VERSION $(wildcard .git/HEAD .git/refs/heads/*)
 
 build/%.o: %.c
 	@mkdir -p $(@D)
