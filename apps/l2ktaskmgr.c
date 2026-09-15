@@ -27,6 +27,7 @@ enum {
 typedef struct {
     int  pid;
     char name[64];
+    char comm[16];                   /* the kernel's name, that `name` was made from */
     unsigned long long jiffies;      /* utime + stime  */
     long  rss_kb;
     double cpu;
@@ -235,10 +236,16 @@ static void sample_procs(unsigned long long dtotal)
         memcpy(name, open_p + 1, len);
         name[len] = 0;
 
+        Proc *pr = proc_find(pid);
         /* The kernel truncates comm to 15 characters, which turns half a
          * browser's processes into "Isolated Web Co". When it looks cut off,
-         * take the program name from the command line instead. */
-        if (len == 15) {
+         * take the program name from the command line instead -- once, when
+         * the process is first seen or has become another program, not
+         * every second for every such process. */
+        int renamed = !pr || strncmp(pr->comm, name, sizeof pr->comm - 1);
+        char comm[16];
+        snprintf(comm, sizeof comm, "%s", name);
+        if (len == 15 && renamed) {
             char cpath[64], cbuf[256];
             snprintf(cpath, sizeof cpath, "/proc/%d/cmdline", pid);
             FILE *cf = fopen(cpath, "r");
@@ -276,20 +283,25 @@ static void sample_procs(unsigned long long dtotal)
         threads += (int)nthr;
         count++;
 
-        Proc *pr = proc_find(pid);
         if (!pr) {
             if (tm.npr >= MAXPROC) continue;
             pr = &tm.pr[tm.npr++];
             pr->pid = pid;
             pr->jiffies = ut + st;
             pr->cpu = 0;
-        } else if (dtotal > 0) {
+        } else {
+            /* With no interval (the Processes page shown again after a
+             * while elsewhere) the counter is still taken: the next tick
+             * divided minutes of CPU time by one second -- 375 per cent. */
             unsigned long long now = ut + st;
-            pr->cpu = (now >= pr->jiffies)
+            pr->cpu = dtotal > 0 && now >= pr->jiffies
                     ? 100.0 * (double)(now - pr->jiffies) / (double)dtotal : 0.0;
             pr->jiffies = now;
         }
-        snprintf(pr->name, sizeof pr->name, "%s", name);
+        if (renamed) {
+            snprintf(pr->name, sizeof pr->name, "%s", name);
+            snprintf(pr->comm, sizeof pr->comm, "%s", comm);
+        }
         pr->rss_kb = rss_pages * (sysconf(_SC_PAGESIZE) / 1024);
         pr->seen = 1;
     }
@@ -352,6 +364,7 @@ static void refresh_apps(void)
      * every tick and windows come and go above it. */
     Window oldwin = tm.apps->sel >= 0 && tm.apps->sel < tm.napps
                   ? tm.appwin[tm.apps->sel] : None;
+    int vpos = tm.apps->vsb.pos, hpos = tm.apps->hsb.pos;
     w2k_list_clear(tm.apps);
     tm.napps = 0;
 
@@ -382,6 +395,11 @@ static void refresh_apps(void)
             tm.apps->items[i].selected = 1;
             break;
         }
+    /* Where it was scrolled to: clearing the list put it back at the top,
+     * every second, under the pointer of whoever was scrolling it. */
+    tm.apps->vsb.pos = vpos;
+    tm.apps->hsb.pos = hpos;
+    w2k_list_layout(tm.apps);
 }
 
 /* ------------------------------------------------------------------ *
@@ -418,6 +436,7 @@ static void refresh_procs(void)
         selpid = (int)(long)tm.procs->items[tm.procs->sel].data;
 
     qsort(tm.pr, tm.npr, sizeof *tm.pr, cmp_proc);
+    int vpos = tm.procs->vsb.pos, hpos = tm.procs->hsb.pos;
     w2k_list_clear(tm.procs);
     for (int i = 0; i < tm.npr; i++) {
         Proc *p = &tm.pr[i];
@@ -435,6 +454,9 @@ static void refresh_procs(void)
             tm.procs->items[r].selected = 1;
         }
     }
+    tm.procs->vsb.pos = vpos;               /* as refresh_apps() */
+    tm.procs->hsb.pos = hpos;
+    w2k_list_layout(tm.procs);
 }
 
 /* The process and thread totals without opening 360 files: the numeric

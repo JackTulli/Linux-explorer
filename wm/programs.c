@@ -14,7 +14,9 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#define PROG_BASE 1000              /* command ids: PROG_BASE + index */
+/* Clear of every other Start menu range (chevrons 1900, Start folder
+ * 2000, recent documents 2500): 1000 met them past the 900th program. */
+#define PROG_BASE 10000             /* command ids: PROG_BASE + index */
 #define MAXAPPS   1024
 
 typedef struct {
@@ -75,31 +77,43 @@ static int group_for(const char *categories)
     return G_OTHER;
 }
 
-/* Strip the field codes (%f, %U, ...) and quotes a shell will not want. */
+/* The command for sh: the file's escapes undone and its field codes
+ * (%f, %U, ...) taken out (lib/desktopentry.c). */
 static char *clean_exec(const char *exec)
 {
-    char *out = w2k_alloc(strlen(exec) + 1);
-    char *o = out;
-    for (const char *p = exec; *p; p++) {
-        if (*p == '%' && p[1]) {
-            if (p[1] == '%') { *o++ = '%'; }
-            p++;
-            continue;
-        }
-        *o++ = *p;
-    }
-    *o = 0;
-    while (o > out && isspace((unsigned char)o[-1])) *--o = 0;
-    return out;
+    char out[4096];
+    w2k_desktop_exec_command(exec, out, sizeof out);
+    return w2k_strdup(out);
 }
 
 static int adding_wine;              /* set while scanning Wine's tree */
 
+/* Every id seen in this scan, listed or not: a user's copy marked
+ * NoDisplay or Hidden -- how menu editors hide an application -- shadows
+ * the system's copy of the same id, which used to be listed anyway
+ * because only listed entries were remembered. */
+static char **seen_ids;
+static int nseen, capseen;
+
+static int seen(const char *id)
+{
+    for (int i = 0; i < nseen; i++) if (!strcmp(seen_ids[i], id)) return 1;
+    if (nseen == capseen) {
+        int cap = capseen ? capseen * 2 : 256;
+        char **g = realloc(seen_ids, (size_t)cap * sizeof *g);
+        if (!g) return 0;
+        seen_ids = g;
+        capseen = cap;
+    }
+    seen_ids[nseen] = strdup(id);
+    if (seen_ids[nseen]) nseen++;
+    return 0;
+}
+
 static void add_app(const char *path, const char *id, int flatpak)
 {
     if (napps >= MAXAPPS) return;
-    for (int i = 0; i < napps; i++)
-        if (!strcmp(apps[i].id, id)) return;      /* user copy shadows system */
+    if (seen(id)) return;                      /* the user's copy shadows the system's */
 
     FILE *f = fopen(path, "r");
     if (!f) return;
@@ -115,10 +129,10 @@ static void add_app(const char *path, const char *id, int flatpak)
         if (!eq) continue;
         *eq = 0;
         const char *val = eq + 1;
-        if (!strcmp(line, "Name") && !name)           name = w2k_strdup(val);
+        if (!strcmp(line, "Name") && !name)           { name = w2k_strdup(val); w2k_desktop_unescape(name); }
         else if (!strcmp(line, "Exec") && !exec)      exec = w2k_strdup(val);
         else if (!strcmp(line, "Categories"))         { free(cats); cats = w2k_strdup(val); }
-        else if (!strcmp(line, "Icon") && !icon)      icon = w2k_strdup(val);
+        else if (!strcmp(line, "Icon") && !icon)      { icon = w2k_strdup(val); w2k_desktop_unescape(icon); }
         else if (!strcmp(line, "NoDisplay"))          nodisplay |= !strcasecmp(val, "true");
         else if (!strcmp(line, "Hidden"))             nodisplay |= !strcasecmp(val, "true");
         else if (!strcmp(line, "Terminal"))           terminal = !strcasecmp(val, "true");
@@ -189,8 +203,78 @@ static void scan_wine(const char *dir, const char *rel, int depth)
     closedir(dp);
 }
 
+static int cmp_name(const void *a, const void *b);
+
+/* What the application folders look like now: their modification times,
+ * Wine's sub-folders included, folded into one number. Installing or
+ * removing a program changes a folder's time. */
+static unsigned long long sig_mix(unsigned long long h, const char *p)
+{
+    struct stat st;
+    if (stat(p, &st) != 0) return h * 1099511628211ULL;
+    h = (h ^ (unsigned long long)st.st_mtim.tv_sec) * 1099511628211ULL;
+    h = (h ^ (unsigned long long)st.st_mtim.tv_nsec) * 1099511628211ULL;
+    for (const char *q = p; *q; q++) h = (h ^ (unsigned char)*q) * 1099511628211ULL;
+    return h;
+}
+
+static unsigned long long sig_tree(unsigned long long h, const char *dir, int depth)
+{
+    h = sig_mix(h, dir);
+    if (depth > 4) return h;
+    DIR *dp = opendir(dir);
+    if (!dp) return h;
+    struct dirent *de;
+    while ((de = readdir(dp))) {
+        if (de->d_name[0] == '.' || de->d_type != DT_DIR) continue;
+        char p[2048];
+        snprintf(p, sizeof p, "%s/%s", dir, de->d_name);
+        h = sig_tree(h, p, depth + 1);
+    }
+    closedir(dp);
+    return h;
+}
+
+static unsigned long long folders_signature(void)
+{
+    unsigned long long h = 1469598103934665603ULL;
+    const char *home = getenv("HOME"), *xdh = getenv("XDG_DATA_HOME");
+    char path[2048];
+    if (xdh && *xdh) snprintf(path, sizeof path, "%s/applications", xdh);
+    else if (home)   snprintf(path, sizeof path, "%s/.local/share/applications", home);
+    else path[0] = 0;
+    if (path[0]) { h = sig_mix(h, path); strcat(path, "/wine"); h = sig_tree(h, path, 0); }
+    if (home) {
+        snprintf(path, sizeof path, "%s/.local/share/flatpak/exports/share/applications", home);
+        h = sig_mix(h, path);
+    }
+    h = sig_mix(h, "/var/lib/flatpak/exports/share/applications");
+    const char *dirs = getenv("XDG_DATA_DIRS");
+    if (!dirs || !*dirs) dirs = "/usr/local/share:/usr/share";
+    char copy[2048], *sp = NULL;
+    snprintf(copy, sizeof copy, "%s", dirs);
+    for (char *tok = strtok_r(copy, ":", &sp); tok; tok = strtok_r(NULL, ":", &sp)) {
+        snprintf(path, sizeof path, "%s/applications", tok);
+        h = sig_mix(h, path);
+    }
+    return h;
+}
+
+/* The programs, read from their .desktop files and sorted by name. Every
+ * opening of the classic Start menu (and every All Programs, every search,
+ * every taskbar right-click) used to read them all again; now only a
+ * change to the folders, or a minute gone by, does. And always sorted:
+ * a rescan left unsorted used to give a menu's ids to other programs. */
 static void scan_all(void)
 {
+    static unsigned long long last_sig;
+    static long last_scan;
+    long now = w2k_now_ms();
+    unsigned long long sig = folders_signature();
+    if (napps && sig == last_sig && now - last_scan < 60000) return;
+    last_sig = sig;
+    last_scan = now;
+
     for (int i = 0; i < napps; i++) {
         free(apps[i].id);
         free(apps[i].name);
@@ -198,6 +282,8 @@ static void scan_all(void)
         free(apps[i].icon);
     }
     napps = 0;
+    for (int i = 0; i < nseen; i++) free(seen_ids[i]);
+    nseen = 0;
 
     const char *home = getenv("HOME");
     char path[2048];
@@ -231,6 +317,7 @@ static void scan_all(void)
         snprintf(path, sizeof path, "%s/applications", tok);
         scan_dir(path, strstr(tok, "flatpak") != NULL);
     }
+    qsort(apps, (size_t)napps, sizeof *apps, cmp_name);
 }
 
 static int cmp_name(const void *a, const void *b)
@@ -461,7 +548,7 @@ int programs_icon(int id)
 
 int programs_search(const char *query, int *ids, const char **names, int max)
 {
-    if (!napps) scan_all();
+    scan_all();                              /* cached: only a change rescans */
     if (!query || !*query) return 0;
 
     char q[128];
@@ -492,8 +579,7 @@ int programs_search(const char *query, int *ids, const char **names, int max)
  * level further down under "Installed Programs" is a level nobody needs. */
 void programs_add_groups(W2kMenu *m)
 {
-    scan_all();
-    qsort(apps, napps, sizeof *apps, cmp_name);
+    scan_all();                              /* sorted by name */
 
     int any = 0;
     for (int g = 0; g < NGROUPS; g++) {

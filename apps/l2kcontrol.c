@@ -2251,8 +2251,9 @@ static void ua_pick_picture(UsersDlg *ud)
     }
     if (w2k_file_dialog_filter(ud->win, 0, path, sizeof path,
                                "Pictures (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp|All Files (*.*)|*")) {
+        /* Decoded small (a photograph by 8), only to see that it can be. */
         int pw = 0, ph = 0;
-        unsigned char *probe = w2k_image_load(path, &pw, &ph);
+        unsigned char *probe = w2k_image_load_scaled(path, 96, 96, &pw, &ph);
         if (!probe) {
             w2k_msgbox(ud->win, "User Accounts",
                        "That file is not a picture Linux 2000 can read (PNG, JPEG or BMP).",

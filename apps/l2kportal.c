@@ -47,6 +47,7 @@ typedef struct {
     char cur_filter[64];
     char files[MAXFILES][256];         /* SaveFiles: the names to be saved */
     int  nfiles;
+    int  refused;                      /* ...and how many were not plain names */
 } Req;
 
 /* ------------------------------------------------------------------ *
@@ -166,6 +167,18 @@ static void accel_label(const char *in, char *out, int n)
     out[o] = 0;
 }
 
+/* A name a sandboxed program may ask to have saved in a folder the user
+ * picks: one plain name. Not a path, not "." or "..", nothing hidden (a
+ * ".bashrc" of its choosing, written into the home folder on one click,
+ * runs outside the sandbox at the next shell), no control characters. */
+static int safe_name(const char *s)
+{
+    if (!s[0] || s[0] == '.' || strchr(s, '/')) return 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
+        if (*p < 0x20 || *p == 0x7f) return 0;
+    return 1;
+}
+
 static void read_options(DBusMessageIter *arr, Req *r)
 {
     DBusMessageIter e, kv, v;
@@ -173,8 +186,12 @@ static void read_options(DBusMessageIter *arr, Req *r)
     while (dbus_message_iter_get_arg_type(&e) == DBUS_TYPE_DICT_ENTRY) {
         const char *key = "";
         dbus_message_iter_recurse(&e, &kv);
+        /* a{sv} is what the front end sends; anything else is skipped,
+         * not read as though it were (an a{uv} crashed the backend). */
+        if (dbus_message_iter_get_arg_type(&kv) != DBUS_TYPE_STRING) { dbus_message_iter_next(&e); continue; }
         dbus_message_iter_get_basic(&kv, &key);
         dbus_message_iter_next(&kv);
+        if (dbus_message_iter_get_arg_type(&kv) != DBUS_TYPE_VARIANT) { dbus_message_iter_next(&e); continue; }
         dbus_message_iter_recurse(&kv, &v);
         int t = dbus_message_iter_get_arg_type(&v);
         if ((!strcmp(key, "multiple") || !strcmp(key, "directory")) && t == DBUS_TYPE_BOOLEAN) {
@@ -212,7 +229,8 @@ static void read_options(DBusMessageIter *arr, Req *r)
             dbus_message_iter_recurse(&v, &fl);
             while (dbus_message_iter_get_arg_type(&fl) == DBUS_TYPE_ARRAY && r->nfiles < MAXFILES) {
                 read_bytes(&fl, r->files[r->nfiles], sizeof r->files[0]);
-                if (r->files[r->nfiles][0] && !strchr(r->files[r->nfiles], '/')) r->nfiles++;
+                if (safe_name(r->files[r->nfiles])) r->nfiles++;
+                else r->refused++;
                 dbus_message_iter_next(&fl);
             }
         }
@@ -342,11 +360,50 @@ static DBusHandlerResult handle(DBusConnection *c, DBusMessage *m, void *user)
     static char uris[MAXFILES][4200];
     char path[4096];
     int n = 0;
+    /* Names the program sent that were not plain names: nothing is saved
+     * for it, and no dialog asks the user to pick a folder for them. */
+    if (kind == K_SAVEFILES && (r.refused || !r.nfiles)) {
+        send_reply(c, m, RESP_CANCEL, NULL, 0, 0);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
     if (!choose(kind, &r, title, xid, path, sizeof path)) {
         send_reply(c, m, RESP_CANCEL, NULL, 0, 0);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     if (kind == K_SAVEFILES) {
+        /* Asked about before anything is replaced, as Save As asks: the
+         * names were the program's, the user never saw them. Something
+         * there that is not a plain file is not replaced at all. */
+        char there[1200] = "";
+        int nthere = 0;
+        for (int i = 0; i < r.nfiles; i++) {
+            char full[4400];
+            snprintf(full, sizeof full, "%s%s%s", path, strcmp(path, "/") ? "/" : "", r.files[i]);
+            struct stat st;
+            if (lstat(full, &st) != 0) continue;
+            if (!S_ISREG(st.st_mode)) {
+                char msg[700];
+                snprintf(msg, sizeof msg, "'%.300s' in that folder is not a file and cannot "
+                         "be replaced.", r.files[i]);
+                w2k_msgbox(NULL, title, msg, MB_OK | MB_ICONERROR);
+                send_reply(c, m, RESP_CANCEL, NULL, 0, 0);
+                return DBUS_HANDLER_RESULT_HANDLED;
+            }
+            if (nthere++ < 8) {
+                size_t l = strlen(there);
+                snprintf(there + l, sizeof there - l, "\n    %.100s", r.files[i]);
+            }
+        }
+        if (nthere) {
+            char msg[1600];
+            snprintf(msg, sizeof msg, "%s already exist%s in %.300s:\n%s%s\n\nDo you want to "
+                     "replace %s?", nthere == 1 ? "This file" : "These files", nthere == 1 ? "s" : "",
+                     path, there, nthere > 8 ? "\n    ..." : "", nthere == 1 ? "it" : "them");
+            if (w2k_msgbox(NULL, title, msg, MB_YESNO | MB_ICONWARNING) != ID_YES) {
+                send_reply(c, m, RESP_CANCEL, NULL, 0, 0);
+                return DBUS_HANDLER_RESULT_HANDLED;
+            }
+        }
         for (int i = 0; i < r.nfiles; i++) {
             char full[4400];
             snprintf(full, sizeof full, "%s%s%s", path, strcmp(path, "/") ? "/" : "", r.files[i]);

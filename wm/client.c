@@ -78,12 +78,16 @@ static char *get_text_prop(Window w, Atom prop)
     return out;
 }
 
-void client_update_name(Client *c)
+int client_update_name(Client *c)
 {
     char *n = get_text_prop(c->win, w2k.a_net_wm_name);
+    c->net_name = n != NULL;
     if (!n) n = get_text_prop(c->win, XA_WM_NAME);
+    if (!n) n = w2k_strdup("(Untitled)");
+    if (c->name && !strcmp(c->name, n)) { free(n); return 0; }
     free(c->name);
-    c->name = n ? n : w2k_strdup("(Untitled)");
+    c->name = n;
+    return 1;
 }
 
 /* Guess an icon from WM_CLASS, so our own apps get their real icons and
@@ -268,7 +272,9 @@ void client_update_type(Client *c)
     unsigned char *data = NULL;
 
     c->decorate = 1;
-    c->skip_taskbar = 0;
+    /* What the window asked for itself stays: a theme change ran through
+     * here and gave a drop-down terminal or a widget a task button. */
+    c->skip_taskbar = c->init_skip;
     c->is_dialog = 0;
 
     if (XGetWindowProperty(w2k.dpy, c->win, w2k.a_net_wm_window_type, 0, 8,
@@ -300,11 +306,15 @@ void client_update_type(Client *c)
     if (motif_undecorated(c->win) && c->decorate && !w2k_force_decorations)
         c->decorate = 0;
 
-    /* A transient is somebody's dialog: it belongs to its owner's button. */
+    /* A transient is somebody's dialog: it belongs to its owner's button,
+     * and stays above its owner (client_raise). A transient for the root
+     * is a dialog of the whole program, owned by no one window. */
     Window tr = None;
+    c->transient_for = None;
     if (XGetTransientForHint(w2k.dpy, c->win, &tr) && tr != None) {
         c->skip_taskbar = 1;
         c->is_dialog = 1;
+        if (tr != w2k.root && tr != c->win) c->transient_for = tr;
     }
 
     /* The app's initial _NET_WM_STATE, once: after that the property is
@@ -316,11 +326,12 @@ void client_update_type(Client *c)
         && data) {
         Atom *a = (Atom *)data;
         for (unsigned long i = 0; i < n; i++) {
-            if (a[i] == w2k.a_net_wm_state_skip_taskbar) c->skip_taskbar = 1;
+            if (a[i] == w2k.a_net_wm_state_skip_taskbar) c->skip_taskbar = c->init_skip = 1;
             if (a[i] == w2k.a_net_wm_state_above)        c->above = 1;
             if (a[i] == w2k.a_net_wm_state_maxv ||
                 a[i] == w2k.a_net_wm_state_maxh)         c->maximized = 1;
             if (a[i] == w2k.a_net_wm_state_fullscreen)   c->fullscreen = 1;
+            if (a[i] == w2k.a_net_wm_state_modal)        c->modal = 1;
         }
         XFree(data);
     }
@@ -364,10 +375,15 @@ void client_constrain(Client *c, int *w, int *h)
 }
 
 /* Move/resize by *client* rectangle in root coordinates. */
+static void client_publish_extents(Client *c);
+
 void client_move_resize(Client *c, int x, int y, int w, int h)
 {
     int b = client_border(c), cap = client_caption_h(c);
     c->x = x; c->y = y; c->w = w; c->h = h;
+    /* New measurements (a look change, full screen): the application is
+     * told how much frame it wears now. */
+    if (b != c->fb || cap != c->fcap) client_publish_extents(c);
 
     XMoveResizeWindow(w2k.dpy, c->frame, x - b, y - b - cap,
                       client_frame_w(c), client_frame_h(c));
@@ -412,32 +428,84 @@ void clients_restack(void)
     if (trigger) wins[n++] = trigger;
     /* "Always on top" is what puts the taskbar at the head of the stack;
      * without it the bar is just another window and can be covered. */
-    /* A full-screen window covers the bar: that is the point of it. */
+    /* A full-screen window covers the bar: that is the point of it --
+     * while it is the one in use. Otherwise it stacks like any window: a
+     * window picked with Alt+Tab or a new one opening on that monitor was
+     * focused but stayed hidden under the video. */
     for (Client *c = stack; c && n < 250; c = c->snext)
-        if (c->fullscreen && !c->minimized) wins[n++] = c->frame;
+        if (c->fullscreen && !c->minimized && c == focused) wins[n++] = c->frame;
     Window orb = taskbar_orb_window();          /* rises above the bar: just over it */
     if (w2k_taskbar_ontop) { if (orb) wins[n++] = orb; wins[n++] = taskbar_window(); }
     for (Client *c = stack; c && n < 250; c = c->snext)
-        if (c->above && !c->minimized && !c->fullscreen) wins[n++] = c->frame;
+        if (c->above && !c->minimized && !(c->fullscreen && c == focused)) wins[n++] = c->frame;
     for (Client *c = stack; c && n < 250; c = c->snext)
-        if (!c->above && !c->minimized && !c->fullscreen) wins[n++] = c->frame;
+        if (!c->above && !c->minimized && !(c->fullscreen && c == focused)) wins[n++] = c->frame;
     if (!w2k_taskbar_ontop) { if (orb) wins[n++] = orb; wins[n++] = taskbar_window(); }
     wins[n++] = desktop_window();
     XRestackWindows(w2k.dpy, wins, n);
 }
 
+static int owns(const Client *owner, const Client *t)
+{
+    return t != owner && owner->win && t->transient_for == owner->win;
+}
+
+/* A window's dialogs over it: raising the owner used to bury its modal
+ * dialog, which has no task button and is not in Alt+Tab -- the program
+ * looked hung. They keep their order among themselves, newest on top. */
+static void raise_transients(Client *owner, int depth)
+{
+    Client *list[32];
+    int n = 0;
+    for (Client *t = stack; t && n < 32; t = t->snext)
+        if (owns(owner, t)) list[n++] = t;
+    for (int i = n - 1; i >= 0; i--) {
+        stack_remove(list[i]);
+        list[i]->snext = stack;
+        stack = list[i];
+        if (depth < 8) raise_transients(list[i], depth + 1);
+    }
+}
+
+static int has_transients(const Client *owner)
+{
+    for (Client *t = clients; t; t = t->next)
+        if (owns(owner, t)) return 1;
+    return 0;
+}
+
 void client_raise(Client *c)
 {
     if (!c) return;
+    /* Already on top, with nothing of its own to bring up: every click in
+     * an application comes through here, and each restacked every window
+     * (with live glass, repainted every frame) for nothing. */
+    if (stack == c && !has_transients(c)) return;
     stack_remove(c);
     c->snext = stack;
     stack = c;
+    raise_transients(c, 0);
     clients_restack();
     glass_live_refresh();
 }
 
+/* The modal dialog a window is waiting on, if one is up: the dialog
+ * takes the focus in its place, as Windows gives it. */
+static Client *modal_of(Client *c)
+{
+    for (int depth = 0; c && depth < 8; depth++) {
+        Client *m = NULL;
+        for (Client *t = stack; t && !m; t = t->snext)
+            if (owns(c, t) && t->modal && t->mapped && !t->minimized) m = t;
+        if (!m) break;
+        c = m;
+    }
+    return c;
+}
+
 void client_focus(Client *c)
 {
+    if (c && !c->minimized) c = modal_of(c);
     if (focused == c && c && !c->minimized) return;
 
     Client *old = focused;
@@ -445,6 +513,8 @@ void client_focus(Client *c)
 
     focused = c;
     if (old && old != c) frame_paint(old);
+    /* Full screen stacks over the bar only while focused. */
+    if ((old && old->fullscreen) || (c && c->fullscreen)) clients_restack();
 
     if (c) {
         if (c->takes_focus)
@@ -493,6 +563,31 @@ void client_close(Client *c)
  * minimises a whole screenful, so it asks for neither and settles once
  * at the end -- ten windows used to mean a second of grabbed server and
  * twenty full bar relayouts. */
+/* A window's dialogs go and come back with it (ICCCM: the transients of
+ * an iconic window are iconic too). They have no task button of their
+ * own, so they used to stay on the screen over the desktop, owner gone. */
+static void transients_hide(Client *owner, int hide, int depth)
+{
+    for (Client *t = clients; t && depth < 8; t = t->next) {
+        if (!owns(owner, t)) continue;
+        if (hide && !t->minimized && t->mapped) {
+            t->minimized = 1;
+            t->hidden_by_owner = 1;
+            XUnmapWindow(w2k.dpy, t->frame);
+            wm_set_state(t->win, IconicState);
+            client_publish_state(t);
+            if (focused == t) focused = NULL;
+        } else if (!hide && t->hidden_by_owner) {
+            t->minimized = 0;
+            t->hidden_by_owner = 0;
+            XMapWindow(w2k.dpy, t->frame);
+            wm_set_state(t->win, NormalState);
+            client_publish_state(t);
+        } else continue;
+        transients_hide(t, hide, depth + 1);
+    }
+}
+
 void client_minimize_quiet(Client *c)
 {
     if (!c || c->minimized || c->skip_taskbar) return;
@@ -500,7 +595,9 @@ void client_minimize_quiet(Client *c)
     XUnmapWindow(w2k.dpy, c->frame);
     wm_set_state(c->win, IconicState);
     client_publish_state(c);
-    if (focused == c) {
+    transients_hide(c, 1, 0);
+    /* Its dialog may have had the focus: that went with it too. */
+    if (focused == c || !focused) {
         focused = NULL;
         for (Client *n = stack; n; n = n->snext)
             if (!n->minimized && n->mapped) { client_focus(n); break; }
@@ -510,35 +607,50 @@ void client_minimize_quiet(Client *c)
 
 void client_minimize(Client *c)
 {
-    w2k_sound_play(SND_MINIMIZE);
-    /* Fly the wire frame down to the task button on the way out. */
-    int bx, by, bw, bh;
-    if (c && c->mapped && !c->minimized && taskbar_button_rect(c, &bx, &by, &bw, &bh))
-        wm_animate_rect(c->x - client_border(c),
-                        c->y - client_border(c) - client_caption_h(c),
-                        client_frame_w(c), client_frame_h(c), bx, by, bw, bh);
-
     if (!c || c->minimized) return;
     /* A dialog has no task button to come back from: it stays. */
     if (c->skip_taskbar) return;
+    w2k_sound_play(SND_MINIMIZE);
+    /* The window goes first, then its caption flies down to the task
+     * button, as Windows does it -- the bar used to fly over the window
+     * it had come from, which only vanished when it landed. */
+    int bx, by, bw, bh;
+    int fly = c->mapped && taskbar_button_rect(c, &bx, &by, &bw, &bh);
+    int fx = c->x - client_border(c), fy = c->y - client_border(c) - client_caption_h(c);
+    int fw = client_frame_w(c), fh = client_frame_h(c);
     c->minimized = 1;
     XUnmapWindow(w2k.dpy, c->frame);
+    transients_hide(c, 1, 0);
+    if (fly) {
+        XSync(w2k.dpy, False);
+        wm_animate_rect(fx, fy, fw, fh, bx, by, bw, bh);
+    }
     wm_set_state(c->win, IconicState);
     client_publish_state(c);
-    if (focused == c) {
+    if (focused == c || !focused) {          /* or its dialog had it */
         focused = NULL;
         /* Hand focus to the next visible window in stacking order. */
         for (Client *n = stack; n; n = n->snext)
             if (!n->minimized && n->mapped) { client_focus(n); break; }
         if (!focused) client_focus(NULL);
     }
+    /* Last in Alt+Tab's order: the first Tab used to pick the window just
+     * minimised, the one that had the focus. */
+    stack_remove(c);
+    Client **t = &stack;
+    while (*t) t = &(*t)->snext;
+    *t = c;
+    c->snext = NULL;
     clients_restack();
     taskbar_paint();
 }
 
 void client_restore(Client *c)
 {
-    w2k_sound_play(SND_RESTOREUP);
+    /* The sound is for coming back from the taskbar; this also runs for
+     * every activation (Alt+Tab, a task button, a program's request),
+     * where it used to play every time. */
+    if (c && c->minimized) w2k_sound_play(SND_RESTOREUP);
     /* ...and back out of it on the way in. */
     int bx, by, bw, bh;
     if (c && c->minimized && taskbar_button_rect(c, &bx, &by, &bw, &bh))
@@ -553,37 +665,81 @@ void client_restore(Client *c)
         XMapWindow(w2k.dpy, c->frame);
         wm_set_state(c->win, NormalState);
         client_publish_state(c);
+        transients_hide(c, 0, 0);
     }
     client_raise(c);
     client_focus(c);
     taskbar_paint();
 }
 
+/* Back from minimised with nothing else: Show Desktop brings a
+ * screenful back this way and restacks and focuses once at the end. */
+void client_restore_quiet(Client *c)
+{
+    if (!c || !c->minimized || c->hidden_by_owner) return;
+    c->minimized = 0;
+    XMapWindow(w2k.dpy, c->frame);
+    wm_set_state(c->win, NormalState);
+    client_publish_state(c);
+    transients_hide(c, 0, 0);
+}
+
 void client_maximize(Client *c, int on)
 {
     if (!c || !c->decorate) return;
+    /* A window of one fixed size (a dialog) is not made to fill the
+     * screen by a double-click on its caption, Win+Up or a drag to the
+     * top: it would sit in the corner of a maximised frame. */
+    if (on && !c->maximized && !c->resizable) return;
     if (on != c->maximized) w2k_sound_play(on ? SND_MAXIMIZE : SND_RESTOREDOWN);
     if (on && !c->maximized) {
         c->rx = c->x; c->ry = c->y; c->rw = c->w; c->rh = c->h;
         c->maximized = 1;
-        /* Fills the monitor the window is on, not the whole desktop. */
-        int wx, wy, ww, wh;
-        wm_workarea_of_client(c, &wx, &wy, &ww, &wh);
-        int b = client_border(c), cap = client_caption_h(c);
-        if (frame_theme() == THEME_MODERN) {
-            /* The invisible margin goes off the edge of the work area,
-             * as Windows pushes it, so the client meets the edges. */
-            int t = w2k_th(1);
-            client_move_resize(c, wx, wy + cap + t, ww, wh - cap - t);
-        } else
-            client_move_resize(c, wx + b, wy + b + cap,
-                               ww - 2 * b, wh - 2 * b - cap);
+        client_refit_maximized(c);
     } else if (!on && c->maximized) {
         c->maximized = 0;
         client_move_resize(c, c->rx, c->ry, c->rw, c->rh);
     }
     client_publish_state(c);
     frame_paint(c);
+}
+
+/* A maximised window fitted to the work area of its monitor again --
+ * after a look change, a monitor change, leaving full screen -- keeping
+ * the size it restores to, and with no Maximize sound. */
+void client_refit_maximized(Client *c)
+{
+    if (!c) return;
+    /* Fills the monitor the window is on, not the whole desktop. */
+    int wx, wy, ww, wh;
+    wm_workarea_of_client(c, &wx, &wy, &ww, &wh);
+    int b = client_border(c), cap = client_caption_h(c);
+    if (frame_theme() == THEME_MODERN) {
+        /* The invisible margin goes off the edge of the work area,
+         * as Windows pushes it, so the client meets the edges. */
+        int t = w2k_th(1);
+        client_move_resize(c, wx, wy + cap + t, ww, wh - cap - t);
+    } else
+        client_move_resize(c, wx + b, wy + b + cap, ww - 2 * b, wh - 2 * b - cap);
+}
+
+/* The look changed the frame's measurements -- Classic's 4 and 18 to XP's
+ * 4 and 26, Modern's 7 and 31 -- and a frame kept its old size around
+ * the client, the new caption partly under it and the bottom border off
+ * its end. The frame's corner stays where it was; the client keeps its
+ * size inside the new frame. */
+void client_relayout(Client *c)
+{
+    if (!c || c->fullscreen) return;
+    int b = client_border(c), cap = client_caption_h(c);
+    if (b == c->fb && cap == c->fcap) return;
+    if (c->maximized) { client_refit_maximized(c); return; }
+    int x = c->x, y = c->y;
+    if (!c->static_gravity) {          /* the frame's corner is what stays put */
+        x += b - c->fb;
+        y += b + cap - c->fb - c->fcap;
+    }
+    client_move_resize(c, x, y, c->w, c->h);
 }
 
 /* Full screen: the window covers its monitor, taskbar and all, with no
@@ -602,11 +758,17 @@ void client_fullscreen(Client *c, int on)
         client_raise(c);
     } else if (!on && c->fullscreen) {
         c->fullscreen = 0;
-        if (c->maximized) {
-            c->maximized = 0;           /* re-applied below, at frame size */
-            client_maximize(c, 1);
-        } else
+        if (c->maximized)
+            client_refit_maximized(c);      /* the restore size kept, no sound */
+        else {
+            if (c->rw <= 0 || c->rh <= 0) {
+                /* Never had another size: a sensible one, centred. */
+                const W2kMonitor *m = w2k_monitor_at(c->x + c->w / 2, c->y + c->h / 2);
+                c->rw = m->w * 2 / 3; c->rh = m->h * 2 / 3;
+                c->rx = m->x + (m->w - c->rw) / 2; c->ry = m->y + (m->h - c->rh) / 2;
+            }
             client_move_resize(c, c->rx, c->ry, c->rw, c->rh);
+        }
         clients_restack();
     }
     client_publish_state(c);
@@ -692,6 +854,8 @@ static void place_new(Client *c, int had_position)
 static void client_publish_extents(Client *c)
 {
     int b = client_border(c), cap = client_caption_h(c);
+    c->fb = b;
+    c->fcap = cap;
     long v[4] = { b, b, b + cap, b };      /* left, right, top, bottom */
     XChangeProperty(w2k.dpy, c->win, w2k.a_net_frame_extents, XA_CARDINAL, 32,
                     PropModeReplace, (unsigned char *)v, 4);
@@ -741,7 +905,34 @@ void client_manage(Window w, int initial_map)
         if ((sh.flags & PWinGravity) && sh.win_gravity == StaticGravity)
             c->static_gravity = 1;
     }
-    place_new(c, had_pos);
+    /* A window already on screen when the shell starts -- after an
+     * in-place restart, every one of them -- stays where it is, on its
+     * monitor, instead of being cascaded onto the monitor under the
+     * pointer; one that was minimised stays minimised (below). */
+    int iconic = 0;
+    if (!initial_map) {
+        /* Where it stands is where its frame goes -- the corner the last
+         * shell left it at when it let go -- so the client lands where it
+         * was, not a frame's width further in. */
+        if (!c->static_gravity) {
+            c->x += client_border(c);
+            c->y += client_border(c) + client_caption_h(c);
+        }
+        const W2kMonitor *m = w2k_monitor_at(c->x + c->w / 2, c->y + c->h / 2);
+        int ax, ay, aw, ah;
+        wm_workarea_of(m, &ax, &ay, &aw, &ah);
+        int onscreen = c->x < ax + aw && c->x + c->w > ax && c->y < ay + ah && c->y + c->h > ay;
+        if (!onscreen) place_new(c, 0);
+        /* The shell before this one said which of them were minimised. */
+        const char *ic = getenv("W2K_RESTART_ICONIC");
+        if (ic) {
+            char id[32];
+            snprintf(id, sizeof id, "0x%lx", (unsigned long)w);
+            for (const char *p = strstr(ic, id); p; p = strstr(p + 1, id))
+                if ((p == ic || p[-1] == ',') && (p[strlen(id)] == ',' || !p[strlen(id)])) { iconic = 1; break; }
+        }
+    } else
+        place_new(c, had_pos);
 
     int b = client_border(c), cap = client_caption_h(c);
     /* No server-side background on the frame either: a resize would
@@ -802,7 +993,17 @@ void client_manage(Window w, int initial_map)
     wm_set_state(w, NormalState);
     client_move_resize(c, c->x, c->y, c->w, c->h);
     if (c->maximized) { c->maximized = 0; client_maximize(c, 1); }
+    /* Mapped fullscreen already (mpv --fs, a game): made so properly, with
+     * a restore size to come back to -- it used to be cascaded, framed-
+     * less, a little off its monitor, and vanish when it left fullscreen. */
+    if (c->fullscreen) { c->fullscreen = 0; client_fullscreen(c, 1); }
 
+    if (iconic) {
+        client_minimize_quiet(c);
+        wm_update_client_list();
+        taskbar_sync();
+        return;
+    }
     client_raise(c);
     client_focus(c);
     wm_update_client_list();
@@ -813,6 +1014,8 @@ void client_unmanage(Client *c, int destroyed)
 {
     if (!c) return;
     if (c->capbuf) { w2k_free_pixmap(c->capbuf); c->capbuf = 0; }
+    /* Dialogs minimised with it would have nothing to come back with. */
+    transients_hide(c, 0, 0);
 
     if (!destroyed) {
         /* The client may already be gone; swallow errors rather than
@@ -840,7 +1043,12 @@ void client_unmanage(Client *c, int destroyed)
 
     if (focused == c) {
         focused = NULL;
-        for (Client *n = stack; n; n = n->snext)
+        /* A dialog closing hands the focus back to its owner. */
+        Client *owner = NULL;
+        for (Client *n = clients; n && c->transient_for; n = n->next)
+            if (n->win == c->transient_for && !n->minimized && n->mapped) owner = n;
+        if (owner) client_focus(owner);
+        for (Client *n = stack; n && !focused; n = n->snext)
             if (!n->minimized && n->mapped) { client_focus(n); break; }
         if (!focused) client_focus(NULL);
     }

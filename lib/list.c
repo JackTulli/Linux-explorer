@@ -984,6 +984,19 @@ void w2k_tree_draw(Drawable d, W2kTree *t)
     if (vs) w2k_scroll_draw(d, &t->vsb);
 }
 
+/* The node on the row at x, y (the window's coordinates), or NULL. */
+W2kTreeNode *w2k_tree_node_at(W2kTree *t, int x, int y)
+{
+    w2k_tree_layout(t);
+    if (!w2k_rect_hit(&t->r, x, y)) return NULL;
+    if (w2k_scroll_needed(&t->vsb) && w2k_rect_hit(&t->vsb.r, x, y)) return NULL;
+    int row = t->top + (y - (t->r.y + 2)) / t->row_h;
+    int idx = 0;
+    for (W2kTreeNode *n = t->root->child; n; n = tree_next_visible(n), idx++)
+        if (idx == row) return n;
+    return NULL;
+}
+
 int w2k_tree_press(W2kTree *t, XButtonEvent *b)
 {
     w2k_tree_layout(t);

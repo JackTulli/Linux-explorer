@@ -3,10 +3,12 @@
 #include "wm.h"
 #include "w2kui.h"
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/inotify.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -147,19 +149,18 @@ static int read_shortcut(const char *path, DeskIcon *out)
         char *eq = strchr(line, '=');
         if (!eq) continue;
         *eq = 0;
-        if (!strcmp(line, "Name") && !name[0])
+        if (!strcmp(line, "Name") && !name[0]) {
             snprintf(name, sizeof name, "%.127s", eq + 1);
-        else if (!strcmp(line, "Exec") && !exec[0])
-            snprintf(exec, sizeof exec, "%.511s", eq + 1);
-        else if (!strcmp(line, "Icon") && !icon[0])
+            w2k_desktop_unescape(name);
+        } else if (!strcmp(line, "Exec") && !exec[0])
+            w2k_desktop_exec_command(eq + 1, exec, sizeof exec);
+        else if (!strcmp(line, "Icon") && !icon[0]) {
             snprintf(icon, sizeof icon, "%.127s", eq + 1);
+            w2k_desktop_unescape(icon);
+        }
     }
     fclose(f);
     if (!name[0] || !exec[0]) return 0;
-
-    /* Strip the field codes a .desktop Exec line may carry. */
-    for (char *p = exec; *p; p++)
-        if (p[0] == '%' && p[1]) { p[0] = 0; break; }
 
     snprintf(out->label, sizeof out->label, "%s", name);
     snprintf(out->cmd, sizeof out->cmd, "%s", exec);
@@ -170,6 +171,15 @@ static int read_shortcut(const char *path, DeskIcon *out)
 /* Rebuild the icon list: the system four, then ~/Desktop. */
 void desktop_scan(void)
 {
+    /* The focused icon by what it is, not where it was: after a rescan,
+     * Delete and F2 acted on whatever file had come to that place while
+     * nothing looked selected. */
+    char was[1024] = "", was_label[128] = "";
+    if (sel >= 0 && sel < nicons) {
+        snprintf(was, sizeof was, "%s", icons[sel].path);
+        snprintf(was_label, sizeof was_label, "%s", icons[sel].label);
+    }
+    sel = -1;
     nicons = 0;
     memset(picked, 0, sizeof picked);
 
@@ -228,6 +238,13 @@ void desktop_scan(void)
         closedir(dp);
     }
     layout_load();
+    for (int i = 0; (was[0] || was_label[0]) && i < nicons; i++)
+        if (was[0] ? !strcmp(icons[i].path, was)
+                   : icons[i].system && !strcmp(icons[i].label, was_label)) {
+            sel = i;
+            picked[i] = 1;
+            break;
+        }
 }
 
 /* Rubber band, dragged across empty desktop. */
@@ -378,8 +395,49 @@ static uint32_t *row32(XImage *im, int y)
     return (uint32_t *)(im->data + (size_t)y * im->bytes_per_line);
 }
 
+/* What the wallpaper was last built from. Every setting any applet
+ * applies reaches the shell as a scheme broadcast, and each used to
+ * decode, resample and upload the picture again -- the best part of a
+ * second on a three-monitor desktop, with every click in every program
+ * waiting on the window manager meanwhile. Now only a change to one of
+ * these rebuilds it. */
+typedef struct {
+    char path[sizeof w2k_wallpaper];
+    long mtime, mtime_ns, size;
+    int style, resample, glass, sw, sh, nmon;
+    unsigned char desk[3];
+    W2kMonitor mon[8];
+} WallKey;
+static WallKey wall_key;
+static int wall_built;
+
+static void wall_key_now(WallKey *k)
+{
+    memset(k, 0, sizeof *k);
+    snprintf(k->path, sizeof k->path, "%s", w2k_wallpaper);
+    struct stat st;
+    if (k->path[0] && stat(k->path, &st) == 0) {
+        k->mtime = (long)st.st_mtime;
+        k->mtime_ns = st.st_mtim.tv_nsec;
+        k->size = (long)st.st_size;
+    }
+    k->style = w2k_wallpaper_style;
+    k->resample = w2k_resample;
+    k->glass = w2k_theme == THEME_AERO;
+    k->sw = w2k.sw;
+    k->sh = w2k.sh;
+    memcpy(k->desk, w2k_scheme_rgb(C_DESKTOP), 3);
+    k->nmon = w2k_monitor_count();
+    for (int i = 0; i < k->nmon && i < 8; i++) k->mon[i] = *w2k_monitor(i);
+}
+
 static void build_wallpaper(void)
 {
+    WallKey key;
+    wall_key_now(&key);
+    if (wall_built && !memcmp(&key, &wall_key, sizeof key)) return;
+    wall_key = key;
+    wall_built = 1;
     if (wall) { w2k_free_pixmap(wall); wall = 0; }
     /* Aero's glass is the wallpaper blurred: the same picture goes to
      * lib/aero.c as it is built, monitor by monitor. Without a picture
@@ -389,8 +447,28 @@ static void build_wallpaper(void)
     if (glass) w2k_glass_source_begin(w2k.sw, w2k.sh, dc[0], dc[1], dc[2]);
     else       w2k_glass_source_free();
     if (!w2k_wallpaper[0]) { if (glass) w2k_glass_source_end(); return; }
+    /* A photograph bigger than every monitor it is scaled down to is
+     * decoded smaller in the first place (libjpeg, by 2, 4 or 8), as long
+     * as it still covers what each monitor shows of it: a camera's 24
+     * megapixels were decoded whole for a 1080p screen. Centred and tiled
+     * pictures are shown at their own size and decoded whole. */
+    int st0 = w2k_wallpaper_style, want_w = 0, want_h = 0, dw0, dh0;
+    if (st0 == 5) { want_w = w2k.sw; want_h = w2k.sh; }
+    else if (st0 == 2 || ((st0 == 3 || st0 == 4) && w2k_image_dims(w2k_wallpaper, &dw0, &dh0)))
+        for (int k = 0; k < w2k_monitor_count(); k++) {
+            const W2kMonitor *m = w2k_monitor(k);
+            int nw = m->w, nh = m->h;
+            if (st0 != 2) {
+                double fw = (double)m->w / dw0, fh = (double)m->h / dh0;
+                double f = st0 == 3 ? (fw < fh ? fw : fh) : (fw > fh ? fw : fh);
+                nw = (int)(dw0 * f) + 1;
+                nh = (int)(dh0 * f) + 1;
+            }
+            if (nw > want_w) want_w = nw;
+            if (nh > want_h) want_h = nh;
+        }
     int iw, ih;
-    unsigned char *rgba = w2k_image_load(w2k_wallpaper, &iw, &ih);   /* BMP, PNG or JPEG */
+    unsigned char *rgba = w2k_image_load_scaled(w2k_wallpaper, want_w, want_h, &iw, &ih);
     if (!rgba || iw <= 0 || ih <= 0) { free(rgba); if (glass) w2k_glass_source_end(); return; }
     /* Span: the picture over every monitor at once, resampled once. */
     unsigned char *span = NULL;
@@ -518,6 +596,10 @@ void desktop_reload(void)
     desktop_paint();
 }
 
+/* The desktop as last painted, over the primary monitor's work area. */
+static Pixmap desk_pm;
+static int desk_pm_x, desk_pm_y, desk_pm_w, desk_pm_h;
+
 void desktop_paint(void)
 {
     if (!dw) return;
@@ -531,14 +613,15 @@ void desktop_paint(void)
      * megabytes; allocating and freeing that on every selection change --
      * and on every motion event while a selection rectangle is dragged --
      * was the most expensive thing the desktop did. */
-    static Pixmap pm;
-    static int pm_w, pm_h;
-    if (pm && (pm_w != w || pm_h != h)) { w2k_free_pixmap(pm); pm = 0; }
+    Pixmap pm = desk_pm;
+    if (pm && (desk_pm_w != w || desk_pm_h != h)) { w2k_free_pixmap(pm); pm = desk_pm = 0; }
     if (!pm) {
-        pm = XCreatePixmap(w2k.dpy, dw, w, h, w2k.depth);
-        pm_w = w;
-        pm_h = h;
+        pm = desk_pm = XCreatePixmap(w2k.dpy, dw, w, h, w2k.depth);
+        desk_pm_w = w;
+        desk_pm_h = h;
     }
+    desk_pm_x = wx;
+    desk_pm_y = wy;
     if (wall) XCopyArea(w2k.dpy, wall, pm, w2k.gc, wx, wy, w, h, 0, 0);
     else {
         XSetForeground(w2k.dpy, w2k.gc, w2k.col[C_DESKTOP]);
@@ -755,14 +838,55 @@ static void desktop_open(int i)
 
 static long next_bin_poll;
 
+/* Better still, the bin's folder is watched (inotify): the icon changes
+ * at once, and the shell no longer wakes every two seconds to look,
+ * 43,000 times a day. Until the folder exists -- nothing binned yet --
+ * or when a watch cannot be had, the look every two seconds stays. */
+static int bin_ifd = -1, bin_wd = -1, bin_force;
+
+static void bin_watch(void)
+{
+    if (bin_ifd < 0) bin_ifd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (bin_ifd < 0 || bin_wd >= 0) return;
+    bin_wd = inotify_add_watch(bin_ifd, w2k_trash_files_dir(),
+                               IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO |
+                               IN_DELETE_SELF | IN_MOVE_SELF);
+}
+
+int desktop_bin_fd(void)
+{
+    bin_watch();
+    return bin_wd >= 0 ? bin_ifd : -1;
+}
+
+void desktop_bin_event(void)
+{
+    union { struct inotify_event ev; char b[4096]; } u;
+    ssize_t n;
+    while ((n = read(bin_ifd, u.b, sizeof u.b)) > 0)
+        for (char *p = u.b; p + (ssize_t)sizeof(struct inotify_event) <= u.b + n; ) {
+            struct inotify_event *ev = (struct inotify_event *)(void *)p;
+            if (ev->mask & IN_IGNORED) bin_wd = -1;           /* the folder went */
+            else if ((ev->mask & IN_MOVE_SELF) && bin_wd >= 0) {
+                inotify_rm_watch(bin_ifd, bin_wd);             /* watching a stranger now */
+                bin_wd = -1;
+            }
+            p += sizeof *ev + ev->len;
+        }
+    bin_force = 1;
+    desktop_bin_tick();
+}
+
 void desktop_bin_tick(void)
 {
     static int last = -1;
     static time_t last_mtime;
 
     long now = w2k_now_ms();
-    if (now < next_bin_poll) return;
+    if (!bin_force && (bin_wd >= 0 || now < next_bin_poll)) return;
+    bin_force = 0;
     next_bin_poll = now + BIN_POLL_MS;
+    if (bin_wd < 0) bin_watch();          /* the folder may be there now */
     /* Counting means a readdir; the directory's mtime says whether one is
      * worth doing, and four times a second that difference matters. */
     struct stat st;
@@ -799,6 +923,7 @@ static void empty_recycle_bin(void)
     if (w2k_msgbox(NULL, title, msg, MB_YESNO | MB_ICONWARNING) != ID_YES)
         return;
     w2k_trash_empty();
+    bin_force = 1;
     desktop_bin_tick();
 }
 
@@ -937,6 +1062,10 @@ static void new_shortcut(void)
 static void delete_icon(int i)
 {
     if (i < 0 || i >= nicons || icons[i].system || !icons[i].path[0]) return;
+    /* Its path before the question: the list can be read again while the
+     * box is up, and icons[i] be another file by the time it is answered. */
+    char path[1024];
+    snprintf(path, sizeof path, "%s", icons[i].path);
     char msg[1200];
     snprintf(msg, sizeof msg,
              "Are you sure you want to send '%s' to the Recycle Bin?",
@@ -944,7 +1073,7 @@ static void delete_icon(int i)
     if (w2k_msgbox(NULL, "Confirm Delete", msg,
                    MB_YESNO | MB_ICONQUESTION) != ID_YES)
         return;
-    if (w2k_trash_move(icons[i].path) != 0)
+    if (w2k_trash_move(path) != 0)
         w2k_msgbox(NULL, "Delete", "That item could not be deleted.",
                    MB_OK | MB_ICONERROR);
     refresh_now();
@@ -953,8 +1082,10 @@ static void delete_icon(int i)
 static void rename_icon(int i)
 {
     if (i < 0 || i >= nicons || icons[i].system || !icons[i].path[0]) return;
-    const char *base = strrchr(icons[i].path, '/');
-    base = base ? base + 1 : icons[i].path;
+    char from[1024];
+    snprintf(from, sizeof from, "%s", icons[i].path);      /* as delete_icon() */
+    const char *base = strrchr(from, '/');
+    base = base ? base + 1 : from;
     char name[256];
     snprintf(name, sizeof name, "%.255s", base);
     if (!w2k_prompt(NULL, "Rename", "&New name:", name, name, sizeof name,
@@ -964,9 +1095,13 @@ static void rename_icon(int i)
     char dir[1024], to[1400];
     desktop_dir(dir, sizeof dir);
     snprintf(to, sizeof to, "%s/%s", dir, name);
-    if (rename(icons[i].path, to) != 0)
-        w2k_msgbox(NULL, "Rename", "That item could not be renamed.",
-                   MB_OK | MB_ICONERROR);
+    /* Never over another file of that name: rename() replaced it without
+     * a word. */
+    errno = 0;
+    if (strcmp(from, to) && (strchr(name, '/') || w2k_fs_rename_noreplace(from, to) != 0))
+        w2k_msgbox(NULL, "Rename", errno == EEXIST
+                   ? "There is already an item with that name on the desktop."
+                   : "That item could not be renamed.", MB_OK | MB_ICONERROR);
     refresh_now();
 }
 
@@ -1063,10 +1198,10 @@ static void context_menu(int x, int y, int over)
     w2k_menu_free(m);
 
     switch (id) {
-    case DM_REFRESH:   desktop_reload(); break;
+    case DM_REFRESH:   refresh_now(); break;   /* ~/Desktop read again, as F5 does */
     case DM_PROPS:
         if (over >= 0 && !icons[over].system && icons[over].path[0]) {
-            if (w2k_file_properties(NULL, icons[over].path)) desktop_reload();
+            if (w2k_file_properties(NULL, icons[over].path)) refresh_now();
         } else if (over >= 0 && icons[over].icon == ICO_MYCOMPUTER) {
             wm_spawn("l2kcontrol system");
         } else {
@@ -1106,7 +1241,7 @@ static void desktop_hover_clear(void)
 int desktop_next_tick_ms(void)
 {
     long now = w2k_now_ms();
-    int wait = (int)(next_bin_poll > now ? next_bin_poll - now : 0);
+    int wait = bin_wd >= 0 ? 60000 : (int)(next_bin_poll > now ? next_bin_poll - now : 0);
     if (w2k_folder_tooltips && hover_icon >= 0 && hover_since && !tip_up) {
         int left = 500 - (int)(now - hover_since);
         if (left < 0) left = 0;
@@ -1167,7 +1302,25 @@ int desktop_event(XEvent *e)
     if (w2k_dnd_event(e)) return 1;
 
     if (e->type == Expose && e->xexpose.window == dw) {
-        if (e->xexpose.count == 0) desktop_paint();
+        /* The server has put the wallpaper back already (it is the
+         * window's background); what the icons add is in the back buffer,
+         * which every change repaints. Copy just the exposed piece of it --
+         * a window dragged over the desktop exposes a strip at a time, and
+         * each strip used to redraw every icon on the monitor. */
+        int wx, wy, ww, wh;
+        wm_workarea_of(w2k_monitor_primary(), &wx, &wy, &ww, &wh);
+        if (!desk_pm || desk_pm_x != wx || desk_pm_y != wy || desk_pm_w != ww || desk_pm_h != wh) {
+            if (e->xexpose.count == 0) desktop_paint();
+            return 1;
+        }
+        int x0 = e->xexpose.x > wx ? e->xexpose.x : wx;
+        int y0 = e->xexpose.y > wy ? e->xexpose.y : wy;
+        int x1 = e->xexpose.x + e->xexpose.width, y1 = e->xexpose.y + e->xexpose.height;
+        if (x1 > wx + ww) x1 = wx + ww;
+        if (y1 > wy + wh) y1 = wy + wh;
+        if (x1 > x0 && y1 > y0)
+            XCopyArea(w2k.dpy, desk_pm, dw, w2k.gc, x0 - wx, y0 - wy,
+                      (unsigned)(x1 - x0), (unsigned)(y1 - y0), x0, y0);
         return 1;
     }
     /* Dragging an icon to a new cell. */

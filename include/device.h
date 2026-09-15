@@ -41,7 +41,7 @@ typedef struct {
     char name[W2K_DEV_STR];
     char icon[64];
     W2kDevice *devices;
-    size_t count;
+    size_t count, cap;
 } W2kDeviceCategory;
 
 typedef struct {

@@ -34,18 +34,21 @@
 
 typedef struct {
     char name[32], path[80], fstype[32], label[80], mount[256];
-    char parttype[48], partlabel[80], flags[16];
-    unsigned long long size, start;       /* bytes; sectors */
+    char parttype[48], partlabel[80], flags[16], uuid[64], partuuid[64];
+    unsigned long long size, start;       /* bytes; 512-byte sectors, as lsblk counts */
     unsigned long long avail;             /* bytes, or ~0ull when unknown */
     int number;                           /* the partition's number */
     int extended;                         /* an MBR extended container */
     int logical;                          /* lives inside one */
-    int busy;                             /* holds LVM/LUKS, or is the root */
+    int busy;                             /* the running system uses it */
+    int protect;                          /* a boot partition on a fixed disk */
+    char why[200];                        /* what busy or protect is about */
     int active;                           /* the boot flag */
 } Part;
 
 typedef struct {
     char name[32], path[80], model[80], vendor[32], tran[16], pttype[16];
+    char seq[24];                         /* the kernel's number for this disk, or "" */
     unsigned long long size;
     int rm, ro, rom, logsec;
     int index;                            /* Disk 0, 1... and CD-ROM 0, 1... apart */
@@ -162,6 +165,159 @@ static void vol_add(int disk, int part, const char *name, const char *path,
     v->size = size; v->avail = avail;
 }
 
+/* The kernel's sequence number for a disk: new for every disk that
+ * appears, where its name ("sdb") is handed out again. "" without one. */
+static void disk_seq(Disk *d)
+{
+    d->seq[0] = 0;
+    char path[96], b[32] = "";
+    snprintf(path, sizeof path, "/sys/class/block/%s/diskseq", d->name);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    if (fgets(b, sizeof b, f)) {
+        b[strcspn(b, "\r\n")] = 0;
+        if (b[0] && !b[strspn(b, "0123456789")]) snprintf(d->seq, sizeof d->seq, "%s", b);
+    }
+    fclose(f);
+}
+
+/* \040 and the rest, as mountinfo and fstab write odd bytes, in place. */
+static void unoctal(char *s)
+{
+    char *o = s;
+    for (const char *p = s; *p; p++) {
+        if (p[0] == '\\' && p[1] >= '0' && p[1] <= '3' && p[2] >= '0' && p[2] <= '7' &&
+            p[3] >= '0' && p[3] <= '7') {
+            *o++ = (char)((p[1] - '0') * 64 + (p[2] - '0') * 8 + (p[3] - '0'));
+            p += 3;
+        } else *o++ = *p;
+    }
+    *o = 0;
+}
+
+static Part *part_by_path(const char *path)
+{
+    char real[PATH_MAX];
+    if (!realpath(path, real)) return NULL;
+    for (int i = 0; i < ndisks; i++)
+        for (int j = 0; j < disks[i].nparts; j++)
+            if (!strcmp(disks[i].part[j].path, real)) return &disks[i].part[j];
+    return NULL;
+}
+
+static void set_busy(Part *p, const char *why)
+{
+    if (p->busy) return;
+    p->busy = 1;
+    snprintf(p->why, sizeof p->why, "%s", why);
+}
+
+/* What the running system has of each partition. "Busy" was a mount at /,
+ * /boot or /usr, read from lsblk's single mount point, so the EFI System
+ * Partition at /boot/efi, the second disk of a btrfs RAID or a ZFS pool
+ * and a root on a btrfs subvolume (lsblk shows its last mount, /home)
+ * could all be deleted or formatted while in use. Now:
+ *   - every mount of it, from mountinfo: one outside /media, /run/media
+ *     and /mnt is the system's;
+ *   - swap in use, and a line in /etc/fstab;
+ *   - held open exclusively with no mount at all (a RAID, btrfs or ZFS
+ *     member), as far as root can tell;
+ *   - and, protected as Windows protects them, the EFI System, Microsoft
+ *     Reserved, BIOS boot and recovery partitions of a fixed disk. */
+static void in_use(void)
+{
+    const char *fake = getenv("W2K_FAKE_LSBLK");
+    if (fake && *fake) return;           /* a picture's disks are not this machine's */
+    char *line = NULL;
+    size_t cap = 0;
+    static int any_mount[MAX_DISKS][MAX_PARTS];
+    memset(any_mount, 0, sizeof any_mount);
+    FILE *f = fopen("/proc/self/mountinfo", "r");
+    while (f && getline(&line, &cap, f) > 0) {
+        /* id parent maj:min root mountpoint options... - type source super */
+        char *sep = strstr(line, " - ");
+        char mp[1024], type[64], src[1024];
+        if (!sep || sscanf(line, "%*s %*s %*s %*s %1023s", mp) != 1 ||
+            sscanf(sep + 3, "%63s %1023s", type, src) != 2 || strncmp(src, "/dev/", 5))
+            continue;
+        unoctal(mp);
+        unoctal(src);
+        Part *p = part_by_path(src);
+        if (!p) continue;
+        int di = -1, pj = -1;
+        for (int i = 0; i < ndisks && di < 0; i++)
+            if (p >= disks[i].part && p < disks[i].part + MAX_PARTS) { di = i; pj = (int)(p - disks[i].part); }
+        if (di >= 0) any_mount[di][pj] = 1;
+        if (!strncmp(mp, "/media/", 7) || !strncmp(mp, "/run/media/", 11) ||
+            !strcmp(mp, "/mnt") || !strncmp(mp, "/mnt/", 5))
+            continue;                    /* the user's: Format and Delete unmount it */
+        char why[200];
+        snprintf(why, sizeof why, "It is mounted at %.150s, as part of the running system.", mp);
+        set_busy(p, why);
+    }
+    if (f) fclose(f);
+    f = fopen("/proc/swaps", "r");
+    while (f && getline(&line, &cap, f) > 0) {
+        char dev[1024];
+        if (line[0] != '/' || sscanf(line, "%1023s", dev) != 1) continue;
+        unoctal(dev);
+        Part *p = part_by_path(dev);
+        if (p) set_busy(p, "It is in use as the page file (swap).");
+    }
+    if (f) fclose(f);
+    f = fopen("/etc/fstab", "r");
+    while (f && getline(&line, &cap, f) > 0) {
+        char spec[1024];
+        if (sscanf(line, "%1023s", spec) != 1 || spec[0] == '#') continue;
+        unoctal(spec);
+        char *v = strchr(spec, '=');
+        if (v) {
+            *v++ = 0;
+            if (*v == '"') { v++; v[strcspn(v, "\"")] = 0; }
+        }
+        for (int i = 0; i < ndisks; i++)
+            for (int j = 0; j < disks[i].nparts; j++) {
+                Part *p = &disks[i].part[j];
+                int hit = v ? (!strcasecmp(spec, "UUID") && p->uuid[0] && !strcasecmp(v, p->uuid)) ||
+                              (!strcasecmp(spec, "PARTUUID") && p->partuuid[0] && !strcasecmp(v, p->partuuid)) ||
+                              (!strcasecmp(spec, "LABEL") && p->label[0] && !strcmp(v, p->label)) ||
+                              (!strcasecmp(spec, "PARTLABEL") && p->partlabel[0] && !strcmp(v, p->partlabel))
+                            : spec[0] == '/' && part_by_path(spec) == p;
+                if (hit) set_busy(p, "It is listed in /etc/fstab, among the file systems the computer mounts when it starts.");
+            }
+    }
+    if (f) fclose(f);
+    free(line);
+    for (int i = 0; i < ndisks; i++)
+        for (int j = 0; j < disks[i].nparts; j++) {
+            Part *p = &disks[i].part[j];
+            /* Mounted nowhere, yet open for itself alone: a member of
+             * something. Only root may ask; a user's O_EXCL open fails
+             * with EACCES, which says nothing. */
+            if (!p->busy && !any_mount[i][j] && !p->extended && geteuid() == 0) {
+                int fd = open(p->path, O_RDONLY | O_EXCL | O_CLOEXEC | O_NONBLOCK);
+                if (fd >= 0) close(fd);
+                else if (errno == EBUSY)
+                    set_busy(p, "The system is using it: it belongs to a RAID array, a btrfs or ZFS pool, "
+                                "or is held open.");
+            }
+            const Disk *d = &disks[i];
+            if (!d->rm && strcmp(d->tran, "usb") && !p->busy) {
+                const char *t = p->parttype;
+                const char *what =
+                    !strcasecmp(t, "c12a7328-f81f-11d2-ba4b-00a0c93ec93b") || !strcasecmp(t, "0xef")
+                        ? "It is an EFI System Partition: the computer starts from it."
+                    : !strcasecmp(t, "e3c9e316-0b5c-4db8-817d-f92df00215ae")
+                        ? "It is a Microsoft Reserved Partition, which Windows needs on this disk."
+                    : !strcasecmp(t, "21686148-6449-6e6f-744e-656564454649")
+                        ? "It is a BIOS boot partition: the computer starts from it."
+                    : !strcasecmp(t, "de94bba4-06d1-4d40-a16a-bfd50179d6ac") || !strcasecmp(t, "0x27")
+                        ? "It is a recovery partition." : NULL;
+                if (what) { p->protect = 1; snprintf(p->why, sizeof p->why, "%s", what); }
+            }
+        }
+}
+
 static void scan(void)
 {
     ndisks = nvols = nchild = 0;
@@ -170,10 +326,14 @@ static void scan(void)
     if (fake && *fake) f = fopen(fake, "r");
     else f = popen("lsblk -b -P -o NAME,PATH,TYPE,SIZE,START,FSTYPE,LABEL,MOUNTPOINT,"
                    "PARTTYPE,PARTLABEL,PARTFLAGS,MODEL,RM,RO,TRAN,FSAVAIL,PTTYPE,PKNAME,"
-                   "LOG-SEC,VENDOR 2>/dev/null", "r");
+                   "LOG-SEC,VENDOR,UUID,PARTUUID 2>/dev/null", "r");
     if (!f) return;
-    char line[2048];
-    while (fgets(line, sizeof line, f)) {
+    /* Lines of any length: a label escaped four times over and a long
+     * mount point overran a fixed buffer, and the partition (busy status
+     * and all) dropped out of the list. */
+    char *line = NULL;
+    size_t cap = 0;
+    while (getline(&line, &cap, f) > 0) {
         char type[16], name[32], path[80], pk[32], fstype[32], mount[256];
         pair(line, "TYPE", type, sizeof type);
         pair(line, "NAME", name, sizeof name);
@@ -199,6 +359,7 @@ static void scan(void)
             pair(line, "RO", v, sizeof v); d->ro = atoi(v);
             pair(line, "LOG-SEC", v, sizeof v); d->logsec = atoi(v) > 0 ? atoi(v) : 512;
             d->rom = !strcmp(type, "rom");
+            disk_seq(d);
             d->size = ull(sz);
             { int k = 0; for (int q = 0; q < ndisks - 1; q++) if (disks[q].rom == d->rom) k++; d->index = k; }
             /* Trailing blanks in MODEL/VENDOR. */
@@ -224,6 +385,8 @@ static void scan(void)
             pair(line, "PARTTYPE", p->parttype, sizeof p->parttype);
             pair(line, "PARTLABEL", p->partlabel, sizeof p->partlabel);
             pair(line, "PARTFLAGS", p->flags, sizeof p->flags);
+            pair(line, "UUID", p->uuid, sizeof p->uuid);
+            pair(line, "PARTUUID", p->partuuid, sizeof p->partuuid);
             char st[32];
             pair(line, "START", st, sizeof st);
             p->start = ull(st);
@@ -233,9 +396,6 @@ static void scan(void)
             p->extended = is_extended_type(p->parttype);
             p->logical = !strcmp(d->pttype, "dos") && p->number >= 5;
             p->active = !strcmp(p->flags, "0x80");
-            if (!strcmp(p->mount, "/") || !strcmp(p->mount, "/boot") ||
-                !strcmp(p->mount, "/usr") || !strcmp(p->mount, "[SWAP]"))
-                p->busy = 1;
         } else {
             /* crypt, lvm, md, ...: a volume with no place in the picture,
              * and whatever it sits on is spoken for. */
@@ -253,13 +413,19 @@ static void scan(void)
                     ull(sz), has_av ? ull(av) : ~0ull, 0);
         }
     }
+    free(line);
     if (fake && *fake) fclose(f); else pclose(f);
 
     /* Partitions holding a mapped device are in use. */
     for (int i = 0; i < ndisks; i++)
         for (int j = 0; j < disks[i].nparts; j++)
             for (int k = 0; k < nchild; k++)
-                if (!strcmp(child_of[k], disks[i].part[j].name)) disks[i].part[j].busy = 1;
+                if (!strcmp(child_of[k], disks[i].part[j].name) && !disks[i].part[j].busy) {
+                    disks[i].part[j].busy = 1;
+                    snprintf(disks[i].part[j].why, sizeof disks[i].part[j].why,
+                             "It holds an encrypted, LVM or RAID volume.");
+                }
+    in_use();
 }
 
 /* ------------------------------------------------------------------ *
@@ -354,7 +520,10 @@ static void build_regions(void)
         if (d->wholefs) { region_add(i, 0, 0, d->size, 0); continue; }
         if (!d->nparts) { region_add(i, -1, 0, d->size, 0); continue; }
         qsort(d->part, (size_t)d->nparts, sizeof *d->part, cmp_start);
-        unsigned long long sec = (unsigned long long)d->logsec;
+        /* lsblk counts START in 512-byte sectors whatever the disk's own:
+         * multiplied by a 4Kn disk's 4096, every partition was drawn eight
+         * times too far along, with phantom free space before it. */
+        unsigned long long sec = 512;
         unsigned long long pos = MIN_GAP;      /* the first mebibyte is the table */
         for (int j = 0; j < d->nparts; j++) {
             Part *p = &d->part[j];
@@ -583,6 +752,47 @@ static int run_root(W2kWin *over, const char *what, const char *script, char *ou
     return j.status;
 }
 
+/* The start of every root script that changes a disk: it must still be
+ * the disk that was on the screen, and the partition the one chosen.
+ * Device names are handed out again as disks come and go -- a stick
+ * pulled and a backup drive plugged in takes its "sdb", and Initialize on
+ * the stick's stale row wiped the backup drive -- but the kernel numbers
+ * each disk that appears afresh (diskseq), and a partition is known by
+ * where it starts. The script ends with status 3 when either changed. */
+static void guard(const Disk *d, const Part *p, char *out, size_t n)
+{
+    size_t o = 0;
+    char path[128], q[300];
+    out[0] = 0;
+    if (d && d->seq[0]) {
+        snprintf(path, sizeof path, "/sys/class/block/%s/diskseq", d->name);
+        w2k_shell_quote(path, q, sizeof q);
+        int k = snprintf(out, n, "[ \"$(cat %s 2>/dev/null)\" = %s ] || "
+                         "{ echo 'The disk has changed since the list was read. Press F5 and try again.'; exit 3; }; ",
+                         q, d->seq);
+        o = k > 0 && (size_t)k < n ? (size_t)k : 0;
+    }
+    if (p && o < n) {
+        snprintf(path, sizeof path, "/sys/class/block/%s/start", p->name);
+        w2k_shell_quote(path, q, sizeof q);
+        snprintf(out + o, n - o, "[ \"$(cat %s 2>/dev/null)\" = %llu ] || "
+                 "{ echo 'The partition has changed since the list was read. Press F5 and try again.'; exit 3; }; ",
+                 q, p->start);
+    }
+}
+
+/* The partition's number as the table on the disk has it now, found by
+ * where it starts, into $N -- not the one in the kernel's name for it,
+ * which lags behind when the kernel cannot re-read a table with a volume
+ * in use: a second Delete of "sdb5" then removed what had been sdb6. */
+static void number_of(const Disk *d, const Part *p, const char *qdisk, char *out, size_t n)
+{
+    unsigned long long lsec = p->start * 512 / (unsigned long long)(d->logsec > 0 ? d->logsec : 512);
+    snprintf(out, n, "N=$(sfdisk -d %s 2>/dev/null | sed -n 's/^[^ ]*[^0-9]\\([0-9][0-9]*\\) *: *start= *%llu,.*/\\1/p' | head -n 1); "
+             "[ -n \"$N\" ] || { echo 'The partition is not where it was in the table. Press F5 and try again.'; exit 3; }; ",
+             qdisk, lsec);
+}
+
 static void report(W2kWin *over, const char *title, int status, const char *out)
 {
     char msg[4600];
@@ -626,6 +836,17 @@ typedef struct {
     int split;                                 /* the top pane's height */
 } App;
 static App app;
+
+/* Say why a volume cannot be changed from here; 1 when it cannot. */
+static int refused(const char *title, const Part *p, const char *verb, int protected_too)
+{
+    if (!p || !(p->busy || (protected_too && p->protect))) return 0;
+    char msg[400];
+    snprintf(msg, sizeof msg, "This volume cannot be %s from here.\n\n%s", verb,
+             p->why[0] ? p->why : "The system is using it.");
+    w2k_msgbox(app.win, title, msg, MB_OK | MB_ICONWARNING);
+    return 1;
+}
 
 static const char *legend_name[] = { "Unallocated", "Primary partition", "Extended partition",
                                      "Free space", "Logical drive" };
@@ -1327,20 +1548,24 @@ static void do_format(const char *dev, const char *volname, const char *cur_labe
     if (w2k_msgbox(app.win, "Format", "Formatting this volume will erase all data on it. Back up any data you "
                    "want to keep before formatting. Do you want to continue?", MB_YESNO | MB_ICONWARNING) != ID_YES)
         return;
-    char cmd[1200], qd[256], script[2800], out[4096], retype[400] = "", own[300];
+    char cmd[1200], qd[256], script[4000], out[4096], retype[900] = "", own[300], chk[800];
     mkfs_cmd(fs, label, quick, dev, 0, cmd, sizeof cmd);
     w2k_shell_quote(dev, qd, sizeof qd);
     chown_cmd(fs, qd, own, sizeof own);
+    guard(d, p, chk, sizeof chk);
     if (d && p && d->pttype[0] && plain_data_type(p->parttype)) {
-        char qdisk[256];
+        /* The table's type for the new file system -- once mkfs has
+         * succeeded, not before it finds the volume in use and refuses;
+         * --no-reread, as another volume on the disk may be in use. */
+        char qdisk[256], num[600];
         w2k_shell_quote(d->path, qdisk, sizeof qdisk);
-        /* --no-reread: the disk may have another volume in use. */
-        snprintf(retype, sizeof retype, "sfdisk -q --no-reread --part-type %s %d %s >/dev/null 2>&1; ",
-                 qdisk, p->number, part_type_for(fs, !strcmp(d->pttype, "dos")));
+        number_of(d, p, qdisk, num, sizeof num);
+        snprintf(retype, sizeof retype, "; %ssfdisk -q --no-reread --part-type %s \"$N\" %s >/dev/null 2>&1",
+                 num, qdisk, part_type_for(fs, !strcmp(d->pttype, "dos")));
     }
-    snprintf(script, sizeof script, "%s%s%s%swipefs -a -q %s >/dev/null 2>&1; %s || exit 1%s",
-             over_mounted ? "umount " : "", over_mounted ? qd : "", over_mounted ? " || exit 1; " : "",
-             retype, qd, cmd, own);
+    snprintf(script, sizeof script, "%s%s%s%swipefs -a -q %s >/dev/null 2>&1; %s || exit 1%s%s",
+             chk, over_mounted ? "umount -A " : "", over_mounted ? qd : "", over_mounted ? " || exit 1; " : "",
+             qd, cmd, retype, own);
     char what[200];
     snprintf(what, sizeof what, "Formatting %s as %s...", volname, fs->name);
     int st = run_root(app.win, what, script, out, sizeof out);
@@ -1451,17 +1676,18 @@ static void do_create(DRegion *rg)
     const char *type = "L";
     if (kind == 1) type = "E";
     else if (fs) type = part_type_for(fs, mbr);
-    char qd[256], script[3200], out[4096];
+    char qd[256], script[4000], out[4096], chk[400];
     w2k_shell_quote(d->path, qd, sizeof qd);
+    guard(d, NULL, chk, sizeof chk);
     /* sfdisk appends the partition -- --no-reread, as another volume on
      * the disk may be in use and sfdisk would refuse the whole disk --
      * and partx tells the kernel. Then the new device is found by its
      * start, which lsblk counts in 512-byte sectors whatever the disk's
      * own, and formatted once udev has made its node. */
     snprintf(script, sizeof script,
-             "printf '%%s\\n' '%llu,%s,%s' | sfdisk --append --no-reread -q %s || exit 1; "
+             "%sprintf '%%s\\n' '%llu,%s,%s' | sfdisk --append --no-reread -q %s || exit 1; "
              "partx -u %s >/dev/null 2>&1 || partprobe %s >/dev/null 2>&1; udevadm settle >/dev/null 2>&1; ",
-             start, size, type, qd, qd, qd);
+             chk, start, size, type, qd, qd, qd);
     if (fmt && fs && kind != 1) {
         char cmd[1200], own[300];
         char find[600];
@@ -1489,26 +1715,32 @@ static void do_delete(DRegion *rg)
 {
     Disk *d = &disks[rg->disk];
     Part *p = region_part(rg);
-    if (!p) return;
-    if (p->busy) {
-        w2k_msgbox(app.win, "Disk Management", "This volume is in use by the system and cannot be deleted "
-                   "from here.", MB_OK | MB_ICONWARNING);
-        return;
-    }
+    if (!p || refused("Delete Volume", p, "deleted", 1)) return;
     if (p->extended)
         for (int j = 0; j < d->nparts; j++)
             if (d->part[j].logical) {
                 w2k_msgbox(app.win, "Disk Management", "Delete the logical drives in the extended partition first.", MB_OK | MB_ICONWARNING);
                 return;
             }
-    if (w2k_msgbox(app.win, "Delete partition",
-                   "All data on this partition will be lost. Do you want to continue?", MB_YESNO | MB_ICONWARNING) != ID_YES)
+    /* The prompt names what goes: after a refresh the selection used to
+     * stay at its place in the list, on whatever partition was there. */
+    char nm[80], ask[400];
+    part_volname(d, rg->disk, p, nm, sizeof nm);
+    snprintf(ask, sizeof ask, "All data on %s (%s) will be lost. Do you want to continue?", nm, p->path);
+    if (w2k_msgbox(app.win, "Delete partition", ask, MB_YESNO | MB_ICONWARNING) != ID_YES)
         return;
-    char qd[256], qp[256], script[1200], out[4096];
+    char qd[256], qp[256], script[2400], out[4096], chk[800], num[600];
     w2k_shell_quote(d->path, qd, sizeof qd);
     w2k_shell_quote(p->path, qp, sizeof qp);
-    snprintf(script, sizeof script, "%s%s%s sfdisk -q --delete %s %d && partprobe %s >/dev/null 2>&1; true",
-             p->mount[0] ? "umount " : "", p->mount[0] ? qp : "", p->mount[0] ? " || exit 1;" : "", qd, p->number, qd);
+    guard(d, p, chk, sizeof chk);
+    number_of(d, p, qd, num, sizeof num);
+    /* Every mount of it, not the last one only (umount -A); the kernel
+     * told with partx, which works on a disk with another volume in use
+     * where re-reading the whole table does not; a failure reported. */
+    snprintf(script, sizeof script, "%s%s%s%s%ssfdisk -q --no-reread --delete %s \"$N\" || exit 1; "
+             "partx -u %s >/dev/null 2>&1 || partprobe %s >/dev/null 2>&1; udevadm settle >/dev/null 2>&1; exit 0",
+             chk, num, p->mount[0] ? "umount -A " : "", p->mount[0] ? qp : "", p->mount[0] ? " || exit 1; " : "",
+             qd, qd, qd);
     int st = run_root(app.win, "Deleting the partition...", script, out, sizeof out);
     if (st != 0) report(app.win, "Delete partition", st, out);
     refresh();
@@ -1520,12 +1752,15 @@ static void do_active(DRegion *rg)
     Disk *d = &disks[rg->disk];
     Part *p = region_part(rg);
     if (!p) return;
-    char qd[256], script[600], out[4096];
+    char qd[256], script[2000], out[4096], chk[800], num[600];
     w2k_shell_quote(d->path, qd, sizeof qd);
+    guard(d, p, chk, sizeof chk);
+    number_of(d, p, qd, num, sizeof num);
     if (!strcmp(d->pttype, "dos"))
-        snprintf(script, sizeof script, "sfdisk -q --activate %s %d", qd, p->number);
+        snprintf(script, sizeof script, "%s%ssfdisk -q --no-reread --activate %s \"$N\"", chk, num, qd);
     else
-        snprintf(script, sizeof script, "sfdisk -q --part-attrs %s %d LegacyBIOSBootable", qd, p->number);
+        snprintf(script, sizeof script, "%s%ssfdisk -q --no-reread --part-attrs %s \"$N\" LegacyBIOSBootable",
+                 chk, num, qd);
     int st = run_root(app.win, "Marking the partition active...", script, out, sizeof out);
     if (st != 0) report(app.win, "Mark Partition as Active", st, out);
     refresh();
@@ -1570,8 +1805,10 @@ static int do_init(Disk *d)
 {
     for (int j = 0; j < d->nparts; j++)
         if (d->part[j].busy) {
-            w2k_msgbox(app.win, "Initialize Disk", "A volume on this disk is in use by the system, "
-                       "so the disk cannot be initialized from here.", MB_OK | MB_ICONWARNING);
+            char msg[400];
+            snprintf(msg, sizeof msg, "A volume on this disk, %s, is in use by the system, so the disk "
+                     "cannot be initialized from here.\n\n%s", d->part[j].path, d->part[j].why);
+            w2k_msgbox(app.win, "Initialize Disk", msg, MB_OK | MB_ICONWARNING);
             return 0;
         }
     Dlg g = { 0 };
@@ -1603,15 +1840,17 @@ static int do_init(Disk *d)
     /* Whatever of the disk is mounted -- a stick the desktop mounted when
      * it went in -- is unmounted first: sfdisk will not write to a disk
      * in use. Its failure is reported, not swallowed. */
-    char qd[256], script[4000], out[4096], q[300];
+    char qd[256], script[4400], out[4096], q[300];
     int o = 0;
     w2k_shell_quote(d->path, qd, sizeof qd);
+    guard(d, NULL, script, 400);
+    o = (int)strlen(script);
     if (d->wholefs && d->mount[0])
-        o += snprintf(script + o, sizeof script - (size_t)o, "umount %s || exit 1; ", qd);
+        o += snprintf(script + o, sizeof script - (size_t)o, "umount -A %s || exit 1; ", qd);
     for (int j = 0; j < d->nparts && o < (int)sizeof script - 400; j++)
         if (d->part[j].mount[0]) {
             w2k_shell_quote(d->part[j].path, q, sizeof q);
-            o += snprintf(script + o, sizeof script - (size_t)o, "umount %s || exit 1; ", q);
+            o += snprintf(script + o, sizeof script - (size_t)o, "umount -A %s || exit 1; ", q);
         }
     snprintf(script + o, sizeof script - (size_t)o,
              "wipefs -a -q %s >/dev/null 2>&1; printf 'label: %s\\n' | sfdisk -q %s || exit 1; "
@@ -1700,15 +1939,30 @@ static void open_in_explorer(const char *mount, int explore)
                    "(Change Drive Letter and Paths).", MB_OK | MB_ICONINFO);
         return;
     }
-    char q[600], cmd[900], qu[128];
+    char q[600], cmd[2400], qu[128], qx[PATH_MAX + 8];
     w2k_shell_quote(mount, q, sizeof q);
     (void)explore;
+    /* Explorer beside this program: pkexec's PATH has no /usr/local/bin,
+     * where it is installed, and the elevated copy opened nothing. */
+    char self[PATH_MAX], exp[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
+    snprintf(exp, sizeof exp, "l2kexplorer");
+    if (n > 0) {
+        self[n] = 0;
+        char *slash = strrchr(self, '/');
+        if (slash) {
+            *slash = 0;
+            snprintf(exp, sizeof exp, "%.4000s/l2kexplorer", self);
+            if (access(exp, X_OK) != 0) snprintf(exp, sizeof exp, "l2kexplorer");
+        }
+    }
+    w2k_shell_quote(exp, qx, sizeof qx);
     /* Explorer is the user's program, not the administrator's. */
     if (elevated_user[0]) {
         w2k_shell_quote(elevated_user, qu, sizeof qu);
-        snprintf(cmd, sizeof cmd, "runuser -u %s -- l2kexplorer %s >/dev/null 2>&1 &", qu, q);
+        snprintf(cmd, sizeof cmd, "runuser -u %s -- %s %s >/dev/null 2>&1 &", qu, qx, q);
     } else
-        snprintf(cmd, sizeof cmd, "l2kexplorer %s >/dev/null 2>&1 &", q);
+        snprintf(cmd, sizeof cmd, "%s %s >/dev/null 2>&1 &", qx, q);
     if (system(cmd) < 0) { /* nothing to say */ }
 }
 
@@ -1779,7 +2033,7 @@ static void command(void *u, int id)
         return;
     case ID_FORMAT:
         if (rg && p) {
-            if (p->busy) { w2k_msgbox(app.win, "Format", "This volume is in use by the system and cannot be formatted from here.", MB_OK | MB_ICONWARNING); return; }
+            if (refused("Format", p, "formatted", 1)) return;
             char nm[80]; part_volname(&disks[rg->disk], rg->disk, p, nm, sizeof nm);
             do_format(p->path, nm, p->label, p->mount[0], &disks[rg->disk], p);
         } else if (rg && rg->part >= 0 && disks[rg->disk].wholefs) {
@@ -1798,9 +2052,10 @@ static void command(void *u, int id)
     case ID_INIT:    if (app.sel_disk >= 0) do_init(&disks[app.sel_disk]); return;
     case ID_EJECT:
         if (app.sel_disk >= 0) {
-            char qd[256], script[400], out[4096];
+            char qd[256], script[800], out[4096], chk[400];
             w2k_shell_quote(disks[app.sel_disk].path, qd, sizeof qd);
-            snprintf(script, sizeof script, "eject %s", qd);
+            guard(&disks[app.sel_disk], NULL, chk, sizeof chk);
+            snprintf(script, sizeof script, "%seject %s", chk, qd);
             int st = run_root(app.win, "Ejecting...", script, out, sizeof out);
             if (st != 0) report(app.win, "Eject", st, out);
             refresh();
@@ -1867,13 +2122,13 @@ static W2kMenu *build_tasks(void)
     w2k_menu_item(m, ID_MOUNT, mounted ? "&Change Drive Letter and Path..." : "&Change Drive Letter and Path...", NULL, ICO_NONE);
     if (!has_fs || (v && v->rom)) w2k_menu_disable(m);
     w2k_menu_item(m, ID_FORMAT, "&Format...", NULL, ICO_NONE);
-    if ((p && (p->extended || p->busy)) || (v && (v->rom || v->disk < 0))) w2k_menu_disable(m);
+    if ((p && (p->extended || p->busy || p->protect)) || (v && (v->rom || v->disk < 0))) w2k_menu_disable(m);
     w2k_menu_sep(m);
     w2k_menu_item(m, ID_EXTEND, "E&xtend Volume...", NULL, ICO_NONE); w2k_menu_disable(m);
     w2k_menu_item(m, ID_SHRINK, "&Shrink Volume...", NULL, ICO_NONE); w2k_menu_disable(m);
     w2k_menu_item(m, ID_MIRROR, "Add &Mirror...", NULL, ICO_NONE); w2k_menu_disable(m);
     w2k_menu_item(m, ID_DELETE, p && p->extended ? "&Delete Partition..." : "&Delete Volume...", NULL, ICO_NONE);
-    if (!p || p->busy || (v && v->rom)) w2k_menu_disable(m);
+    if (!p || p->busy || p->protect || (v && v->rom)) w2k_menu_disable(m);
     w2k_menu_sep(m);
     w2k_menu_item(m, ID_PROPERTIES, "P&roperties", NULL, ICO_NONE);
     if (!v) w2k_menu_disable(m);
@@ -2018,17 +2273,86 @@ static int event(W2kWin *w, XEvent *e)
     return 0;
 }
 
+/* A disk the same as before: the same name and, where the kernel numbers
+ * disks, the same number. */
+static int same_disk(const Disk *d, const char *name, const char *seq)
+{
+    return !strcmp(d->name, name) && !strcmp(d->seq, seq);
+}
+
 static void refresh(void)
 {
+    /* What was selected, by what it is rather than where it was: the
+     * volume by its device, the region by its disk and start, the disk
+     * by its name and number. The indexes stayed put across a rescan, and
+     * Delete acted on whatever had moved into their place. */
+    char vol_path[80] = "", reg_disk[32] = "", reg_seq[24] = "", dsk_name[32] = "", dsk_seq[24] = "";
+    unsigned long long reg_start = 0;
+    int reg_part = 0, list_sel = app.list->sel >= 0 && app.list->sel < app.list->n;
+    if (list_sel && app.list->items[app.list->sel].data)
+        snprintf(vol_path, sizeof vol_path, "%s", ((Vol *)app.list->items[app.list->sel].data)->path);
+    DRegion *r = sel_region();
+    if (r) {
+        snprintf(reg_disk, sizeof reg_disk, "%s", disks[r->disk].name);
+        snprintf(reg_seq, sizeof reg_seq, "%s", disks[r->disk].seq);
+        reg_start = r->start;
+        reg_part = r->part >= 0;
+    }
+    if (app.sel_disk >= 0 && app.sel_disk < ndisks) {
+        snprintf(dsk_name, sizeof dsk_name, "%s", disks[app.sel_disk].name);
+        snprintf(dsk_seq, sizeof dsk_seq, "%s", disks[app.sel_disk].seq);
+    }
     scan();
     build_regions();
     build_vols();
+    app.list->sel = -1;
     fill_volume_list();
     fill_disk_list();
-    if (app.sel_region >= nregions) app.sel_region = -1;
-    if (app.sel_disk >= ndisks) app.sel_disk = -1;
+    app.sel_region = -1;
+    for (int i = 0; reg_disk[0] && i < nregions; i++)
+        if (same_disk(&disks[regions[i].disk], reg_disk, reg_seq) && regions[i].start == reg_start &&
+            (regions[i].part >= 0) == reg_part) { app.sel_region = i; break; }
+    for (int i = 0; vol_path[0] && i < app.list->n; i++) {
+        Vol *v = app.list->items[i].data;
+        if (v && !strcmp(v->path, vol_path)) {
+            app.list->sel = i;
+            app.list->items[i].selected = 1;
+            break;
+        }
+    }
+    int had_disk = dsk_name[0] != 0;
+    app.sel_disk = -1;
+    for (int i = 0; had_disk && i < ndisks; i++)
+        if (same_disk(&disks[i], dsk_name, dsk_seq)) { app.sel_disk = i; break; }
     layout(app.win);
     w2k_win_dirty(app.win);
+}
+
+/* Disks coming and going, partitions made elsewhere, sticks mounted: the
+ * picture follows by itself (it went stale until F5), though never under
+ * an open dialog, which holds on to what it was opened for. */
+static unsigned long text_hash(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    unsigned long h = 5381;
+    int c;
+    while ((c = getc(f)) != EOF) h = h * 33 + (unsigned char)c;
+    fclose(f);
+    return h;
+}
+
+static void watch_tick(void *u)
+{
+    (void)u;
+    static unsigned long parts, mounts;
+    unsigned long p = text_hash("/proc/partitions"), m = text_hash("/proc/self/mountinfo");
+    if (p == parts && m == mounts) return;
+    if (w2k_win_modal_depth() > 0) return;       /* next time, when it has closed */
+    int first = !parts && !mounts;
+    parts = p;
+    mounts = m;
+    if (!first) refresh();
 }
 
 static void on_activate(void *u, int idx)
@@ -2123,6 +2447,10 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(rd, "init") && ndisks) do_init(&disks[0]);
         else if (!strcmp(rd, "props") && nvols) do_properties(&vols[0]);
+    }
+    if (!getenv("W2K_FAKE_LSBLK")) {
+        watch_tick(NULL);                        /* where things stand now */
+        w2k_add_timer(2000, watch_tick, NULL);
     }
     w2k_win_show(app.win);
     w2k_run();

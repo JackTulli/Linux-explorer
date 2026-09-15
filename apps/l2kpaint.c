@@ -50,10 +50,18 @@ typedef struct {
     char name[24];
 } Layer;
 
+/* An undo (or redo) entry: a rectangle of one layer as it was. Taken
+ * whole before an operation and cut down afterwards to what changed, so
+ * a dab of the brush on a big picture does not keep the picture twice. */
 typedef struct {
     unsigned char *rgba;
-    int w, h, layer;
+    int x, y, w, h;              /* the rectangle, in the document */
+    int doc_w, doc_h;            /* the document it belongs to */
+    int layer;
 } Snap;
+
+/* A rectangle of the document, grown pixel by pixel; empty when x1 < x0. */
+typedef struct { int x0, y0, x1, y1; } Box;
 
 typedef struct {
     W2kWin *win;
@@ -78,10 +86,18 @@ typedef struct {
     int panning, pan_mx, pan_my, pan_ox, pan_oy;
 
     unsigned char *stroke_backup;
-    int stroke_x, stroke_y, stroke_w, stroke_h;
+    int stroke_w, stroke_h, stroke_layer;   /* what the backup is a copy of */
+    int stroke_undo;                        /* the press pushed an undo entry */
 
     Snap undo[MAX_UNDO], redo[MAX_UNDO];
     int nundo, nredo;
+
+    /* What changed: since the canvas was last put up (`shown`), since
+     * the shape being dragged was last drawn (`shape`), and since the
+     * operation's undo entry was taken (`op`). `view_all` puts the whole
+     * canvas up again (layers shown or hidden, a new picture...). */
+    Box shown, shape, op;
+    int view_all;
 
     /* Text tool: click places a prompt, then stamps glyphs. */
     int text_x, text_y;
@@ -96,6 +112,31 @@ static Paint pt;
 
 static void update_title(void);
 static void update_status(void);
+static int on_closing(W2kWin *w);
+
+static void box_clear(Box *b) { b->x0 = b->y0 = 1; b->x1 = b->y1 = 0; }
+static inline void box_add(Box *b, int x, int y)
+{
+    if (b->x1 < b->x0) { b->x0 = b->x1 = x; b->y0 = b->y1 = y; return; }
+    if (x < b->x0) b->x0 = x;
+    if (x > b->x1) b->x1 = x;
+    if (y < b->y0) b->y0 = y;
+    if (y > b->y1) b->y1 = y;
+}
+
+/* A pixel of the active layer changed; so did a rectangle. */
+static inline void touch(int x, int y)
+{
+    box_add(&pt.shown, x, y);
+    box_add(&pt.shape, x, y);
+    box_add(&pt.op, x, y);
+}
+static void touch_rect(int x0, int y0, int x1, int y1)
+{
+    if (x1 < x0 || y1 < y0) return;
+    touch(x0, y0);
+    touch(x1, y1);
+}
 
 /* ---- layers --------------------------------------------------------- */
 
@@ -117,6 +158,8 @@ static unsigned char *buf_new(int w, int h, int white)
     return p;
 }
 
+static void stroke_free(void);
+
 static void layers_clear(void)
 {
     for (int i = 0; i < MAX_LAYERS; i++) layer_free(&pt.layer[i]);
@@ -124,18 +167,52 @@ static void layers_clear(void)
     pt.w = pt.h = 0;
 }
 
+/* The document is replaced, or changes size: what pointed into the old
+ * one -- a selection, a drag, the end of the last stroke -- goes too. */
+static void canvas_changed(void)
+{
+    pt.has_sel = 0;
+    pt.drawing = 0;
+    pt.have_last = 0;
+    stroke_free();
+    pt.view_all = 1;
+}
+
+#define PAINT_MAX 8192
+
+/* A new document, one white layer. The old one is only let go once the
+ * new one exists: running out of memory leaves the picture as it was. */
 static int layers_init(int w, int h)
 {
+    if (w < 1 || h < 1 || w > PAINT_MAX || h > PAINT_MAX) return 0;
+    unsigned char *px = buf_new(w, h, 1);
+    if (!px) return 0;
     layers_clear();
-    if (w < 1 || h < 1 || w > 8192 || h > 8192) return 0;
-    pt.layer[0].rgba = buf_new(w, h, 1);
-    if (!pt.layer[0].rgba) return 0;
+    pt.layer[0].rgba = px;
     pt.layer[0].visible = 1;
     snprintf(pt.layer[0].name, sizeof pt.layer[0].name, "Background");
     pt.nlayers = 1;
     pt.active = 0;
     pt.w = w;
     pt.h = h;
+    canvas_changed();
+    return 1;
+}
+
+/* A document made of a loaded picture: the buffer becomes the background
+ * layer (no copy). 0, and the caller still owns it, when it is too big. */
+static int layers_take(unsigned char *rgba, int w, int h)
+{
+    if (!rgba || w < 1 || h < 1 || w > PAINT_MAX || h > PAINT_MAX) return 0;
+    layers_clear();
+    pt.layer[0].rgba = rgba;
+    pt.layer[0].visible = 1;
+    snprintf(pt.layer[0].name, sizeof pt.layer[0].name, "Background");
+    pt.nlayers = 1;
+    pt.active = 0;
+    pt.w = w;
+    pt.h = h;
+    canvas_changed();
     return 1;
 }
 
@@ -152,6 +229,9 @@ static int layer_add(void)
     return 1;
 }
 
+static void history_layer_deleted(int idx);
+static void history_layers_swapped(int a, int b);
+
 static void layer_delete(int idx)
 {
     if (pt.nlayers <= 1 || idx < 0 || idx >= pt.nlayers) return;
@@ -161,6 +241,8 @@ static void layer_delete(int idx)
     memset(&pt.layer[pt.nlayers - 1], 0, sizeof pt.layer[0]);
     pt.nlayers--;
     if (pt.active >= pt.nlayers) pt.active = pt.nlayers - 1;
+    history_layer_deleted(idx);
+    pt.view_all = 1;
 }
 
 static void layer_swap(int a, int b)
@@ -171,6 +253,8 @@ static void layer_swap(int a, int b)
     pt.layer[b] = t;
     if (pt.active == a) pt.active = b;
     else if (pt.active == b) pt.active = a;
+    history_layers_swapped(a, b);
+    pt.view_all = 1;
 }
 
 static unsigned char *layers_flatten(void)
@@ -197,7 +281,7 @@ static unsigned char *layers_flatten(void)
     return out;
 }
 
-/* ---- undo (active layer only) --------------------------------------- */
+/* ---- undo ----------------------------------------------------------- */
 
 static void snap_free(Snap *s)
 {
@@ -212,77 +296,139 @@ static void clear_history(void)
     pt.nundo = pt.nredo = 0;
 }
 
-static void push_undo(void)
+/* Copy a rectangle of a layer into `s`. */
+static int snap_take(Snap *s, int layer, int x, int y, int w, int h)
 {
-    Layer *L = &pt.layer[pt.active];
-    if (!L->rgba || pt.w < 1) return;
-    if (pt.nundo == MAX_UNDO) {
-        snap_free(&pt.undo[0]);
-        memmove(pt.undo, pt.undo + 1, (MAX_UNDO - 1) * sizeof pt.undo[0]);
+    memset(s, 0, sizeof *s);
+    if (layer < 0 || layer >= pt.nlayers || !pt.layer[layer].rgba) return 0;
+    if (w < 1 || h < 1 || x < 0 || y < 0 || x + w > pt.w || y + h > pt.h) return 0;
+    s->rgba = malloc((size_t)w * h * 4);
+    if (!s->rgba) return 0;
+    const unsigned char *src = pt.layer[layer].rgba;
+    for (int r = 0; r < h; r++)
+        memcpy(s->rgba + (size_t)r * w * 4, src + ((size_t)(y + r) * pt.w + x) * 4, (size_t)w * 4);
+    s->x = x; s->y = y; s->w = w; s->h = h;
+    s->doc_w = pt.w; s->doc_h = pt.h;
+    s->layer = layer;
+    return 1;
+}
+
+/* Onto a stack of MAX_UNDO, the oldest falling off the bottom. */
+static void stack_push(Snap *stack, int *n, Snap *s)
+{
+    if (*n == MAX_UNDO) {
+        snap_free(&stack[0]);
+        memmove(stack, stack + 1, (MAX_UNDO - 1) * sizeof *stack);
         /* The shift leaves the vacated slot naming the same buffer as the
          * one below it; clear it, or freeing it frees theirs too. */
-        memset(&pt.undo[MAX_UNDO - 1], 0, sizeof pt.undo[0]);
-        pt.nundo--;
+        memset(&stack[MAX_UNDO - 1], 0, sizeof *stack);
+        (*n)--;
     }
-    Snap *s = &pt.undo[pt.nundo];
-    snap_free(s);
-    s->w = pt.w; s->h = pt.h; s->layer = pt.active;
-    s->rgba = malloc((size_t)pt.w * pt.h * 4);
-    if (!s->rgba) return;
-    memcpy(s->rgba, L->rgba, (size_t)pt.w * pt.h * 4);
-    pt.nundo++;
+    stack[(*n)++] = *s;
+}
+
+/* Before an operation on the active layer: the whole layer, cut down by
+ * undo_crop() when the operation is over. 1 if an entry was taken. */
+static int push_undo(void)
+{
+    box_clear(&pt.op);
+    Snap s;
+    if (!snap_take(&s, pt.active, 0, 0, pt.w, pt.h)) return 0;
+    stack_push(pt.undo, &pt.nundo, &s);
     for (int i = 0; i < pt.nredo; i++) snap_free(&pt.redo[i]);
     pt.nredo = 0;
+    return 1;
 }
 
-static void apply_snap(const Snap *s)
-{
-    if (!s || !s->rgba || s->layer < 0 || s->layer >= pt.nlayers) return;
-    if (s->w != pt.w || s->h != pt.h) return;
-    Layer *L = &pt.layer[s->layer];
-    if (!L->rgba) return;
-    memcpy(L->rgba, s->rgba, (size_t)pt.w * pt.h * 4);
-    pt.active = s->layer;
-}
-
-static void do_undo(void)
+/* The operation is over: keep only the part of the entry it changed --
+ * or no entry at all when it changed nothing. */
+static void undo_crop(void)
 {
     if (pt.nundo <= 0) return;
-    Layer *L = &pt.layer[pt.active];
-    if (pt.nredo < MAX_UNDO && L->rgba) {
-        Snap *s = &pt.redo[pt.nredo];
-        snap_free(s);
-        s->w = pt.w; s->h = pt.h; s->layer = pt.active;
-        s->rgba = malloc((size_t)pt.w * pt.h * 4);
-        if (s->rgba) {
-            memcpy(s->rgba, L->rgba, (size_t)pt.w * pt.h * 4);
-            pt.nredo++;
-        }
-    }
-    apply_snap(&pt.undo[--pt.nundo]);
-    snap_free(&pt.undo[pt.nundo]);
+    Snap *s = &pt.undo[pt.nundo - 1];
+    if (!s->rgba || s->x || s->y || s->w != s->doc_w || s->h != s->doc_h) return;
+    Box b = pt.op;
+    if (b.x1 < b.x0) { snap_free(s); pt.nundo--; return; }
+    if (b.x0 < 0) b.x0 = 0;
+    if (b.y0 < 0) b.y0 = 0;
+    if (b.x1 >= s->w) b.x1 = s->w - 1;
+    if (b.y1 >= s->h) b.y1 = s->h - 1;
+    int cw = b.x1 - b.x0 + 1, ch = b.y1 - b.y0 + 1;
+    if (cw < 1 || ch < 1 || (size_t)cw * ch * 4 > (size_t)s->w * s->h * 3) return;
+    unsigned char *c = malloc((size_t)cw * ch * 4);
+    if (!c) return;
+    for (int r = 0; r < ch; r++)
+        memcpy(c + (size_t)r * cw * 4, s->rgba + ((size_t)(b.y0 + r) * s->w + b.x0) * 4,
+               (size_t)cw * 4);
+    free(s->rgba);
+    s->rgba = c;
+    s->x = b.x0; s->y = b.y0; s->w = cw; s->h = ch;
+}
+
+static int apply_snap(const Snap *s)
+{
+    if (!s || !s->rgba || s->layer < 0 || s->layer >= pt.nlayers) return 0;
+    if (s->doc_w != pt.w || s->doc_h != pt.h) return 0;
+    Layer *L = &pt.layer[s->layer];
+    if (!L->rgba) return 0;
+    for (int r = 0; r < s->h; r++)
+        memcpy(L->rgba + ((size_t)(s->y + r) * pt.w + s->x) * 4, s->rgba + (size_t)r * s->w * 4,
+               (size_t)s->w * 4);
+    pt.active = s->layer;
+    box_add(&pt.shown, s->x, s->y);
+    box_add(&pt.shown, s->x + s->w - 1, s->y + s->h - 1);
+    return 1;
+}
+
+/* Undo puts the entry's rectangle back into the entry's layer -- which
+ * need not be the active one -- and keeps what was there for redo. */
+static void undo_redo(Snap *from, int *nfrom, Snap *to, int *nto)
+{
+    if (*nfrom <= 0) return;
+    Snap *u = &from[*nfrom - 1];
+    Snap back;
+    if (snap_take(&back, u->layer, u->x, u->y, u->w, u->h))
+        stack_push(to, nto, &back);
+    apply_snap(u);
+    snap_free(u);
+    (*nfrom)--;
     pt.dirty = 1;
+    update_title();
+    update_status();
     w2k_win_dirty(pt.win);
 }
 
-static void do_redo(void)
+static void do_undo(void) { undo_redo(pt.undo, &pt.nundo, pt.redo, &pt.nredo); }
+static void do_redo(void) { undo_redo(pt.redo, &pt.nredo, pt.undo, &pt.nundo); }
+
+/* The entries name layers by index: follow the layers when they move,
+ * and let entries for a deleted layer go with it. */
+static void history_layers_swapped(int a, int b)
 {
-    if (pt.nredo <= 0) return;
-    Layer *L = &pt.layer[pt.active];
-    if (pt.nundo < MAX_UNDO && L->rgba) {
-        Snap *s = &pt.undo[pt.nundo];
-        snap_free(s);
-        s->w = pt.w; s->h = pt.h; s->layer = pt.active;
-        s->rgba = malloc((size_t)pt.w * pt.h * 4);
-        if (s->rgba) {
-            memcpy(s->rgba, L->rgba, (size_t)pt.w * pt.h * 4);
-            pt.nundo++;
+    Snap *st[2] = { pt.undo, pt.redo };
+    int n[2] = { pt.nundo, pt.nredo };
+    for (int k = 0; k < 2; k++)
+        for (int i = 0; i < n[k]; i++) {
+            if (st[k][i].layer == a) st[k][i].layer = b;
+            else if (st[k][i].layer == b) st[k][i].layer = a;
         }
+}
+
+static void history_layer_deleted(int idx)
+{
+    Snap *st[2] = { pt.undo, pt.redo };
+    int *n[2] = { &pt.nundo, &pt.nredo };
+    for (int k = 0; k < 2; k++) {
+        int j = 0;
+        for (int i = 0; i < *n[k]; i++) {
+            Snap s = st[k][i];
+            if (s.layer == idx) { free(s.rgba); continue; }
+            if (s.layer > idx) s.layer--;
+            st[k][j++] = s;
+        }
+        for (int i = j; i < *n[k]; i++) memset(&st[k][i], 0, sizeof st[k][i]);
+        *n[k] = j;
     }
-    apply_snap(&pt.redo[--pt.nredo]);
-    snap_free(&pt.redo[pt.nredo]);
-    pt.dirty = 1;
-    w2k_win_dirty(pt.win);
 }
 
 /* ---- pixels --------------------------------------------------------- */
@@ -298,6 +444,7 @@ static inline void put_px_rgba(int x, int y, int r, int g, int b, int a)
     if (a > 255) a = 255;
     Layer *L = &pt.layer[pt.active];
     if (!L->rgba) return;
+    touch(x, y);
     unsigned char *p = L->rgba + ((size_t)y * pt.w + x) * 4;
     unsigned da = p[3], sa = (unsigned)a;
     unsigned oa = sa + (da * (255u - sa) + 127u) / 255u;
@@ -318,6 +465,7 @@ static inline void erase_px(int x, int y)
     if (!in_doc(x, y)) return;
     Layer *L = &pt.layer[pt.active];
     if (!L->rgba) return;
+    touch(x, y);
     unsigned char *p = L->rgba + ((size_t)y * pt.w + x) * 4;
     if (pt.active == 0) {
         p[0] = (unsigned char)pt.bg[0]; p[1] = (unsigned char)pt.bg[1];
@@ -338,24 +486,27 @@ static inline void get_px(int x, int y, int *r, int *g, int *b)
     *r = p[0]; *g = p[1]; *b = p[2];
 }
 
+/* The colour the picture shows at a pixel: the visible layers composited
+ * bottom to top, each over what is below it, as layers_flatten does. */
 static void pick_px(int x, int y, int *r, int *g, int *b, int *a)
 {
     *r = *g = *b = 255; *a = 0;
     if (!in_doc(x, y)) return;
-    for (int li = pt.nlayers - 1; li >= 0; li--) {
+    unsigned cr = 0, cg = 0, cb = 0, ca = 0;
+    for (int li = 0; li < pt.nlayers; li++) {
         if (!pt.layer[li].visible || !pt.layer[li].rgba) continue;
         const unsigned char *p = pt.layer[li].rgba + ((size_t)y * pt.w + x) * 4;
         unsigned sa = p[3];
         if (!sa) continue;
-        if (*a == 0) { *r=p[0]; *g=p[1]; *b=p[2]; *a=sa; }
-        else {
-            unsigned oa = sa + (*a * (255u-sa)+127u)/255u;
-            *r = (p[0]*sa + *r**a*(255u-sa)/255u + oa/2)/oa;
-            *g = (p[1]*sa + *g**a*(255u-sa)/255u + oa/2)/oa;
-            *b = (p[2]*sa + *b**a*(255u-sa)/255u + oa/2)/oa;
-            *a = oa;
-        }
+        unsigned oa = sa + (ca * (255u - sa) + 127u) / 255u;
+        if (!oa) continue;
+        cr = (p[0] * sa + cr * ca * (255u - sa) / 255u + oa / 2) / oa;
+        cg = (p[1] * sa + cg * ca * (255u - sa) / 255u + oa / 2) / oa;
+        cb = (p[2] * sa + cb * ca * (255u - sa) / 255u + oa / 2) / oa;
+        ca = oa;
     }
+    if (!ca) return;
+    *r = (int)cr; *g = (int)cg; *b = (int)cb; *a = (int)ca;
 }
 
 static void stamp(int cx, int cy, int rad, int r, int g, int b, int a, int erase)
@@ -423,27 +574,55 @@ static void draw_ellipse(int x0, int y0, int x1, int y1, int rad,
     }
 }
 
-/* Flood fill with visited bitmask — no stack overflow. */
+/* Flood fill by spans: fill a run of the row, then look for runs of the
+ * old colour in the rows above and below it. The stack holds a seed per
+ * run rather than a pixel, and filled pixels no longer match, so nothing
+ * is visited twice and no bitmap of the picture is needed. */
 static void flood_fill(int sx, int sy, int nr, int ng, int nb, int na)
 {
     if (!in_doc(sx, sy)) return;
-    Layer *L=&pt.layer[pt.active];
-    unsigned char *sp=L->rgba+((size_t)sy*pt.w+sx)*4;
-    int tr=sp[0],tg=sp[1],tb=sp[2],ta=sp[3];
-    if(tr==nr&&tg==ng&&tb==nb&&ta==na)return;
-    size_t npx=(size_t)pt.w*pt.h;
-    unsigned char *seen=calloc((npx+7)/8,1); int *stack=malloc(npx*sizeof *stack);
-    if(!seen||!stack){free(seen);free(stack);return;}
-    int top=0; stack[top++]=sy*pt.w+sx; seen[(size_t)sx>>3]|=(unsigned char)(1<<(sx&7));
-    while(top>0){
-        int i=stack[--top],x=i%pt.w,y=i/pt.w;
-        unsigned char *p=L->rgba+((size_t)y*pt.w+x)*4;
-        if(p[0]!=tr||p[1]!=tg||p[2]!=tb||p[3]!=ta)continue;
-        p[0]=nr;p[1]=ng;p[2]=nb;p[3]=na;
-        static const int ox[4]={-1,1,0,0},oy[4]={0,0,-1,1};
-        for(int k=0;k<4;k++){int nx=x+ox[k],ny=y+oy[k];if(!in_doc(nx,ny))continue;size_t ni=(size_t)ny*pt.w+nx;if(seen[ni>>3]&(1u<<(ni&7)))continue;seen[ni>>3]|=(unsigned char)(1u<<(ni&7));if(top<(int)npx)stack[top++]=(int)ni;}
+    Layer *L = &pt.layer[pt.active];
+    if (!L->rgba) return;
+    const unsigned char *sp = L->rgba + ((size_t)sy * pt.w + sx) * 4;
+    const unsigned char t[4] = { sp[0], sp[1], sp[2], sp[3] };
+    if (t[0] == nr && t[1] == ng && t[2] == nb && t[3] == na) return;
+    #define MATCH(px) ((px)[0] == t[0] && (px)[1] == t[1] && (px)[2] == t[2] && (px)[3] == t[3])
+    size_t cap = 1024, top = 0;
+    int *stack = malloc(cap * 2 * sizeof *stack);
+    if (!stack) return;
+    stack[top * 2] = sx; stack[top * 2 + 1] = sy; top++;
+    while (top > 0) {
+        top--;
+        int x = stack[top * 2], y = stack[top * 2 + 1];
+        unsigned char *row = L->rgba + (size_t)y * pt.w * 4;
+        if (!MATCH(row + (size_t)x * 4)) continue;
+        int lx = x, rx = x;
+        while (lx > 0 && MATCH(row + (size_t)(lx - 1) * 4)) lx--;
+        while (rx < pt.w - 1 && MATCH(row + (size_t)(rx + 1) * 4)) rx++;
+        for (int i = lx; i <= rx; i++) {
+            unsigned char *p = row + (size_t)i * 4;
+            p[0] = (unsigned char)nr; p[1] = (unsigned char)ng;
+            p[2] = (unsigned char)nb; p[3] = (unsigned char)na;
+        }
+        touch_rect(lx, y, rx, y);
+        for (int ny = y - 1; ny <= y + 1; ny += 2) {
+            if (ny < 0 || ny >= pt.h) continue;
+            const unsigned char *nrow = L->rgba + (size_t)ny * pt.w * 4;
+            for (int i = lx; i <= rx; i++) {
+                if (!MATCH(nrow + (size_t)i * 4)) continue;
+                if (top == cap) {
+                    int *more = realloc(stack, cap * 4 * sizeof *stack);
+                    if (!more) { free(stack); return; }    /* filled as far as it got */
+                    stack = more;
+                    cap *= 2;
+                }
+                stack[top * 2] = i; stack[top * 2 + 1] = ny; top++;
+                while (i + 1 <= rx && MATCH(nrow + (size_t)(i + 1) * 4)) i++;  /* one seed a run */
+            }
+        }
     }
-    free(seen);free(stack);
+    #undef MATCH
+    free(stack);
 }
 
 /* Fill a rectangular selection with a solid colour (active layer). */
@@ -454,7 +633,8 @@ static void fill_rect_area(int x0, int y0, int x1, int y1, int r, int g, int b, 
     if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
     if (x1 >= pt.w) x1 = pt.w - 1; if (y1 >= pt.h) y1 = pt.h - 1;
     Layer *L = &pt.layer[pt.active];
-    if (!L->rgba) return;
+    if (!L->rgba || x1 < x0 || y1 < y0) return;
+    touch_rect(x0, y0, x1, y1);
     for (int y = y0; y <= y1; y++)
         for (int x = x0; x <= x1; x++) {
             unsigned char *p = L->rgba + ((size_t)y * pt.w + x) * 4;
@@ -469,6 +649,7 @@ static void clear_selection(void)
     if (!pt.has_sel) return;
     push_undo();
     fill_rect_area(pt.sel_x0, pt.sel_y0, pt.sel_x1, pt.sel_y1, 0, 0, 0, 0);
+    undo_crop();
     pt.dirty = 1;
     update_title();
     w2k_win_dirty(pt.win);
@@ -485,8 +666,14 @@ static void draw_gradient(int x0, int y0, int x1, int y1)
     if (pt.has_sel) {
         rx0 = pt.sel_x0; ry0 = pt.sel_y0; rx1 = pt.sel_x1; ry1 = pt.sel_y1;
     }
+    /* Within the picture, whatever the selection says. */
+    if (rx0 < 0) rx0 = 0;
+    if (ry0 < 0) ry0 = 0;
+    if (rx1 > pt.w - 1) rx1 = pt.w - 1;
+    if (ry1 > pt.h - 1) ry1 = pt.h - 1;
     Layer *L = &pt.layer[pt.active];
-    if (!L->rgba) return;
+    if (!L->rgba || rx1 < rx0 || ry1 < ry0) return;
+    touch_rect(rx0, ry0, rx1, ry1);
     for (int y = ry0; y <= ry1; y++) {
         for (int x = rx0; x <= rx1; x++) {
             float t = ((float)(x - x0) * dx + (float)(y - y0) * dy) / len2;
@@ -592,26 +779,44 @@ static void stroke_free(void)
     pt.stroke_w = pt.stroke_h = 0;
 }
 
+/* Line, rectangle, ellipse and gradient are drawn afresh at every motion
+ * of the drag over a copy of the layer taken when it began; only what the
+ * last frame drew (`shape`) needs putting back. */
 static void stroke_save_full(void)
 {
     stroke_free();
     Layer *L = &pt.layer[pt.active];
     if (!L->rgba) return;
-    pt.stroke_x = 0;
-    pt.stroke_y = 0;
-    pt.stroke_w = pt.w;
-    pt.stroke_h = pt.h;
     size_t n = (size_t)pt.w * pt.h * 4;
     pt.stroke_backup = malloc(n);
-    if (pt.stroke_backup) memcpy(pt.stroke_backup, L->rgba, n);
+    if (!pt.stroke_backup) return;
+    memcpy(pt.stroke_backup, L->rgba, n);
+    pt.stroke_w = pt.w;
+    pt.stroke_h = pt.h;
+    pt.stroke_layer = pt.active;
+    box_clear(&pt.shape);
 }
 
 static void stroke_restore(void)
 {
-    if (!pt.stroke_backup) return;
-    Layer *L = &pt.layer[pt.active];
+    if (!pt.stroke_backup || pt.stroke_w != pt.w || pt.stroke_h != pt.h ||
+        pt.stroke_layer < 0 || pt.stroke_layer >= pt.nlayers) return;
+    Layer *L = &pt.layer[pt.stroke_layer];
     if (!L->rgba) return;
-    memcpy(L->rgba, pt.stroke_backup, (size_t)pt.w * pt.h * 4);
+    Box b = pt.shape;
+    if (b.x0 < 0) b.x0 = 0;
+    if (b.y0 < 0) b.y0 = 0;
+    if (b.x1 >= pt.w) b.x1 = pt.w - 1;
+    if (b.y1 >= pt.h) b.y1 = pt.h - 1;
+    if (b.x1 >= b.x0 && b.y1 >= b.y0) {
+        for (int y = b.y0; y <= b.y1; y++) {
+            size_t o = ((size_t)y * pt.w + b.x0) * 4;
+            memcpy(L->rgba + o, pt.stroke_backup + o, (size_t)(b.x1 - b.x0 + 1) * 4);
+        }
+        box_add(&pt.shown, b.x0, b.y0);
+        box_add(&pt.shown, b.x1, b.y1);
+    }
+    box_clear(&pt.shape);
 }
 
 /* ---- UI helpers ----------------------------------------------------- */
@@ -733,9 +938,12 @@ static void do_open(void)
                    MB_OK | MB_ICONERROR);
         return;
     }
-    layers_init(w, h);
-    memcpy(pt.layer[0].rgba, rgba, (size_t)w * h * 4);
-    free(rgba);
+    if (!layers_take(rgba, w, h)) {
+        free(rgba);
+        w2k_msgbox(pt.win, "Paint", "The picture is too large to edit. Paint "
+                   "opens pictures of up to 8192 by 8192 pixels.", MB_OK | MB_ICONERROR);
+        return;
+    }
     snprintf(pt.path, sizeof pt.path, "%s", path);
     pt.untitled = 0;
     pt.dirty = 0;
@@ -849,7 +1057,7 @@ static void do_properties(void)
         fresh[li]=nbuf;
     }
     for(int li=0;li<pt.nlayers;li++){free(pt.layer[li].rgba);pt.layer[li].rgba=fresh[li];}
-    pt.w=nw;pt.h=nh;clear_history();pt.dirty=1;update_title();update_status();w2k_win_dirty(pt.win);
+    pt.w=nw;pt.h=nh;canvas_changed();clear_history();pt.dirty=1;update_title();update_status();w2k_win_dirty(pt.win);
 }
 
 /* Stretch: width % and height % in one dialog (same pattern as Attributes). */
@@ -980,6 +1188,7 @@ static void do_scale(void)
     }
     pt.w = nw;
     pt.h = nh;
+    canvas_changed();
     clear_history();
     pt.dirty = 1;
     update_title();
@@ -1097,6 +1306,7 @@ static void do_text_at(int dx, int dy)
         if (txt && txt[0]) {
             push_undo();
             draw_text_string(dx, dy, txt, pt.fg[0], pt.fg[1], pt.fg[2]);
+            undo_crop();
             pt.dirty = 1;
             update_title();
             w2k_win_dirty(pt.win);
@@ -1148,6 +1358,87 @@ static void composite_px(int dx, int dy, int *r, int *g, int *b)
     *r=rr; *g=gg; *b=bb;
 }
 
+/* The canvas as last put up, in screen pixels: kept between repaints so a
+ * stroke puts up only the rectangle it changed, where every repaint used
+ * to composite every layer for every pixel of the view and hand the
+ * whole of it to the server again. */
+static struct {
+    Pixmap pm;
+    XImage *im;
+    int pw, ph;                          /* its size */
+    int px0, py0, doc_x0, doc_y0, zoom, sc, dw, dh;   /* the view it shows */
+    unsigned long *row;                  /* one row of composited pixels */
+    int rowcap;
+} cv;
+
+static void canvas_forget(void)
+{
+    if (cv.pm) w2k_free_pixmap(cv.pm);
+    if (cv.im) XDestroyImage(cv.im);            /* frees its pixels too */
+    free(cv.row);
+    memset(&cv, 0, sizeof cv);
+}
+
+static int canvas_alloc(int pw, int ph)
+{
+    canvas_forget();
+    char *pixels = malloc((size_t)pw * ph * 4);
+    if (!pixels) return 0;
+    cv.im = XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap, 0, pixels,
+                         (unsigned)pw, (unsigned)ph, 32, 0);
+    if (!cv.im) { free(pixels); return 0; }
+    cv.pm = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)pw, (unsigned)ph, w2k.depth);
+    cv.pw = pw;
+    cv.ph = ph;
+    return 1;
+}
+
+/* Put the screen rectangle x0..x1, y0..y1 of the view into cv.im. A
+ * document pixel is composited once per row whatever the zoom, and rows
+ * that show the same document row are copied. */
+static void canvas_compose(int doc_x0, int doc_y0, int x0, int y0, int x1, int y1)
+{
+    int sc = w2k_ui_scale;
+    int dxa = doc_x0 + (int)((long)x0 * 100 / sc) / pt.zoom;
+    int dxb = doc_x0 + (int)((long)x1 * 100 / sc) / pt.zoom;
+    if (dxb >= pt.w) dxb = pt.w - 1;
+    if (dxa > dxb) return;
+    if (dxb - dxa + 1 > cv.rowcap) {
+        unsigned long *r = realloc(cv.row, (size_t)(dxb - dxa + 1) * sizeof *r);
+        if (!r) return;
+        cv.row = r;
+        cv.rowcap = dxb - dxa + 1;
+    }
+    static const union { unsigned short s; unsigned char b[2]; } order = { 1 };
+    int direct = cv.im->bits_per_pixel == 32 &&
+                 cv.im->byte_order == (order.b[0] ? LSBFirst : MSBFirst);
+    int prev_dy = -1, prev_y = -1;
+    for (int y = y0; y <= y1; y++) {
+        int dy = doc_y0 + (int)((long)y * 100 / sc) / pt.zoom;
+        if (dy >= pt.h) dy = pt.h - 1;
+        char *line = cv.im->data + (size_t)y * cv.im->bytes_per_line;
+        if (dy == prev_dy && direct) {
+            memcpy(line + (size_t)x0 * 4, cv.im->data + (size_t)prev_y * cv.im->bytes_per_line
+                   + (size_t)x0 * 4, (size_t)(x1 - x0 + 1) * 4);
+            continue;
+        }
+        for (int dx = dxa; dx <= dxb; dx++) {
+            int cr, cg, cb;
+            composite_px(dx, dy, &cr, &cg, &cb);
+            cv.row[dx - dxa] = w2k_rgb(cr, cg, cb);
+        }
+        for (int x = x0; x <= x1; x++) {
+            int dx = doc_x0 + (int)((long)x * 100 / sc) / pt.zoom;
+            if (dx > dxb) dx = dxb;
+            if (dx < dxa) dx = dxa;
+            if (direct) ((unsigned int *)line)[x] = (unsigned int)cv.row[dx - dxa];
+            else XPutPixel(cv.im, x, y, cv.row[dx - dxa]);
+        }
+        prev_dy = dy;
+        prev_y = y;
+    }
+}
+
 static void blit_visible(Drawable d)
 {
     W2kRect r = pt.canvas_r;
@@ -1176,28 +1467,40 @@ static void blit_visible(Drawable d)
     int px0 = w2k_cx(r.x), py0 = w2k_cx(r.y);
     int pw = w2k_cw(r.x, out_w), ph = w2k_cw(r.y, out_h);
     if (pw <= 0 || ph <= 0) return;
-    char *pixels = malloc((size_t)pw * ph * 4);
-    if (!pixels) return;
-    XImage *xi = XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap, 0,
-                              pixels, (unsigned)pw, (unsigned)ph, 32, 0);
-    if (!xi) { free(pixels); return; }
 
     int sc = w2k_ui_scale;
-    for (int y = 0; y < ph; y++) {
-        int ly = (int)((long)y * 100 / sc);
-        int dy = doc_y0 + ly / pt.zoom;
-        if (dy >= pt.h) dy = pt.h - 1;
-        for (int x = 0; x < pw; x++) {
-            int lx = (int)((long)x * 100 / sc);
-            int dx = doc_x0 + lx / pt.zoom;
-            if (dx >= pt.w) dx = pt.w - 1;
-            int cr, cg, cb;
-            composite_px(dx, dy, &cr, &cg, &cb);
-            XPutPixel(xi, x, y, w2k_rgb(cr, cg, cb));
+    int full = pt.view_all || !cv.pm || cv.pw != pw || cv.ph != ph || cv.doc_x0 != doc_x0 ||
+               cv.doc_y0 != doc_y0 || cv.zoom != pt.zoom || cv.sc != sc ||
+               cv.dw != pt.w || cv.dh != pt.h;
+    if ((!cv.pm || cv.pw != pw || cv.ph != ph) && !canvas_alloc(pw, ph)) return;
+    int x0 = 0, y0 = 0, x1 = pw - 1, y1 = ph - 1;
+    if (!full) {
+        /* Only what changed since the last time, in screen pixels -- a
+         * pixel or so wide of it, which composing again costs nothing. */
+        Box b = pt.shown;
+        if (b.x1 < b.x0) x1 = -1;
+        else {
+            long zs = (long)pt.zoom * sc;
+            x0 = (int)((b.x0 - doc_x0) * zs / 100) - 1;
+            x1 = (int)((b.x1 + 1 - doc_x0) * zs / 100) + 1;
+            y0 = (int)((b.y0 - doc_y0) * zs / 100) - 1;
+            y1 = (int)((b.y1 + 1 - doc_y0) * zs / 100) + 1;
+            if (x0 < 0) x0 = 0;
+            if (y0 < 0) y0 = 0;
+            if (x1 > pw - 1) x1 = pw - 1;
+            if (y1 > ph - 1) y1 = ph - 1;
         }
     }
-    XPutImage(w2k.dpy, d, w2k.gc, xi, 0, 0, px0, py0, (unsigned)pw, (unsigned)ph);
-    XDestroyImage(xi);
+    if (x1 >= x0 && y1 >= y0) {
+        canvas_compose(doc_x0, doc_y0, x0, y0, x1, y1);
+        XPutImage(w2k.dpy, cv.pm, w2k.gc, cv.im, x0, y0, x0, y0,
+                  (unsigned)(x1 - x0 + 1), (unsigned)(y1 - y0 + 1));
+    }
+    cv.px0 = px0; cv.py0 = py0; cv.doc_x0 = doc_x0; cv.doc_y0 = doc_y0;
+    cv.zoom = pt.zoom; cv.sc = sc; cv.dw = pt.w; cv.dh = pt.h;
+    pt.view_all = 0;
+    box_clear(&pt.shown);
+    XCopyArea(w2k.dpy, cv.pm, d, w2k.gc, 0, 0, (unsigned)pw, (unsigned)ph, px0, py0);
     w2k_edge(d, r.x - 1, r.y - 1, out_w + 2, out_h + 2, EDGE_SUNKEN_THIN, BF_RECT);
 }
 
@@ -1435,7 +1738,7 @@ static void command(void *user, int id)
     case ID_SAVEAS: do_save(1); break;
     case ID_PROPS: do_properties(); break;
     case ID_SCALE: do_scale(); break;
-    case ID_EXIT: w2k_win_close(pt.win, 0); break;
+    case ID_EXIT: if (on_closing(pt.win)) w2k_win_close(pt.win, 0); break;
     case ID_UNDO: do_undo(); break;
     case ID_REDO: do_redo(); break;
     case ID_ZOOMIN:
@@ -1543,6 +1846,7 @@ static void command(void *user, int id)
         break;
     case ID_LAYER_TOGGLE:
         pt.layer[pt.active].visible = !pt.layer[pt.active].visible;
+        pt.view_all = 1;
         update_status(); w2k_win_dirty(pt.win);
         break;
     }
@@ -1621,11 +1925,34 @@ static W2kMenu *build_help(void *u)
 
 /* ---- events --------------------------------------------------------- */
 
+/* Escape in the middle of a drag: the picture goes back to how it was
+ * when the button went down, and the undo entry taken then goes too. */
+static void cancel_stroke(void)
+{
+    if (!pt.drawing) return;
+    if (pt.tool != T_SELECT) {
+        if (pt.stroke_undo && pt.nundo > 0) {
+            apply_snap(&pt.undo[pt.nundo - 1]);
+            snap_free(&pt.undo[pt.nundo - 1]);
+            pt.nundo--;
+        } else {
+            stroke_restore();
+        }
+    }
+    stroke_free();
+    pt.drawing = 0;
+    pt.stroke_undo = 0;
+    w2k_win_dirty(pt.win);
+}
+
 static int on_event(W2kWin *w, XEvent *e)
 {
     switch (e->type) {
     case ButtonPress: {
         int x = e->xbutton.x, y = e->xbutton.y;
+        /* Another button while one is held changes nothing: a layer or a
+         * tool chosen mid-stroke would have the stroke land elsewhere. */
+        if (pt.drawing || pt.panning) return 1;
         if (w2k_menubar_press(pt.mb, &e->xbutton)) { w2k_win_dirty(w); return 1; }
         if (w2k_toolbar_press(pt.tb, &e->xbutton)) { w2k_win_dirty(w); return 1; }
 
@@ -1635,11 +1962,12 @@ static int on_event(W2kWin *w, XEvent *e)
             pt.have_last && (pt.tool == T_PENCIL || pt.tool == T_BRUSH || pt.tool == T_ERASER) &&
             w2k_rect_hit(&pt.canvas_r, x, y)) {
             int dx, dy; screen_to_doc(x, y, &dx, &dy);
-            push_undo();
+            int pushed = push_undo();
             int erase = (pt.tool == T_ERASER);
             int rad = (pt.tool == T_PENCIL) ? 0 : pt.brush;
             int *c = (e->xbutton.button == Button3) ? pt.bg : pt.fg;
             draw_line(pt.last_x, pt.last_y, dx, dy, rad, c[0], c[1], c[2], c[3], erase);
+            if (pushed) undo_crop();
             pt.last_x = dx; pt.last_y = dy;
             pt.dirty = 1; update_title(); w2k_win_dirty(w);
             return 1;
@@ -1669,6 +1997,9 @@ static int on_event(W2kWin *w, XEvent *e)
             }
             return 1;
         }
+        /* The rest is for the left and right buttons (a tilt of the wheel
+         * is buttons 6 and 7, and used to paint). */
+        if (e->xbutton.button != Button1 && e->xbutton.button != Button3) return 1;
 
         int ti = tool_at(x, y);
         if (ti >= 0) {
@@ -1719,6 +2050,7 @@ static int on_event(W2kWin *w, XEvent *e)
             else if (lh == 5) command(NULL, ID_LAYER_DOWN);
             else if (lh == 6) {
                 pt.layer[lidx].visible = !pt.layer[lidx].visible;
+                pt.view_all = 1;
                 update_status();
             }
             w2k_win_dirty(w);
@@ -1740,13 +2072,14 @@ static int on_event(W2kWin *w, XEvent *e)
             return 1;
         }
         if (pt.tool == T_FILL) {
-            push_undo();
+            int pushed = push_undo();
             int *c = (e->xbutton.button == Button3) ? pt.bg : pt.fg;
             if (pt.has_sel)
                 fill_rect_area(pt.sel_x0, pt.sel_y0, pt.sel_x1, pt.sel_y1,
                                c[0], c[1], c[2], c[3]);
             else
                 flood_fill(dx, dy, c[0], c[1], c[2], c[3]);
+            if (pushed) undo_crop();
             pt.dirty = 1;
             update_title();
             w2k_win_dirty(w);
@@ -1761,7 +2094,7 @@ static int on_event(W2kWin *w, XEvent *e)
             return 1;
         }
 
-        push_undo();
+        pt.stroke_undo = push_undo();
         pt.drawing = 1;
         pt.x0 = pt.x1 = dx;
         pt.y0 = pt.y1 = dy;
@@ -1822,16 +2155,27 @@ static int on_event(W2kWin *w, XEvent *e)
                     pt.sel_x0 = x0; pt.sel_y0 = y0;
                     pt.sel_x1 = x1; pt.sel_y1 = y1;
                 } else pt.has_sel = 0;
-            } else if (pt.tool == T_LINE || pt.tool == T_RECT || pt.tool == T_ELLIPSE || pt.tool == T_GRADIENT)
-                apply_tool_drag(1);
+            } else {
+                if (pt.tool == T_LINE || pt.tool == T_RECT || pt.tool == T_ELLIPSE || pt.tool == T_GRADIENT)
+                    apply_tool_drag(1);
+                if (pt.stroke_undo) undo_crop();
+                pt.stroke_undo = 0;
+            }
             pt.drawing = 0;
             pt.last_x = pt.x1; pt.last_y = pt.y1; pt.have_last = 1;
             w2k_win_dirty(w);
         }
         return 1;
     case KeyPress: {
-        if (w2k_menubar_key(pt.mb, &e->xkey)) { w2k_win_dirty(w); return 1; }
         KeySym ks = XLookupKeysym(&e->xkey, 0);
+        /* While a button is held the keyboard only cancels: a layer, a new
+         * picture or a resize under a stroke would have it restore into
+         * the wrong layer, or past the end of a smaller one. */
+        if (pt.drawing || pt.panning) {
+            if (ks == XK_Escape && pt.drawing) cancel_stroke();
+            return 1;
+        }
+        if (w2k_menubar_key(pt.mb, &e->xkey)) { w2k_win_dirty(w); return 1; }
         /* Single-key tool shortcuts, matching the toolbox order. */
         if (!(e->xkey.state & (ControlMask | Mod1Mask))) {
             switch (ks) {
@@ -1856,16 +2200,18 @@ static int on_event(W2kWin *w, XEvent *e)
             case XK_c: case XK_C: command(NULL, ID_COLOR_FG); return 1;
             case XK_F1: command(NULL, ID_HOTKEYS); return 1;
             case XK_Escape:
-                if (pt.drawing) { pt.drawing = 0; stroke_restore(); stroke_free(); }
-                else if (pt.has_sel) { pt.has_sel = 0; w2k_win_dirty(w); }
+                if (pt.has_sel) { pt.has_sel = 0; w2k_win_dirty(w); }
                 return 1;
             }
         }
         if (e->xkey.state & ControlMask) {
+            /* The shortcuts the Image menu and the help list name. */
             if (e->xkey.state & ShiftMask) {
                 if (ks == XK_n || ks == XK_N) { command(NULL, ID_LAYER_NEW); return 1; }
                 if (ks == XK_s || ks == XK_S) { command(NULL, ID_SAVEAS); return 1; }
                 if (ks == XK_e || ks == XK_E) { command(NULL, ID_SCALE); return 1; }
+                if (ks == XK_d || ks == XK_D) { command(NULL, ID_LAYER_DEL); return 1; }
+                if (ks == XK_h || ks == XK_H) { command(NULL, ID_LAYER_TOGGLE); return 1; }
             }
             switch (ks) {
             case XK_n: case XK_N: command(NULL, ID_NEW); return 1;
@@ -1907,17 +2253,20 @@ static int on_event(W2kWin *w, XEvent *e)
         if (ks == XK_Down)  { pt.pan_y += step; w2k_win_dirty(w); return 1; }
         return 0;
     }
-    case ClientMessage:
-        if ((Atom)e->xclient.data.l[0] == w2k.a_wm_delete) {
-            int c = confirm_discard();
-            if (c == 0) return 1;
-            if (c < 0 && !do_save(0)) return 1;
-            w2k_win_close(w, 0);
-            return 1;
-        }
-        break;
     }
     return 0;
+}
+
+/* The title bar's close button, File > Exit and Ctrl+Q: a changed
+ * picture is offered for saving first. 0 keeps the window open. */
+static int on_closing(W2kWin *w)
+{
+    (void)w;
+    if (pt.drawing) cancel_stroke();
+    int c = confirm_discard();
+    if (c == 0) return 0;
+    if (c < 0 && !do_save(0)) return 0;
+    return 1;
 }
 
 int main(int argc, char **argv)
@@ -1937,10 +2286,7 @@ int main(int argc, char **argv)
     if (argc > 1) {
         int w = 0, h = 0;
         unsigned char *rgba = w2k_image_load(argv[1], &w, &h);
-        if (rgba && w > 0 && h > 0) {
-            layers_init(w, h);
-            memcpy(pt.layer[0].rgba, rgba, (size_t)w * h * 4);
-            free(rgba);
+        if (rgba && w > 0 && h > 0 && layers_take(rgba, w, h)) {
             snprintf(pt.path, sizeof pt.path, "%s", argv[1]);
             pt.untitled = 0;
         } else {
@@ -1952,6 +2298,7 @@ int main(int argc, char **argv)
     pt.win->paint = on_paint;
     pt.win->event = on_event;
     pt.win->resized = layout;
+    pt.win->closing = on_closing;
     pt.win->min_w = 480;
     pt.win->min_h = 360;
 
@@ -1998,5 +2345,6 @@ int main(int argc, char **argv)
     layers_clear();
     stroke_free();
     clear_history();
+    canvas_forget();
     return 0;
 }

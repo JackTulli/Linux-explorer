@@ -192,10 +192,17 @@ static const char *fs_label(const char *fs)
     return fs;
 }
 
-static void drive_info(DriveInfo *d, const char *path, const char *name, char letter)
+static void drive_info(DriveInfo *d, const char *path_in, const char *name_in, char letter)
 {
+    /* Taken before the memset: a caller re-reading a drive passes its own
+     * d->path and d->name, which the memset used to wipe -- after Disk
+     * Cleanup the sheet quietly became "/", and OK then relabelled the
+     * root file system with the stick's name. */
+    char path[sizeof d->path], name[sizeof d->name];
+    snprintf(path, sizeof path, "%s", path_in && *path_in ? path_in : "/");
+    snprintf(name, sizeof name, "%s", name_in ? name_in : "");
     memset(d, 0, sizeof *d);
-    snprintf(d->path, sizeof d->path, "%s", path && *path ? path : "/");
+    snprintf(d->path, sizeof d->path, "%s", path);
     find_mount(d);
     find_label(d);
     d->optical = !strcmp(d->fstype, "iso9660") || !strcmp(d->fstype, "udf") || !strncmp(d->dev, "/dev/sr", 7);
@@ -203,7 +210,7 @@ static void drive_info(DriveInfo *d, const char *path, const char *name, char le
                  !strcmp(d->fstype, "fuse.sshfs") || !strcmp(d->fstype, "9p");
     d->removable = !d->optical && !d->network && is_removable(d->dev);
     d->letter = letter ? letter : !strcmp(d->path, "/") ? 'C' : 0;
-    if (name && *name) snprintf(d->name, sizeof d->name, "%s", name);
+    if (name[0]) snprintf(d->name, sizeof d->name, "%s", name);
     else if (!strcmp(d->path, "/")) snprintf(d->name, sizeof d->name, "Local Disk (C:)");
     else {
         const char *b = strrchr(d->path, '/');
@@ -385,7 +392,39 @@ static void add_browser_caches(CleanItem *c, const char *home, dev_t dev)
     }
 }
 
-/* The user's own files in /var/tmp and /tmp untouched for a week. */
+/* The user's own temporary files that nothing has touched for a week:
+ * each file judged by itself -- read, written and changed a week ago --
+ * and a folder only removed once that has left it empty. A folder's own
+ * time only changes when entries come and go, so judging it by that
+ * removed live ones whole: a tmux server's socket directory, an ssh
+ * agent's, a build that had been running for days. Sockets, pipes and
+ * links are never touched. `dry` only counts. */
+static long long temp_prune(const char *path, time_t cutoff, dev_t dev, int depth, int dry)
+{
+    struct stat st;
+    if (depth > 32 || lstat(path, &st) != 0 || st.st_dev != dev || st.st_uid != getuid())
+        return 0;
+    if (S_ISREG(st.st_mode)) {
+        if (st.st_mtime >= cutoff || st.st_atime >= cutoff || st.st_ctime >= cutoff) return 0;
+        if (!dry && unlink(path) != 0) return 0;
+        return (long long)st.st_size;
+    }
+    if (!S_ISDIR(st.st_mode)) return 0;
+    long long sum = 0;
+    DIR *dp = opendir(path);
+    if (!dp) return 0;
+    struct dirent *de;
+    while ((de = readdir(dp))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        char sub[4096];
+        snprintf(sub, sizeof sub, "%s/%s", path, de->d_name);
+        sum += temp_prune(sub, cutoff, dev, depth + 1, dry);
+    }
+    closedir(dp);
+    if (!dry && depth > 0 && st.st_mtime < cutoff) rmdir(path);   /* only if empty now */
+    return sum;
+}
+
 static void add_old_temp(CleanItem *c, dev_t dev)
 {
     static const char *const dirs[] = { "/var/tmp", "/tmp", NULL };
@@ -399,9 +438,13 @@ static void add_old_temp(CleanItem *c, dev_t dev)
             char p[1200];
             snprintf(p, sizeof p, "%s/%s", dirs[i], de->d_name);
             struct stat st;
-            if (lstat(p, &st) != 0 || st.st_uid != getuid() || st.st_mtime > week) continue;
+            if (lstat(p, &st) != 0 || st.st_uid != getuid() || st.st_dev != dev) continue;
             if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode)) continue;
-            add_path(c, p, dev);
+            long long b = temp_prune(p, week, dev, 1, 1);
+            if (b <= 0) continue;
+            c->bytes += b;
+            snprintf(c->paths[c->npaths++], sizeof c->paths[0], "%s", p);
+            c->avail = 1;
         }
         closedir(dp);
     }
@@ -550,12 +593,33 @@ static int clean_event(W2kWin *w, XEvent *e)
     return 0;
 }
 
+/* "Disk Cleanup is calculating...": up while the caches and the bin are
+ * measured, which can take a while on a cold disk or a full bin -- the
+ * window used to appear only after it all, with nothing meanwhile. */
+static void calc_paint(W2kWin *w, Drawable d)
+{
+    const char *name = w->user;
+    w2k_fill(d, 0, 0, w->w, w->h, C_FACE);
+    w2k_bigicon_draw(d, 14, 14, ICO_DRIVE_HDD);
+    char t[300];
+    snprintf(t, sizeof t, "Disk Cleanup is calculating how much space you will be able "
+             "to free on %s. This may take a few minutes to complete.", name ? name : "the drive");
+    w2k_text_wrapped(d, F_UI, 58, 16, w->w - 72, t, C_TEXT);
+}
+
 static void clean_drive(W2kWin *over, const DriveInfo *d)
 {
     static CleanDlg c;
     memset(&c, 0, sizeof c);
     c.d = *d;
+    W2kWin *calc = w2k_win_new("Disk Cleanup", "w2kdialog", 360, 76, 0);
+    calc->user = (void *)d->name;
+    calc->paint = calc_paint;
+    w2k_win_center(calc, over);
+    if (over) XSetTransientForHint(w2k.dpy, calc->win, over->win);
+    w2k_win_show_now(calc);
     clean_measure(c.it, d->path);
+    w2k_win_destroy(calc);
     for (int i = 0; i < NCLEAN; i++) if (c.it[i].avail) c.rows[c.nrows++] = i;
     int W = 400, H = 400;
     char title[260];
@@ -580,6 +644,15 @@ static void clean_drive(W2kWin *over, const DriveInfo *d)
         CleanItem *it = &c.it[c.rows[i]];
         if (!it->on) continue;
         if (c.rows[i] == CL_BIN) { w2k_trash_empty(); continue; }
+        if (c.rows[i] == CL_TEMP) {
+            /* File by file, by the same rule the count used. */
+            time_t week = time(NULL) - 7 * 24 * 3600;
+            struct stat ds;
+            for (int k = 0; k < it->npaths; k++)
+                if (lstat(it->paths[k], &ds) == 0)
+                    temp_prune(it->paths[k], week, ds.st_dev, 1, 0);
+            continue;
+        }
         for (int k = 0; k < it->npaths; k++) {
             struct stat st;
             if (lstat(it->paths[k], &st) != 0) continue;
@@ -888,7 +961,10 @@ static int set_label(DriveDlg *s, const char *label, char *err, int n)
     }
     lit[o++] = '\'';
     lit[o] = 0;
-    char *const av[] = { "gdbus", "call", "--system", "--dest", "org.freedesktop.UDisks2",
+    /* Time enough for the password prompt: gdbus's own 25 seconds used to
+     * report a failure while the label went on to be changed anyway. */
+    char *const av[] = { "gdbus", "call", "--system", "--timeout", "300",
+                         "--dest", "org.freedesktop.UDisks2",
                          "--object-path", obj, "--method", "org.freedesktop.UDisks2.Filesystem.SetLabel",
                          lit, "{}", NULL };
     int st = run_waiting(s->w, "Changing the label...", av, err, n);
@@ -934,7 +1010,9 @@ static void dp_check(DriveDlg *s)
         const char *tail = len > 1500 ? out + len - 1500 : out;
         snprintf(msg, sizeof msg, "%s\n\n%s", st == 0 ? "The disk check is complete. No errors were found."
                  : "The disk check found problems. Nothing was changed; Disk Management or fsck as the "
-                   "administrator, with the drive unmounted, can repair them.", tail);
+                   "administrator, with the drive unmounted, can repair them. (The drive is in use: "
+                   "a check made while it is being written to can report changes in progress as "
+                   "problems. Check it again unmounted to be sure.)", tail);
     }
     w2k_msgbox(s->w, "Checking Disk", msg, MB_OK | (st == 0 ? MB_ICONINFO : MB_ICONWARNING));
 }

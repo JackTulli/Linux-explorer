@@ -22,6 +22,9 @@ export PATH
 
 LOG="${HOME:-/tmp}/.w2k/session.log"
 mkdir -p "${HOME:-/tmp}/.w2k" 2>/dev/null
+# This session's log and the last one's. Appended to for ever, it had grown
+# to megabytes -- most of it one program's complaint, repeated.
+[ -f "$LOG" ] && mv -f "$LOG" "$LOG.old" 2>/dev/null
 exec >>"$LOG" 2>&1
 echo "=== $(date) : l2k-session starting ==="
 echo "    script : $0 -> $here"
@@ -121,10 +124,16 @@ if [ "$(sed -n 's/^Compositor=//p' "$HOME/.w2k/scheme" 2>/dev/null | head -n 1)"
         # shellcheck disable=SC2086
         xrandr $n_xr >/dev/null 2>&1 || echo "l2k-session: xrandr refused the plain layout; carrying on"
         n=1; while [ -e "/tmp/.X11-unix/X$n" ] && [ "$n" -lt 20 ]; do n=$((n + 1)); done
+        # The nested server holds the whole session -- its keystrokes, its
+        # screen -- so it is never started without a cookie. The cookie goes
+        # to xauth down a pipe: on its command line any user on the machine
+        # could read it out of /proc.
         nauth=
         if command -v xauth >/dev/null 2>&1 && command -v mcookie >/dev/null 2>&1; then
-            xauth add ":$n" . "$(mcookie)" 2>/dev/null && nauth="-auth ${XAUTHORITY:-$HOME/.Xauthority}"
+            nauth=${XAUTHORITY:-$HOME/.Xauthority}
+            mcookie | sed "s/^/add :$n . /" | xauth -q -f "$nauth" source - 2>/dev/null || nauth=
         fi
+        [ -n "$nauth" ] || echo "l2k-session: nested compositor: no xauth or mcookie to lock the nested server with"
         # Xephyr draws its own screen with the GPU (glamor); Xvfb is the
         # fallback, in software. Either way the programs inside render in
         # software: Xephyr offers them neither DRI2 nor DRI3, so their GL is
@@ -136,22 +145,21 @@ if [ "$(sed -n 's/^Compositor=//p' "$HOME/.w2k/scheme" 2>/dev/null | head -n 1)"
         # change. Not when the scaler takes that very window's pixmap
         # (CompositorCapture=pixmap), nor from an Xephyr that lacks it.
         nested_kind=
-        if command -v Xephyr >/dev/null 2>&1; then
+        if [ -n "$nauth" ] && command -v Xephyr >/dev/null 2>&1; then
             skip_present=
             [ "$(sed -n 's/^CompositorCapture=//p' "$HOME/.w2k/scheme" 2>/dev/null | head -n 1)" = pixmap ] || \
                 ! Xephyr -help 2>&1 | grep -q -- -glamor-skip-present || skip_present=-glamor-skip-present
             # shellcheck disable=SC2086
             Xephyr ":$n" -glamor $skip_present -screen "${n_w}x${n_h}x24" -title l2k-nested -no-host-grab \
-                -nolisten tcp -noreset -dpi 96 $nauth >>"$LOG" 2>&1 &
+                -nolisten tcp -noreset -dpi 96 -auth "$nauth" >>"$LOG" 2>&1 &
             NESTED_PID=$!
             i=0; while [ ! -e "/tmp/.X11-unix/X$n" ] && kill -0 "$NESTED_PID" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
             if [ -e "/tmp/.X11-unix/X$n" ]; then nested_kind=xephyr
             else echo "l2k-session: Xephyr with glamor did not come up; trying Xvfb"; kill "$NESTED_PID" 2>/dev/null; NESTED_PID=
             fi
         fi
-        if [ -z "$nested_kind" ] && command -v Xvfb >/dev/null 2>&1; then
-            # shellcheck disable=SC2086
-            Xvfb ":$n" -screen 0 "${n_w}x${n_h}x24" -nolisten tcp -noreset -dpi 96 $nauth >>"$LOG" 2>&1 &
+        if [ -z "$nested_kind" ] && [ -n "$nauth" ] && command -v Xvfb >/dev/null 2>&1; then
+            Xvfb ":$n" -screen 0 "${n_w}x${n_h}x24" -nolisten tcp -noreset -dpi 96 -auth "$nauth" >>"$LOG" 2>&1 &
             NESTED_PID=$!
             i=0; while [ ! -e "/tmp/.X11-unix/X$n" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
             [ -e "/tmp/.X11-unix/X$n" ] && nested_kind=xvfb
@@ -186,7 +194,21 @@ if [ "$(sed -n 's/^Compositor=//p' "$HOME/.w2k/scheme" 2>/dev/null | head -n 1)"
             # shellcheck disable=SC2086
             DISPLAY=$host_display l2kscaler --nested ":$n" --layout "$n_layout" $scaler_args >>"$LOG" 2>&1 &
             SCALER_PID=$!
-            export DISPLAY=":$n" W2K_MONITORS="$n_mon" W2K_UI_SCALE=100
+            # Nothing of the nested screen shows without the scaler: when it
+            # will not start the desktop would run where no one can see it.
+            sleep 1
+            if ! kill -0 "$SCALER_PID" 2>/dev/null; then
+                echo "l2k-session: nested compositor: l2kscaler did not start (see above); running plainly"
+                kill "$NESTED_PID" 2>/dev/null
+                NESTED_PID= SCALER_PID=
+            else
+                # And when it goes later -- the real server gone with it --
+                # the nested one goes too, and the session with it, rather
+                # than run on headless with the logon screen waiting for it.
+                ( while kill -0 "$SCALER_PID" 2>/dev/null; do sleep 2; done
+                  kill "$NESTED_PID" 2>/dev/null ) &
+                export DISPLAY=":$n" W2K_MONITORS="$n_mon" W2K_UI_SCALE=100
+            fi
         fi
     fi
 fi
@@ -358,6 +380,10 @@ if [ -n "$COMP_MONS" ]; then
         [ -n "$mname" ] && xrandr --delmonitor "l2k-$mname" >/dev/null 2>&1
     done
 fi
+# Under the logon screen, which runs as root, a shutdown or restart goes
+# back to it as the exit status: the user's own request can be refused
+# (other sessions open), and the logon screen just came back.
+if [ -n "$L2KDM" ] && { [ "$rc" = 10 ] || [ "$rc" = 11 ]; }; then exit "$rc"; fi
 case $rc in
     0)  ;;
     10) systemctl poweroff 2>/dev/null || loginctl poweroff 2>/dev/null || poweroff ;;

@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -36,18 +37,57 @@ const char *w2k_trash_files_dir(void)
     return dir;
 }
 
-/* mkdir -p: create `path` and every directory above it. */
+/* mkdir -p: create `path` and every directory above it. The bin's own
+ * folders are the owner's alone (the spec asks for it): what is in them
+ * was deleted, and other users have no business listing its names. */
 static void make_path(const char *path)
 {
     char buf[1200];
     snprintf(buf, sizeof buf, "%s", path);
+    size_t tl = strlen(w2k_trash_dir());
     for (char *p = buf + 1; *p; p++) {
         if (*p != '/') continue;
         *p = 0;
-        mkdir(buf, 0755);
+        mkdir(buf, (size_t)(p - buf) >= tl ? 0700 : 0755);
         *p = '/';
     }
-    mkdir(buf, 0755);
+    mkdir(buf, 0700);
+}
+
+/* Path= is percent-encoded, as the spec has it: bytes outside a safe set
+ * as %XX. Written raw, a file name with a newline in it could add a Path=
+ * line of its own and choose where Restore puts the file; and items that
+ * gio or trash-cli put in the bin came back as "My%20File.txt". */
+static void path_encode(const char *in, char *out, size_t n)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *)in; *p && o + 4 < n; p++) {
+        if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') ||
+            strchr("/-._~!$&'()*+,;=:@", *p))
+            out[o++] = (char)*p;
+        else { out[o++] = '%'; out[o++] = hex[*p >> 4]; out[o++] = hex[*p & 15]; }
+    }
+    out[o] = 0;
+}
+
+static int hexval(int c)
+{
+    return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+           c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
+
+static void path_decode(char *s)
+{
+    char *o = s;
+    for (char *p = s; *p; p++) {
+        int a, b;
+        if (*p == '%' && (a = hexval(p[1])) >= 0 && (b = hexval(p[2])) >= 0) {
+            *o++ = (char)(a * 16 + b);
+            p += 2;
+        } else *o++ = *p;
+    }
+    *o = 0;
 }
 
 int w2k_trash_count(void)
@@ -120,35 +160,56 @@ int w2k_trash_move_named(const char *path, char *name_out, int nout)
     make_path(files);
     make_path(info);
 
+    /* The name is claimed by creating its .trashinfo exclusively, as the
+     * spec asks: two deletions of notes.txt at once cannot both take the
+     * same slot. */
     char target[2400], meta[2400], name[512];
-    snprintf(name, sizeof name, "%.500s", base);
-    snprintf(target, sizeof target, "%s/%s", files, name);
-    for (int k = 2; k < 1000 && lstat(target, &st) == 0; k++) {
-        snprintf(name, sizeof name, "%.480s.%d", base, k);
+    int mfd = -1;
+    for (int k = 1; k < 1000 && mfd < 0; k++) {
+        if (k == 1) snprintf(name, sizeof name, "%.500s", base);
+        else        snprintf(name, sizeof name, "%.480s.%d", base, k);
         snprintf(target, sizeof target, "%s/%s", files, name);
+        snprintf(meta, sizeof meta, "%s/%s.trashinfo", info, name);
+        if (lstat(target, &st) == 0) continue;
+        mfd = open(meta, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (mfd < 0 && errno != EEXIST) return -1;
     }
-    snprintf(meta, sizeof meta, "%s/%s.trashinfo", info, name);
+    if (mfd < 0) return -1;
 
     /* An absolute original path, so Restore knows where to put it back. */
-    char abs[2048];
+    char abs[2048], enc[6200];
     if (path[0] == '/') snprintf(abs, sizeof abs, "%s", path);
     else {
         char cwd[1024];
         if (!getcwd(cwd, sizeof cwd)) cwd[0] = 0;
         snprintf(abs, sizeof abs, "%s/%s", cwd, path);
     }
+    path_encode(abs, enc, sizeof enc);
+    {
+        time_t now = time(NULL);
+        struct tm tm;
+        char when[32] = "";
+        if (localtime_r(&now, &tm))
+            strftime(when, sizeof when, "%Y-%m-%dT%H:%M:%S", &tm);
+        char buf[6400];
+        int len = snprintf(buf, sizeof buf, "[Trash Info]\nPath=%s\nDeletionDate=%s\n", enc, when);
+        int wrote = len > 0 && write(mfd, buf, (size_t)len) == len;
+        if (close(mfd) != 0 || !wrote) { unlink(meta); return -1; }
+    }
+    /* From here on a failure takes the claim back. */
+    #define FAIL() do { int e_ = errno; unlink(meta); errno = e_; return -1; } while (0)
 
     if (rename(path, target) != 0) {
         /* rename() cannot cross a filesystem boundary, and the bin lives on
          * the home one. For a file, copy it over and unlink the original;
          * a directory from another filesystem is refused rather than
          * half-copied. */
-        if (errno != EXDEV || !S_ISREG(st.st_mode)) return -1;
+        if (errno != EXDEV || !S_ISREG(st.st_mode)) FAIL();
 
         FILE *in = fopen(path, "rb");
-        if (!in) return -1;
+        if (!in) FAIL();
         FILE *out = fopen(target, "wb");
-        if (!out) { fclose(in); return -1; }
+        if (!out) { fclose(in); FAIL(); }
         char buf[65536];
         size_t got;
         int ok = 1;
@@ -157,20 +218,10 @@ int w2k_trash_move_named(const char *path, char *name_out, int nout)
         if (ferror(in)) ok = 0;
         fclose(in);
         if (fclose(out) != 0) ok = 0;
-        if (!ok) { unlink(target); return -1; }
-        if (unlink(path) != 0) { unlink(target); return -1; }
+        if (!ok) { unlink(target); FAIL(); }
+        if (unlink(path) != 0) { unlink(target); FAIL(); }
     }
-
-    FILE *f = fopen(meta, "w");
-    if (f) {
-        time_t now = time(NULL);
-        struct tm tm;
-        char when[32] = "";
-        if (localtime_r(&now, &tm))
-            strftime(when, sizeof when, "%Y-%m-%dT%H:%M:%S", &tm);
-        fprintf(f, "[Trash Info]\nPath=%s\nDeletionDate=%s\n", abs, when);
-        fclose(f);
-    }
+    #undef FAIL
     if (name_out && nout > 0) snprintf(name_out, (size_t)nout, "%s", name);
     return 0;
 }
@@ -186,19 +237,30 @@ int w2k_trash_restore(const char *name)
 
     FILE *f = fopen(meta, "r");
     if (f) {
+        /* The first Path= of [Trash Info], decoded. */
+        int in_info = 0;
         while (fgets(line, sizeof line, f)) {
             line[strcspn(line, "\r\n")] = 0;
-            if (!strncmp(line, "Path=", 5))
+            if (line[0] == '[') { in_info = !strcmp(line, "[Trash Info]"); continue; }
+            if (in_info && !strncmp(line, "Path=", 5)) {
                 snprintf(dest, sizeof dest, "%s", line + 5);
+                path_decode(dest);
+                break;
+            }
         }
         fclose(f);
     }
-    if (!dest[0]) return -1;
+    if (!dest[0] || dest[0] != '/') return -1;
     /* Something newer of the same name at the original place stays. */
     struct stat st;
     if (lstat(dest, &st) == 0) { errno = EEXIST; return -1; }
     if (rename(from, dest) != 0) {
         if (errno != EXDEV) return -1;
+        /* Across file systems only a file is copied back; a folder used
+         * to be "copied" as an empty file, its record deleted, and the
+         * restore reported as done. */
+        struct stat sf;
+        if (lstat(from, &sf) != 0 || !S_ISREG(sf.st_mode)) { errno = EXDEV; return -1; }
         FILE *in = fopen(from, "rb");
         if (!in) return -1;
         FILE *out = fopen(dest, "wb");
@@ -208,6 +270,7 @@ int w2k_trash_restore(const char *name)
         int ok = 1;
         while ((got = fread(buf, 1, sizeof buf, in)) > 0)
             if (fwrite(buf, 1, got, out) != got) { ok = 0; break; }
+        if (ferror(in)) ok = 0;
         fclose(in);
         if (fclose(out) != 0) ok = 0;
         if (!ok) { unlink(dest); return -1; }

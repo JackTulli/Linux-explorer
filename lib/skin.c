@@ -9,6 +9,7 @@
  * icon path does too: these are shell bitmaps with hard edges, and X has
  * no alpha compositing without an extension we do not use. */
 #include "w2k.h"
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -51,6 +52,47 @@ W2kSkin *w2k_skin_load_scaled(const char *path, int scale)
     W2kSkin *s = w2k_skin_from_rgba(rgba, w, h);
     free(rgba);
     return s;
+}
+
+/* An image's row as 32-bit words, when it is laid out that way on this
+ * host; NULL means going through XPutPixel. */
+static uint32_t *row32(XImage *im, int y)
+{
+    static const uint32_t one = 1;
+    int host_lsb = *(const unsigned char *)&one == 1;
+    if (im->bits_per_pixel != 32 || (im->byte_order == LSBFirst) != host_lsb) return NULL;
+    return (uint32_t *)(im->data + (size_t)y * im->bytes_per_line);
+}
+
+/* Straight RGBA as a pixmap, laid over the colour `bg` (NULL: the alpha
+ * is ignored). A row of words at a time where the visual allows: the
+ * logon screen built its full-screen wallpaper one XPutPixel call per
+ * pixel, eight million of them at 4K. 0 when it cannot be made. */
+Pixmap w2k_pixmap_from_rgba(const unsigned char *rgba, int w, int h, const int *bg)
+{
+    if (!rgba || w <= 0 || h <= 0 || !w2k.dpy) return 0;
+    char *pixels = malloc((size_t)w * h * 4);
+    XImage *im = pixels ? XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap, 0, pixels,
+                                       (unsigned)w, (unsigned)h, 32, 0) : NULL;
+    if (!im) { free(pixels); return 0; }
+    for (int y = 0; y < h; y++) {
+        uint32_t *d32 = row32(im, y);
+        const unsigned char *p = rgba + (size_t)y * w * 4;
+        for (int x = 0; x < w; x++, p += 4) {
+            int r = p[0], g = p[1], b = p[2], a = p[3];
+            if (bg && a != 255) {
+                r = (r * a + bg[0] * (255 - a)) / 255;
+                g = (g * a + bg[1] * (255 - a)) / 255;
+                b = (b * a + bg[2] * (255 - a)) / 255;
+            }
+            unsigned long px = w2k_rgb(r, g, b);
+            if (d32) d32[x] = (uint32_t)px; else XPutPixel(im, x, y, px);
+        }
+    }
+    Pixmap pm = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)w, (unsigned)h, w2k.depth);
+    XPutImage(w2k.dpy, pm, w2k.gc, im, 0, 0, 0, 0, (unsigned)w, (unsigned)h);
+    XDestroyImage(im);
+    return pm;
 }
 
 /* Server pixmap and 1-bit mask from straight RGBA. */

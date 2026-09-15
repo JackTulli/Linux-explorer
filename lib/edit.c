@@ -50,13 +50,17 @@ static int utf8_put(unsigned cp, char *out)
     out[2] = (char)(0x80 | ((cp >> 6) & 0x3f)); out[3] = (char)(0x80 | (cp & 0x3f)); return 4;
 }
 
-/* The key's text, as UTF-8. Through an input context when the locale
- * allows one (that is where Cyrillic, Greek and dead keys come from);
- * otherwise Latin-1 and Unicode keysyms are converted by hand. */
-static int key_text(XKeyEvent *k, char *buf, int n, KeySym *ks)
+/* The input context: one for the program, pointed at whichever window
+ * the keys are going to. The event loop hands every event to
+ * w2k_ime_filter() before anything else sees it -- without that the
+ * input method never saw a key, and dead keys and compose sequences
+ * produced nothing. */
+static XIM im;
+static XIC ic;
+static Window ic_focus;
+
+static void ic_point_at(Window win)
 {
-    static XIM im;
-    static XIC ic;
     static int tried;
     if (!tried) {
         tried = 1;
@@ -64,11 +68,29 @@ static int key_text(XKeyEvent *k, char *buf, int n, KeySym *ks)
             XSetLocaleModifiers("");
             im = XOpenIM(w2k.dpy, NULL, NULL, NULL);
             if (im) ic = XCreateIC(im, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
-                                   XNClientWindow, k->window, NULL);
+                                   XNClientWindow, win, NULL);
         }
     }
+    if (ic && win != ic_focus) {
+        XSetICValues(ic, XNFocusWindow, win, NULL);
+        ic_focus = win;
+    }
+}
+
+int w2k_ime_filter(XEvent *e)
+{
+    if (e->type == KeyPress || e->type == KeyRelease) ic_point_at(e->xkey.window);
+    if (e->type == DestroyNotify && e->xdestroywindow.window == ic_focus) ic_focus = None;
+    return ic ? XFilterEvent(e, None) : 0;
+}
+
+/* The key's text, as UTF-8. Through an input context when the locale
+ * allows one (that is where Cyrillic, Greek and dead keys come from);
+ * otherwise Latin-1 and Unicode keysyms are converted by hand. */
+static int key_text(XKeyEvent *k, char *buf, int n, KeySym *ks)
+{
+    ic_point_at(k->window);
     if (ic) {
-        XSetICValues(ic, XNFocusWindow, k->window, NULL);
         Status st;
         int r = Xutf8LookupString(ic, k, buf, n - 1, ks, &st);
         if (st == XBufferOverflow || st == XLookupKeySym || st == XLookupNone) r = 0;
@@ -119,6 +141,8 @@ static int ensure_cap(W2kEdit *e, int need)
     return 1;
 }
 
+static void vl_push(W2kEdit *e, int off);
+
 W2kEdit *w2k_edit_new(int multiline)
 {
     W2kEdit *e = w2k_alloc(sizeof *e);
@@ -131,6 +155,9 @@ W2kEdit *w2k_edit_new(int multiline)
     ensure_cap(e, 0);
     e->text[0] = 0;
     e->layout_w = -1;
+    /* One (empty) line from the start: a key or a click that arrives
+     * before the first layout reads the line table. */
+    vl_push(e, 0);
     return e;
 }
 
@@ -145,6 +172,7 @@ void w2k_edit_free(W2kEdit *e)
 {
     if (!e) return;
     w2k_scroll_release(&e->vsb);
+    w2k_scroll_release(&e->hsb);
     free(e->mask);
     free(e->text);
     free(e->vls);
@@ -463,6 +491,10 @@ void w2k_edit_select_all(W2kEdit *e)
 
 void w2k_edit_copy(W2kEdit *e)
 {
+    /* A password box shows stars; what is behind them does not go on the
+     * clipboard, where any program could read it (the logon screen's box
+     * runs as root, before anyone has logged on). Windows refuses too. */
+    if (e->password) return;
     if (!w2k_edit_has_sel(e)) return;
     int a, b;
     sel_range(e, &a, &b);
@@ -475,7 +507,7 @@ void w2k_edit_copy(W2kEdit *e)
 
 void w2k_edit_cut(W2kEdit *e)
 {
-    if (e->readonly) return;
+    if (e->readonly || e->password) return;
     w2k_edit_copy(e);
     w2k_edit_delete_sel(e);
 }
@@ -590,6 +622,12 @@ void w2k_edit_scroll_to_caret(W2kEdit *e)
 void w2k_edit_blink(W2kEdit *e)
 {
     if (!e->focused) { e->caret_on = 0; return; }
+    /* A window without the keyboard shows no caret and is not repainted
+     * twice a second for one; it blinks again when it gets focus back. */
+    if (e->owner && e->owner->focus == 0) {
+        if (e->caret_on) { e->caret_on = 0; w2k_win_dirty(e->owner); }
+        return;
+    }
     e->caret_on = !e->caret_on;
     if (e->owner) w2k_win_dirty(e->owner);
 }

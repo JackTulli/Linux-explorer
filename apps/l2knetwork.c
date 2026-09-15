@@ -16,6 +16,7 @@
 #include "w2kui.h"
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -480,20 +481,107 @@ typedef struct {
     int      nnet;
     int      down;
     int      dirty_conn;
+    int      scanned;             /* the Wireless Networks page has been filled */
 } StatusDlg;
 
 static StatusDlg *sd_active;
 
-static void nets_scan(StatusDlg *sd, int rescan)
+/* ------------------------------------------------------------------ *
+ * What NetworkManager takes its time over -- a scan, a connection (which
+ * can wait a long while for the network) -- runs beside the dialog: the
+ * output is read through the event loop and `done` gets it, the dialog
+ * saying what is going on meanwhile. These used to freeze the window,
+ * with no repaint, until nmcli came back. One at a time.
+ * ------------------------------------------------------------------ */
+typedef struct {
+    StatusDlg *sd;                /* NULL once the dialog has closed */
+    pid_t pid;
+    int   fd, len;
+    char  out[4096];
+    char  what[160];
+    void (*done)(StatusDlg *, int rc, const char *out);
+} Job;
+static Job job = { .pid = -1, .fd = -1 };
+
+static int job_busy(const StatusDlg *sd) { return job.pid > 0 && job.sd == sd; }
+
+static void job_io(void *u)
+{
+    (void)u;
+    for (;;) {
+        char b[512];
+        ssize_t r = read(job.fd, b, sizeof b);
+        if (r > 0) {
+            int take = (int)r;
+            if (take > (int)sizeof job.out - 1 - job.len) take = (int)sizeof job.out - 1 - job.len;
+            if (take > 0) { memcpy(job.out + job.len, b, (size_t)take); job.len += take; job.out[job.len] = 0; }
+            continue;
+        }
+        if (r < 0 && (errno == EAGAIN || errno == EINTR)) return;    /* more to come */
+        break;                                                      /* the end */
+    }
+    w2k_del_fd(job.fd);
+    close(job.fd);
+    int st = 0;
+    int rc = waitpid(job.pid, &st, 0) == job.pid && WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    Job j = job;
+    job.pid = -1;
+    job.fd = -1;
+    if (j.sd && j.done) j.done(j.sd, rc, j.out);
+    if (j.sd) w2k_win_dirty(j.sd->win);
+}
+
+/* Start argv beside the dialog; `input`, when given, is written to its
+ * standard input as one line (a network key, for nmcli --ask: never on
+ * the command line, where every local user could read it in /proc). */
+static int job_start(StatusDlg *sd, char *const argv[], const char *input, const char *what,
+                     void (*done)(StatusDlg *, int, const char *))
+{
+    if (job.pid > 0) return 0;
+    int out[2], in[2] = { -1, -1 };
+    if (pipe(out) < 0) return 0;
+    if (input && pipe(in) < 0) { close(out[0]); close(out[1]); return 0; }
+    pid_t p = fork();
+    if (p < 0) {
+        close(out[0]); close(out[1]);
+        if (input) { close(in[0]); close(in[1]); }
+        return 0;
+    }
+    if (p == 0) {
+        dup2(out[1], 1);
+        dup2(out[1], 2);
+        close(out[0]);
+        close(out[1]);
+        if (input) { dup2(in[0], 0); close(in[0]); close(in[1]); }
+        else { int nul = open("/dev/null", O_RDONLY); if (nul >= 0) { dup2(nul, 0); close(nul); } }
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    close(out[1]);
+    if (input) {
+        close(in[0]);
+        size_t l = strlen(input);
+        ssize_t w = write(in[1], input, l);
+        w = write(in[1], "\n", 1);
+        (void)w;
+        close(in[1]);
+    }
+    memset(&job, 0, sizeof job);
+    job.sd = sd;
+    job.pid = p;
+    job.fd = out[0];
+    job.done = done;
+    snprintf(job.what, sizeof job.what, "%s", what);
+    fcntl(out[0], F_SETFL, O_NONBLOCK);
+    w2k_add_fd(out[0], job_io, NULL);
+    w2k_win_dirty(sd->win);
+    return 1;
+}
+
+static void nets_parse(StatusDlg *sd, char *out)
 {
     sd->nnet = 0;
     w2k_list_clear(sd->nets);
-    if (!nw.have_nmcli) return;
-    char *argv[] = { "nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev",
-                     "wifi", "list", "ifname", sd->c->ifname, "--rescan",
-                     rescan ? "yes" : "auto", NULL };
-    char out[16384];
-    if (run_capture(argv, out, sizeof out) != 0) return;
     char *save = NULL;
     for (char *line = strtok_r(out, "\n", &save); line && sd->nnet < MAX_NETS;
          line = strtok_r(NULL, "\n", &save)) {
@@ -506,6 +594,9 @@ static void nets_scan(StatusDlg *sd, int rescan)
             if (!strcmp(sd->net[i].ssid, f[1])) { dup = i; break; }
         Net *nt = dup >= 0 ? &sd->net[dup] : &sd->net[sd->nnet];
         if (dup >= 0 && nt->signal >= atoi(f[2]) && !(f[0][0] == '*')) continue;
+        /* A new row starts clean: it took over the slot, and the flag, of
+         * the last scan's -- the old network kept saying "(connected)". */
+        if (dup < 0) memset(nt, 0, sizeof *nt);
         snprintf(nt->ssid, sizeof nt->ssid, "%s", f[1]);
         nt->signal = atoi(f[2]);
         snprintf(nt->security, sizeof nt->security, "%s",
@@ -523,6 +614,30 @@ static void nets_scan(StatusDlg *sd, int rescan)
         w2k_list_set(sd->nets, r, 1, buf);
         w2k_list_set(sd->nets, r, 2, sd->net[i].security);
     }
+}
+
+static void nets_done(StatusDlg *sd, int rc, const char *out)
+{
+    char copy[sizeof job.out];
+    snprintf(copy, sizeof copy, "%s", out);
+    if (rc == 0) nets_parse(sd, copy);
+}
+
+/* The networks NetworkManager knows of; `rescan` asks it to look again
+ * first, which takes seconds and runs beside the dialog. Without, it is
+ * the list NetworkManager has ("--rescan no": "auto" had nmcli scan and
+ * wait whenever its list was half a minute old -- nearly every time the
+ * dialog opened, before it could appear). */
+static void nets_scan(StatusDlg *sd, int rescan)
+{
+    if (!nw.have_nmcli) { sd->nnet = 0; w2k_list_clear(sd->nets); return; }
+    char *argv[] = { "nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev",
+                     "wifi", "list", "ifname", sd->c->ifname, "--rescan",
+                     rescan ? "yes" : "no", NULL };
+    if (rescan) { job_start(sd, argv, NULL, "Scanning for wireless networks...", nets_done); return; }
+    char out[16384];
+    if (run_capture(argv, out, sizeof out) != 0) return;
+    nets_parse(sd, out);
 }
 
 static void duration_text(const Conn *c, char *out, int n)
@@ -615,25 +730,30 @@ static void status_paint(W2kWin *w, Drawable d)
         w2k_draw_pushbutton(d, &sd->props, "&Properties",
                             sd->down == 1 ? BS_PRESSED : 0);
         w2k_draw_pushbutton(d, &sd->disable, c->up ? "&Disable" : "&Enable",
-                            sd->down == 2 ? BS_PRESSED : 0);
+                            (job_busy(sd) ? BS_DISABLED : 0) | (sd->down == 2 ? BS_PRESSED : 0));
+        if (job_busy(sd))
+            w2k_text(d, F_UI, sd->disable.x + sd->disable.w + 10, sd->disable.y + 5, job.what, C_TEXT);
     } else {
         w2k_text(d, F_UI, cl.x + 9, cl.y + 10, "Available networks:", C_TEXT);
         w2k_list_draw(d, sd->nets);
         if (!nw.have_nmcli) {
             w2k_text(d, F_UI, cl.x + 9, sd->nets->r.y + sd->nets->r.h + 6,
                      "Scanning needs NetworkManager (nmcli).", C_TEXT);
+        } else if (job_busy(sd)) {
+            w2k_text(d, F_UI, cl.x + 9, sd->nets->r.y + sd->nets->r.h + 6, job.what, C_TEXT);
         } else {
             w2k_text(d, F_UI, cl.x + 9, sd->nets->r.y + sd->nets->r.h + 6,
                      "To connect to a network, select it and click Connect.",
                      C_TEXT);
         }
+        int busy = job_busy(sd) ? BS_DISABLED : 0;
         w2k_draw_pushbutton(d, &sd->refresh_r, "&Refresh",
-                            sd->down == 4 ? BS_PRESSED : 0);
+                            busy | (sd->down == 4 ? BS_PRESSED : 0));
         w2k_draw_pushbutton(d, &sd->connect_r, "&Connect",
-                            (sd->nets->sel < 0 ? BS_DISABLED : 0) |
+                            busy | (sd->nets->sel < 0 ? BS_DISABLED : 0) |
                             (sd->down == 5 ? BS_PRESSED : 0));
         w2k_draw_pushbutton(d, &sd->disconnect_r, "D&isconnect",
-                            (c->ssid[0] ? 0 : BS_DISABLED) |
+                            busy | (c->ssid[0] ? 0 : BS_DISABLED) |
                             (sd->down == 6 ? BS_PRESSED : 0));
     }
     w2k_draw_pushbutton(d, &sd->close_r, "&Close",
@@ -654,25 +774,29 @@ static void report(W2kWin *over, const char *title, const char *out)
     w2k_msgbox(over, title, msg, MB_OK | MB_ICONERROR);
 }
 
+/* After a connect, a disconnect or a toggle: what it came to. */
+static void conn_done(StatusDlg *sd, int rc, const char *out)
+{
+    if (rc != 0) report(sd->win, sd->c->label, out);
+    refresh_stats(sd->c);
+    if (sd->c->wireless) wireless_state(sd->c);
+    sd->c->since = connected_since(sd->c);
+    if (sd->scanned) nets_scan(sd, 0);
+    sd->dirty_conn = 1;
+}
+
 static void do_toggle(StatusDlg *sd)
 {
     Conn *c = sd->c;
-    char out[2048];
-    int rc;
     if (nw.have_nmcli) {
         char *argv[] = { "nmcli", "dev", c->up ? "disconnect" : "connect",
                          c->ifname, NULL };
-        rc = run_capture(argv, out, sizeof out);
+        job_start(sd, argv, NULL, c->up ? "Disabling..." : "Enabling...", conn_done);
     } else {
         char *argv[] = { "pkexec", "ip", "link", "set", "dev", c->ifname,
                          c->up ? "down" : "up", NULL };
-        rc = run_capture(argv, out, sizeof out);
+        job_start(sd, argv, NULL, c->up ? "Disabling..." : "Enabling...", conn_done);
     }
-    if (rc != 0) report(sd->win, c->label, out);
-    refresh_stats(c);
-    if (c->wireless) wireless_state(c);
-    c->since = connected_since(c);
-    sd->dirty_conn = 1;
 }
 
 static void do_connect(StatusDlg *sd)
@@ -681,41 +805,35 @@ static void do_connect(StatusDlg *sd)
     if (i < 0 || i >= sd->nnet) return;
     Net *nt = &sd->net[i];
     char pw[128] = "";
+    /* The key is typed as stars, scrubbed once used, and handed to nmcli
+     * on its standard input (--ask): it used to show in clear in the box
+     * and ride on nmcli's command line, readable to anyone in /proc for as
+     * long as the connection took. */
     if (strcmp(nt->security, "Open") != 0) {
         char label[200];
         snprintf(label, sizeof label, "Network key for %s:", nt->ssid);
-        if (!w2k_prompt(sd->win, "Wireless Network Connection", label, "",
-                        pw, sizeof pw, ICO_NET_WIRELESS))
+        if (!w2k_prompt_secret(sd->win, "Wireless Network Connection", label,
+                               pw, sizeof pw, ICO_NET_WIRELESS))
             return;
     }
-    char out[2048];
-    int rc;
+    char what[200];
+    snprintf(what, sizeof what, "Connecting to %.120s...", nt->ssid);
     if (pw[0]) {
-        char *argv[] = { "nmcli", "dev", "wifi", "connect", nt->ssid, "password",
-                         pw, "ifname", sd->c->ifname, NULL };
-        rc = run_capture(argv, out, sizeof out);
+        char *argv[] = { "nmcli", "--ask", "dev", "wifi", "connect", nt->ssid,
+                         "ifname", sd->c->ifname, NULL };
+        job_start(sd, argv, pw, what, conn_done);
     } else {
         char *argv[] = { "nmcli", "dev", "wifi", "connect", nt->ssid, "ifname",
                          sd->c->ifname, NULL };
-        rc = run_capture(argv, out, sizeof out);
+        job_start(sd, argv, NULL, what, conn_done);
     }
-    if (rc != 0) report(sd->win, nt->ssid, out);
-    refresh_stats(sd->c);
-    wireless_state(sd->c);
-    sd->c->since = connected_since(sd->c);
-    nets_scan(sd, 0);
-    sd->dirty_conn = 1;
+    explicit_bzero(pw, sizeof pw);
 }
 
 static void do_disconnect(StatusDlg *sd)
 {
-    char out[2048];
     char *argv[] = { "nmcli", "dev", "disconnect", sd->c->ifname, NULL };
-    if (run_capture(argv, out, sizeof out) != 0) report(sd->win, sd->c->label, out);
-    refresh_stats(sd->c);
-    wireless_state(sd->c);
-    nets_scan(sd, 0);
-    sd->dirty_conn = 1;
+    job_start(sd, argv, NULL, "Disconnecting...", conn_done);
 }
 
 static void do_properties(StatusDlg *sd)
@@ -735,7 +853,9 @@ static void do_properties(StatusDlg *sd)
 static void status_on_tab(void *u, int i)
 {
     StatusDlg *sd = u;
-    (void)i;
+    /* The networks are listed when their page is first looked at, not
+     * before the dialog opens for a page nobody may look at. */
+    if (i == 1 && !sd->scanned) { sd->scanned = 1; nets_scan(sd, 0); }
     w2k_win_dirty(sd->win);
 }
 
@@ -766,6 +886,7 @@ static int status_event(W2kWin *w, XEvent *e)
         sd->down = 0;
         if (sd->tabs->sel == 1) w2k_list_release(sd->nets, &e->xbutton);
         if (b == 1 && w2k_rect_hit(&sd->props, x, y)) do_properties(sd);
+        else if (job_busy(sd) && (b == 2 || b >= 4)) { /* one thing at a time */ }
         else if (b == 2 && w2k_rect_hit(&sd->disable, x, y)) do_toggle(sd);
         else if (b == 3 && w2k_rect_hit(&sd->close_r, x, y)) w2k_win_close(w, ID_OK);
         else if (b == 4 && w2k_rect_hit(&sd->refresh_r, x, y)) nets_scan(sd, 1);
@@ -837,8 +958,6 @@ static void open_status(Conn *c)
     sd.refresh_r    = (W2kRect){ cl.x + 9, wy, 75, 23 };
     sd.connect_r    = (W2kRect){ cl.x + cl.w - 9 - 75 * 2 - 6, wy, 75, 23 };
     sd.disconnect_r = (W2kRect){ cl.x + cl.w - 9 - 75, wy, 75, 23 };
-    if (c->wireless) nets_scan(&sd, 0);
-
     w->user = &sd;
     sd.win = w;
     w->paint = status_paint;
@@ -853,6 +972,7 @@ static void open_status(Conn *c)
     sd_active = &sd;
     w2k_win_modal(w);
     sd_active = NULL;
+    if (job.pid > 0 && job.sd == &sd) job.sd = NULL;   /* it finishes on its own */
     w2k_del_timer(status_tick, &sd);
     w2k_list_free(sd.nets);
     w2k_tabs_free(sd.tabs);

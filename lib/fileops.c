@@ -14,12 +14,31 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 static void join(char *out, size_t n, const char *dir, const char *name)
 {
     snprintf(out, n, "%s%s%s", dir, (dir[0] && dir[strlen(dir) - 1] == '/') ? "" : "/", name);
+}
+
+/* A name beside `path` for something being put there: "dir/.name.tag-pid-k",
+ * one that does not exist yet. */
+static int beside(const char *path, const char *tag, char *out, size_t n)
+{
+    const char *slash = strrchr(path, '/');
+    int dl = slash ? (int)(slash - path) : 0;
+    const char *base = slash ? slash + 1 : path;
+    for (int k = 0; k < 1000; k++) {
+        snprintf(out, n, "%.*s%s.%.200s.%s-%ld-%d", dl, path, slash ? "/" : "", base, tag,
+                 (long)getpid(), k);
+        struct stat st;
+        if (lstat(out, &st) != 0 && errno == ENOENT) return 1;
+    }
+    errno = EEXIST;
+    return 0;
 }
 
 static int copy_one(const char *from, const char *to)
@@ -31,14 +50,18 @@ static int copy_one(const char *from, const char *to)
     if (!S_ISREG(st.st_mode)) { errno = EINVAL; return 0; }
     FILE *a = fopen(from, "rb");
     if (!a) return 0;
-    /* Created with the source's own mode from the start (not world-
+    /* Written under a name of its own and renamed into place when it is
+     * whole: a copy that fails half way (a full disk, an unreadable
+     * source) used to have already deleted the file it was replacing.
+     * Created with the source's own mode from the start (not world-
      * readable while a private file is half copied), and never through a
      * symlink that happens to be sitting at the destination. */
-    unlink(to);
-    int fd = open(to, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, st.st_mode & 07777);
+    char tmp[2400];
+    if (!beside(to, "copying", tmp, sizeof tmp)) { fclose(a); return 0; }
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, st.st_mode & 07777);
     if (fd < 0) { fclose(a); return 0; }
     FILE *b = fdopen(fd, "wb");
-    if (!b) { close(fd); fclose(a); return 0; }
+    if (!b) { close(fd); unlink(tmp); fclose(a); return 0; }
     char buf[65536];
     size_t n;
     int ok = 1;
@@ -47,11 +70,33 @@ static int copy_one(const char *from, const char *to)
     if (ferror(a)) ok = 0;
     fclose(a);
     if (fclose(b) != 0) ok = 0;
-    if (ok) {
-        struct stat st;
-        if (stat(from, &st) == 0) chmod(to, st.st_mode & 07777);
-    } else unlink(to);
+    if (ok) chmod(tmp, st.st_mode & 07777);
+    if (ok && rename(tmp, to) != 0) ok = 0;
+    if (!ok) { int e = errno; unlink(tmp); errno = e; }
     return ok;
+}
+
+/* rename() that will not replace what is already at `to`: a rename in
+ * Explorer, the Hidden box, an undo -- none of them may silently destroy
+ * a file that happens to have the name. The kernel does it atomically
+ * where it can; otherwise the name is looked at first. */
+int w2k_fs_rename_noreplace(const char *from, const char *to)
+{
+#ifdef SYS_renameat2
+    if (syscall(SYS_renameat2, AT_FDCWD, from, AT_FDCWD, to, 1 /* RENAME_NOREPLACE */) == 0)
+        return 0;
+    if (errno != ENOSYS && errno != EINVAL && errno != EEXIST) return -1;
+#endif
+    struct stat a, b;
+    if (lstat(to, &b) == 0) {
+        /* The same file under another spelling: a change of case on a
+         * file system that ignores case. That is a rename, not a clash. */
+        if (lstat(from, &a) == 0 && a.st_dev == b.st_dev && a.st_ino == b.st_ino)
+            return rename(from, to);
+        errno = EEXIST;
+        return -1;
+    }
+    return rename(from, to);
 }
 
 int w2k_fs_copy_tree(const char *from, const char *to)
@@ -121,6 +166,114 @@ int w2k_fs_move(const char *from, const char *to)
     return w2k_fs_remove_tree(from);
 }
 
+/* Where an entry lives, resolved: its folder through realpath (a doubled
+ * slash, a symlinked folder, "..") and its own name as it is, not
+ * followed -- a link being moved is the link. */
+static int resolve_entry(const char *path, char *out, size_t n)
+{
+    char dir[PATH_MAX], rd[PATH_MAX];
+    snprintf(dir, sizeof dir, "%s", path);
+    size_t l = strlen(dir);
+    while (l > 1 && dir[l - 1] == '/') dir[--l] = 0;
+    char *slash = strrchr(dir, '/');
+    const char *base;
+    if (!slash) { base = dir; if (!realpath(".", rd)) return 0; }
+    else {
+        *slash = 0;
+        base = slash + 1;
+        if (!realpath(dir[0] ? dir : "/", rd)) return 0;
+    }
+    snprintf(out, n, "%s%s%s", rd, strcmp(rd, "/") ? "/" : "", base);
+    return 1;
+}
+
+/* Is the entry `path` the folder `dir`, or somewhere inside it? */
+static int lives_in(const char *path, const char *dir)
+{
+    char rp[PATH_MAX + 256], rd[PATH_MAX + 256];
+    if (!resolve_entry(path, rp, sizeof rp) || !resolve_entry(dir, rd, sizeof rd)) return 0;
+    size_t n = strlen(rd);
+    return !strncmp(rp, rd, n) && (rp[n] == '/' || rp[n] == 0);
+}
+
+/* A folder moved onto a folder of the same name: what is in it goes in,
+ * as Windows does it, rather than one folder replacing the other and
+ * whatever only the old one held going with it. */
+static int move_merge(const char *from, const char *to)
+{
+    static int depth;
+    if (depth > 40) return 0;
+    DIR *dp = opendir(from);
+    if (!dp) return 0;
+    int ok = 1;
+    struct dirent *de;
+    depth++;
+    while ((de = readdir(dp))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        char a[2048], b[2048];
+        join(a, sizeof a, from, de->d_name);
+        join(b, sizeof b, to, de->d_name);
+        struct stat sa, sb;
+        if (lstat(b, &sb) != 0) { if (!w2k_fs_move(a, b)) ok = 0; continue; }
+        if (lstat(a, &sa) != 0) { ok = 0; continue; }
+        if (S_ISDIR(sa.st_mode) && S_ISDIR(sb.st_mode)) { if (!move_merge(a, b)) ok = 0; continue; }
+        if (S_ISDIR(sa.st_mode) != S_ISDIR(sb.st_mode)) { ok = 0; continue; }   /* file vs folder */
+        /* A file over a file: the old one aside until the new one is in. */
+        char old[2400];
+        if (!beside(b, "replaced", old, sizeof old) || rename(b, old) != 0) { ok = 0; continue; }
+        if (w2k_fs_move(a, b)) w2k_fs_remove_tree(old);
+        else { w2k_fs_remove_tree(b); rename(old, b); ok = 0; }
+    }
+    depth--;
+    closedir(dp);
+    if (ok) rmdir(from);             /* empty now; a failure leaves what did not move */
+    return ok;
+}
+
+/* Put one item at `to` by moving or copying it. When `to` exists,
+ * `confirm` (NULL: yes) is asked; 1 replaces, 0 skips, -1 stops.
+ *
+ * What is replaced is only let go once its replacement is in: it is
+ * renamed aside first and renamed back if the copy fails, where it used
+ * to be deleted before anything was known to have worked. A folder onto
+ * a folder merges. And "the same file" and "the folder the source lives
+ * in" are decided by where the paths lead, not by how they are spelt.
+ *
+ * Returns 1 done, 0 skipped, -1 stopped, -2 failed (errno says why). */
+int w2k_fs_put(const char *from, const char *to, int move,
+               int (*confirm)(const char *dst, void *user), void *user)
+{
+    struct stat sf, st;
+    if (lstat(from, &sf) != 0) return -2;
+    if (lstat(to, &st) != 0) {
+        if (errno != ENOENT) return -2;
+        int ok = move ? w2k_fs_move(from, to) : w2k_fs_copy_tree(from, to);
+        return ok ? 1 : -2;
+    }
+    if (sf.st_dev == st.st_dev && sf.st_ino == st.st_ino) return 0;   /* onto itself */
+    /* Replacing a folder that the source lives inside would delete the
+     * source along with it: never that. */
+    if (lives_in(from, to)) { errno = EINVAL; return -2; }
+    int c = confirm ? confirm(to, user) : 1;
+    if (c < 0) return -1;
+    if (c == 0) return 0;
+    if (S_ISDIR(sf.st_mode) && S_ISDIR(st.st_mode))
+        return (move ? move_merge(from, to) : w2k_fs_copy_tree(from, to)) ? 1 : -2;
+    if (S_ISDIR(sf.st_mode) != S_ISDIR(st.st_mode)) {
+        errno = S_ISDIR(st.st_mode) ? EISDIR : ENOTDIR;    /* a file and a folder */
+        return -2;
+    }
+    char old[2400];
+    if (!beside(to, "replaced", old, sizeof old) || rename(to, old) != 0) return -2;
+    int ok = move ? w2k_fs_move(from, to) : w2k_fs_copy_tree(from, to);
+    if (ok) { w2k_fs_remove_tree(old); return 1; }
+    int e = errno;
+    w2k_fs_remove_tree(to);
+    rename(old, to);
+    errno = e;
+    return -2;
+}
+
 /* Put `n` paths into `dir`, moving or copying. Returns how many landed;
  * `confirm` (may be NULL: always replace) is asked about existing names. */
 int w2k_fs_transfer(char paths[][1024], int n, const char *dir, int move,
@@ -133,20 +286,9 @@ int w2k_fs_transfer(char paths[][1024], int n, const char *dir, int move,
         if (!*base) continue;
         char to[2100];
         join(to, sizeof to, dir, base);
-        if (!strcmp(paths[i], to)) continue;          /* onto itself */
-        struct stat st;
-        if (lstat(to, &st) == 0) {
-            /* Replacing a folder that the source lives inside would delete
-             * the source along with it: never that. */
-            size_t tl = strlen(to);
-            if (!strncmp(paths[i], to, tl) && paths[i][tl] == '/') { errno = EINVAL; continue; }
-            int c = confirm ? confirm(to, user) : 1;
-            if (c < 0) break;
-            if (c == 0) continue;
-            if (!w2k_fs_remove_tree(to)) continue;
-        }
-        int ok = move ? w2k_fs_move(paths[i], to) : w2k_fs_copy_tree(paths[i], to);
-        if (ok) done++;
+        int r = w2k_fs_put(paths[i], to, move, confirm, user);
+        if (r < 0 && r != -2) break;
+        if (r == 1) done++;
     }
     return done;
 }

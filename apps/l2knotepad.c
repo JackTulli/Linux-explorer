@@ -7,6 +7,7 @@
 /* What Notepad's Open and Save As offer, as Windows words it. */
 #define TEXT_FILTERS "Text Documents (*.txt)|*.txt|All Files (*.*)|*"
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -147,10 +148,16 @@ int do_save(int saveas)
         return 0;
     }
     /* Written beside the file and renamed over it, so a full disk or a
-     * pulled drive leaves the old contents rather than an empty file. */
-    char tmp[1100];
-    snprintf(tmp, sizeof tmp, "%.1024s.w2ktmp", pad.path);
-    FILE *f = fopen(tmp, "wb");
+     * pulled drive leaves the old contents rather than an empty file --
+     * beside the file a symlink points at, so the link stays a link (the
+     * rename used to replace it with a plain file). A file with other hard
+     * links is written in place, or the rename would split it from them. */
+    char real[PATH_MAX], tmp[PATH_MAX + 16];
+    const char *dest = realpath(pad.path, real) ? real : pad.path;
+    struct stat old;
+    int have_old = stat(dest, &old) == 0, inplace = have_old && old.st_nlink > 1;
+    snprintf(tmp, sizeof tmp, "%s.w2ktmp", dest);
+    FILE *f = fopen(inplace ? dest : tmp, "wb");
     if (!f) {
         char msg[1200];
         snprintf(msg, sizeof msg, "Cannot create the file %s.\n\n%s",
@@ -167,16 +174,20 @@ int do_save(int saveas)
         }
     } else if (fwrite(t, 1, strlen(t), f) != strlen(t)) ok = 0;
     if (fclose(f) != 0) ok = 0;
-    if (ok) {
-        struct stat st;
-        if (stat(pad.path, &st) == 0) chmod(tmp, st.st_mode & 07777);
-        if (rename(tmp, pad.path) != 0) ok = 0;
+    if (ok && !inplace) {
+        if (have_old) {
+            chmod(tmp, old.st_mode & 07777);
+            /* The owner too, when it can be kept (root editing a user's file). */
+            if (old.st_uid != geteuid() || old.st_gid != getegid())
+                if (chown(tmp, old.st_uid, old.st_gid) != 0) { /* kept as ours */ }
+        }
+        if (rename(tmp, dest) != 0) ok = 0;
     }
     if (!ok) {
         char msg[1200];
         snprintf(msg, sizeof msg, "Cannot save the file %s.\n\n%s",
                  pad.path, strerror(errno));
-        unlink(tmp);
+        if (!inplace) unlink(tmp);
         w2k_msgbox(pad.win, "Notepad", msg, MB_OK | MB_ICONERROR);
         return 0;
     }

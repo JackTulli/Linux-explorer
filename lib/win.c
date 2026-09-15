@@ -1,6 +1,8 @@
 /* win.c -- the top-level window framework, the simple drawn controls and
  * the common dialogs. */
 #include "w2kui.h"
+#include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,28 +69,48 @@ void w2k_del_fd(int fd)
         if (fds[i].fd == fd) { fds[i] = fds[--nfds]; return; }
 }
 
+/* Run the timers that are due; the milliseconds until the next one, or
+ * -1 when none is armed (the loop then sleeps until something happens,
+ * where it used to wake every second for nothing). */
+static int timers_run(void);
+
+/* For a program with a loop of its own (the window manager): the timers
+ * due now are run; returns the milliseconds to the next, or -1. */
+int w2k_run_timers(void) { return timers_run(); }
+
 static int timers_run(void)
 {
     long now = w2k_now_ms();
-    int wait = 1000;
+    int wait = -1;
     for (int i = 0; i < ntimers; i++) {
         if (now >= timers[i].due) {
             timers[i].due = now + timers[i].ms;
             timers[i].fn(timers[i].user);
+            if (i >= ntimers) break;              /* the callback removed timers */
         }
         int d = (int)(timers[i].due - now);
-        if (d < wait) wait = d;
+        if (wait < 0 || d < wait) wait = d;
     }
-    return wait < 5 ? 5 : wait;
+    return wait < 0 ? -1 : wait < 5 ? 5 : wait;
 }
 
 /* ------------------------------------------------------------------ *
  * Windows
  * ------------------------------------------------------------------ */
+/* Windows are numbered as they are made. While a modal dialog runs, the
+ * windows made before it take no input: its caller's window stays live
+ * otherwise, and a click there -- Delete in the list under a Properties
+ * sheet, F5 under a Format dialog -- frees or rewrites what the dialog
+ * is working on. Windows made after it (its own message boxes) are fine. */
+static unsigned long win_serial, modal_floor;
+static Window modal_win;
+
 W2kWin *w2k_win_new(const char *title, const char *cls, int w, int h,
                     int resizable)
 {
     W2kWin *o = w2k_alloc(sizeof *o);
+    o->serial = ++win_serial;
+    o->focus = -1;
     o->w = w; o->h = h;
     o->pw = w2k_px(w); o->ph = w2k_px(h);
     o->alive = 1;
@@ -236,6 +258,28 @@ void w2k_win_show(W2kWin *w)
 }
 void w2k_win_dirty(W2kWin *w) { if (w) w->dirty = 1; }
 
+/* Show `w` and have it painted before returning: for a box put up just
+ * ahead of work done without the event loop ("Calculating..."), which
+ * otherwise stayed an empty frame until the work was over. Waits, half a
+ * second at most, for the server to have it on screen. */
+void w2k_win_show_now(W2kWin *w)
+{
+    w2k_win_show(w);
+    XSync(w2k.dpy, False);
+    long until = w2k_now_ms() + 500;
+    XEvent e;
+    while (!XCheckTypedWindowEvent(w2k.dpy, w->win, Expose, &e) && w2k_now_ms() < until) {
+        fd_set r;
+        FD_ZERO(&r);
+        FD_SET(ConnectionNumber(w2k.dpy), &r);
+        struct timeval tv = { 0, 20000 };
+        select(ConnectionNumber(w2k.dpy) + 1, &r, NULL, NULL, &tv);
+    }
+    w->dirty = 1;
+    w2k_win_repaint_now(w);
+    XSync(w2k.dpy, False);
+}
+
 
 void w2k_win_close(W2kWin *w, int result)
 {
@@ -300,6 +344,22 @@ int w2k_win_owns(Window win)
 
 static void dispatch_win(W2kWin *w, XEvent *e);
 
+/* Another program applied settings: the scheme again, and every window
+ * repainted in it. Held back while w2k_scheme_hold says so -- a dialog
+ * whose choices, not yet applied, live in the same settings the reload
+ * would overwrite: they were lost to any other program's Apply. */
+int (*w2k_scheme_hold)(void);
+static int scheme_missed;
+
+static void scheme_reload(void)
+{
+    scheme_missed = 0;
+    w2k_scheme_load(NULL);
+    w2k_font_reload();              /* the smoothing setting lives there */
+    w2k_accel_reset();
+    for (W2kWin *w = win_list; w; w = w->next) w->dirty = 1;
+}
+
 static void dispatch(XEvent *e)
 {
     if (w2k_dnd_event(e)) return;          /* drag and drop protocol */
@@ -324,19 +384,36 @@ static void dispatch(XEvent *e)
     }
     if (e->type == PropertyNotify && e->xproperty.window == w2k.root &&
         e->xproperty.atom == w2k.a_w2k_scheme) {
-        w2k_scheme_load(NULL);
-        w2k_font_reload();          /* the smoothing setting lives there */
-        w2k_accel_reset();
-        for (W2kWin *w = win_list; w; w = w->next) {
-            w->dirty = 1;
-            w->dirty = 1;                 /* new colours: repaint from the buffer */
-        }
+        if (w2k_scheme_hold && w2k_scheme_hold()) scheme_missed = 1;
+        else scheme_reload();
         return;
     }
     W2kWin *w = win_for(e->xany.window);
     if (!w) {
         if (w2k_win_foreign_event) w2k_win_foreign_event(e);
         return;
+    }
+    /* Under a modal dialog, older windows take no input; a click on one
+     * brings the dialog forward instead, as Windows does. */
+    if (modal_floor && w->serial < modal_floor) {
+        switch (e->type) {
+        case ButtonPress: case KeyPress: {
+            XEvent m = { 0 };
+            m.xclient.type = ClientMessage;
+            m.xclient.window = modal_win;
+            m.xclient.message_type = XInternAtom(w2k.dpy, "_NET_ACTIVE_WINDOW", False);
+            m.xclient.format = 32;
+            m.xclient.data.l[0] = 1;             /* from an application */
+            m.xclient.data.l[1] = e->type == ButtonPress ? (long)e->xbutton.time
+                                                         : (long)e->xkey.time;
+            XSendEvent(w2k.dpy, w2k.root, False,
+                       SubstructureNotifyMask | SubstructureRedirectMask, &m);
+            return;
+        }
+        case ButtonRelease: case MotionNotify: case KeyRelease:
+        case EnterNotify: case LeaveNotify:
+            return;
+        }
     }
     /* Pointer positions arrive in the window's physical pixels; the
      * program's controls are laid out in logical ones. Root coordinates
@@ -396,8 +473,25 @@ static void dispatch_win(W2kWin *w, XEvent *e)
 
     switch (e->type) {
     case Expose:
-        if (e->xexpose.count == 0) w->dirty = 1;
+        /* The back buffer holds the whole picture: an exposure is put
+         * right from it, and only a window with nothing painted yet (or
+         * with changes waiting) goes through its paint callback. The
+         * first show used to paint twice, and every menu or tooltip that
+         * went away repainted the window under it. */
+        if (w->buf && !w->dirty)
+            XCopyArea(w2k.dpy, w->buf, w->win, w2k.gc, e->xexpose.x, e->xexpose.y,
+                      (unsigned)e->xexpose.width, (unsigned)e->xexpose.height,
+                      e->xexpose.x, e->xexpose.y);
+        else if (e->xexpose.count == 0) w->dirty = 1;
         return;
+
+    case FocusIn:
+        if (e->xfocus.detail != NotifyPointer) w->focus = 1;
+        break;
+    case FocusOut:
+        if (e->xfocus.detail != NotifyPointer && e->xfocus.detail != NotifyInferior)
+            w->focus = 0;
+        break;
 
     case ConfigureNotify: {
         /* A drag delivers a burst of these: only the newest size matters. */
@@ -460,6 +554,9 @@ static void pump(int *quit, W2kWin *until)
 {
     int fd = ConnectionNumber(w2k.dpy);
 
+    /* A broadcast held back while a dialog had changes pending: now. */
+    if (scheme_missed && !(w2k_scheme_hold && w2k_scheme_hold())) scheme_reload();
+
     if (w2k_win_abort) {
         for (W2kWin *w = win_list; w; w = w->next) w->alive = 0;
         *quit = 1;
@@ -468,6 +565,9 @@ static void pump(int *quit, W2kWin *until)
     while (XPending(w2k.dpy)) {
         XEvent e;
         XNextEvent(w2k.dpy, &e);
+        /* Keys go through the input method first: dead keys and compose
+         * sequences are put together there, and it swallows their parts. */
+        if (w2k_ime_filter(&e)) continue;
         /* Monitors can be plugged in or rearranged under a running app. */
         w2k_monitors_event(&e);
         dispatch(&e);
@@ -482,7 +582,17 @@ static void pump(int *quit, W2kWin *until)
         if (w->alive && w->dirty) repaint(w);
     XFlush(w2k.dpy);
 
-    if (XPending(w2k.dpy)) return;
+    /* Sleep until there is something to do. The termination signals are
+     * held back while the flag is looked at and let through only inside
+     * pselect, so one that lands in between still ends the wait -- which
+     * is what the old one-second cap on the sleep was covering for. */
+    sigset_t hold, orig;
+    sigemptyset(&hold);
+    sigaddset(&hold, SIGTERM);
+    sigaddset(&hold, SIGINT);
+    sigaddset(&hold, SIGHUP);
+    sigprocmask(SIG_BLOCK, &hold, &orig);
+    if (w2k_win_abort || XPending(w2k.dpy)) { sigprocmask(SIG_SETMASK, &orig, NULL); return; }
     fd_set r;
     FD_ZERO(&r);
     FD_SET(fd, &r);
@@ -491,15 +601,35 @@ static void pump(int *quit, W2kWin *until)
         FD_SET(fds[i].fd, &r);
         if (fds[i].fd > top) top = fds[i].fd;
     }
-    struct timeval tv = { .tv_sec = wait / 1000, .tv_usec = (wait % 1000) * 1000 };
-    if (select(top + 1, &r, NULL, NULL, &tv) <= 0) return;
+    struct timespec ts = { .tv_sec = wait / 1000, .tv_nsec = (long)(wait % 1000) * 1000000L };
+    int ready_n = pselect(top + 1, &r, NULL, NULL, wait < 0 ? NULL : &ts, &orig);
+    int err = errno;
+    sigprocmask(SIG_SETMASK, &orig, NULL);
+    if (ready_n < 0 && err == EBADF) {
+        /* A descriptor someone registered has been closed under us (a
+         * D-Bus connection that dropped): select would fail at once for
+         * ever after. Let it go rather than spin. */
+        for (int i = 0; i < nfds; i++)
+            if (fcntl(fds[i].fd, F_GETFD) < 0 && errno == EBADF) { fds[i] = fds[--nfds]; i--; }
+        return;
+    }
+    if (ready_n <= 0) return;
     /* A callback may add or remove descriptors, or open a dialog whose
-     * loop comes back through here: take the ready ones first. */
-    struct { void (*fn)(void *); void *user; } ready[MAX_FDS];
+     * loop comes back through here: take the ready ones first, and ask
+     * again before each whether it is still registered for the same. */
+    struct { int fd; void (*fn)(void *); void *user; } ready[MAX_FDS];
     int n = 0;
     for (int i = 0; i < nfds; i++)
-        if (FD_ISSET(fds[i].fd, &r)) { ready[n].fn = fds[i].fn; ready[n].user = fds[i].user; n++; }
-    for (int i = 0; i < n; i++) ready[i].fn(ready[i].user);
+        if (FD_ISSET(fds[i].fd, &r)) {
+            ready[n].fd = fds[i].fd; ready[n].fn = fds[i].fn; ready[n].user = fds[i].user; n++;
+        }
+    for (int i = 0; i < n; i++) {
+        int still = 0;
+        for (int k = 0; k < nfds; k++)
+            if (fds[k].fd == ready[i].fd && fds[k].fn == ready[i].fn && fds[k].user == ready[i].user)
+                still = 1;
+        if (still) ready[i].fn(ready[i].user);
+    }
 }
 
 int w2k_run(void)
@@ -509,11 +639,23 @@ int w2k_run(void)
     return 0;
 }
 
+static int modal_depth;
+
+int w2k_win_modal_depth(void) { return modal_depth; }
+
 int w2k_win_modal(W2kWin *dlg)
 {
+    unsigned long floor = modal_floor;
+    Window over = modal_win;
+    modal_floor = dlg->serial;
+    modal_win = dlg->win;
+    modal_depth++;
     w2k_win_show(dlg);
     int quit = 0;
     while (!quit && dlg->alive) pump(&quit, dlg);
+    modal_depth--;
+    modal_floor = floor;
+    modal_win = over;
     int r = dlg->result;
     w2k_win_destroy(dlg);
     return r;
@@ -780,6 +922,22 @@ static int wrap_text(const char *text, int maxw, char **out, int maxlines,
     }
     *nlines = n;
     return widest;
+}
+
+/* Text wrapped to `maxw` at spaces, in the UI font: the message box's
+ * wrapping, for other boxes of words. Returns the height it took. */
+int w2k_text_wrapped(Drawable d, int font, int x, int y, int maxw, const char *text, int color)
+{
+    (void)font;
+    char *lines[32];
+    int n = 0;
+    wrap_text(text, maxw, lines, 32, &n);
+    int fh = w2k_font_height(F_UI);
+    for (int i = 0; i < n; i++) {
+        w2k_text(d, F_UI, x, y + i * fh, lines[i], color);
+        free(lines[i]);
+    }
+    return n * fh;
 }
 
 static void msgbox_paint(W2kWin *w, Drawable d)

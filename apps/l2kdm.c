@@ -13,11 +13,13 @@
 #include <stdarg.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <poll.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -163,92 +165,169 @@ typedef struct {
 
 static Logon lg;
 
-/* An RGBA picture as a pixmap, laid over `bg` (NULL: as it is). */
-static Pixmap rgba_pixmap(const unsigned char *rgba, int w, int h, const int *bg)
-{
-    Pixmap pm = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)w, (unsigned)h, w2k.depth);
-    char *data = malloc((size_t)w * h * 4);
-    XImage *im = data ? XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap, 0, data,
-                                     (unsigned)w, (unsigned)h, 32, 0) : NULL;
-    if (!im) { free(data); return pm; }
-    for (int y = 0; y < h; y++)
-        for (int x = 0; x < w; x++) {
-            const unsigned char *q = rgba + ((size_t)y * w + x) * 4;
-            int a = bg ? q[3] : 255;
-            int r = bg ? (q[0] * a + bg[0] * (255 - a)) / 255 : q[0];
-            int g = bg ? (q[1] * a + bg[1] * (255 - a)) / 255 : q[1];
-            int b = bg ? (q[2] * a + bg[2] * (255 - a)) / 255 : q[2];
-            XPutPixel(im, x, y, w2k_rgb(r, g, b));
-        }
-    XPutImage(w2k.dpy, pm, w2k.gc, im, 0, 0, 0, 0, (unsigned)w, (unsigned)h);
-    XDestroyImage(im);
-    return pm;
-}
+/* Whose look the logon screen shows: the user named, or with `fallback`
+ * the first ordinary one when there is no such user; for a picture of
+ * the screen, whoever runs it. */
+typedef struct { char home[1024], name[64]; uid_t uid; gid_t gid; } Who;
+static Who shown;                  /* whose picture and wallpaper are up */
 
-/* The home of the user named, or of the first ordinary user; for a
- * picture of the screen, $HOME. */
-static void home_of(const char *user, char *buf, int n)
+static int who_is(const char *user, Who *u, int fallback)
 {
-    buf[0] = 0;
-    if (getenv("W2K_RENDER") && getenv("HOME")) { snprintf(buf, (size_t)n, "%s", getenv("HOME")); return; }
+    memset(u, 0, sizeof *u);
+    if (getenv("W2K_RENDER") && getenv("HOME")) {
+        snprintf(u->home, sizeof u->home, "%s", getenv("HOME"));
+        u->uid = getuid();
+        u->gid = getgid();
+        return 1;
+    }
     struct passwd *pw = user && *user ? getpwnam(user) : NULL;
-    if (!pw) {
+    int listed = 0;
+    if (!pw && fallback) {
         setpwent();
+        listed = 1;
         while ((pw = getpwent()))
             if (pw->pw_uid >= 1000 && pw->pw_uid < 60000 && pw->pw_dir && pw->pw_dir[0] == '/') break;
-        if (pw) snprintf(buf, (size_t)n, "%s", pw->pw_dir);
-        endpwent();
-        return;
     }
-    if (pw->pw_dir) snprintf(buf, (size_t)n, "%s", pw->pw_dir);
+    int ok = pw && pw->pw_dir && pw->pw_name;
+    if (ok) {
+        snprintf(u->home, sizeof u->home, "%s", pw->pw_dir);
+        snprintf(u->name, sizeof u->name, "%s", pw->pw_name);
+        u->uid = pw->pw_uid;
+        u->gid = pw->pw_gid;
+    }
+    if (listed) endpwent();
+    return ok;
+}
+
+static long now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000;
+}
+
+/* All of `n` bytes from `fd`, or 0 at the deadline or the end. */
+static int read_until(int fd, void *buf, size_t n, long deadline)
+{
+    size_t got = 0;
+    while (got < n) {
+        long left = deadline - now_ms();
+        if (left <= 0) return 0;
+        struct pollfd p = { .fd = fd, .events = POLLIN };
+        int r = poll(&p, 1, (int)left);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) return 0;
+        ssize_t k = read(fd, (char *)buf + got, n - got);
+        if (k < 0 && errno == EINTR) continue;
+        if (k <= 0) return 0;
+        got += (size_t)k;
+    }
+    return 1;
+}
+
+static int write_all(int fd, const void *buf, size_t n)
+{
+    size_t done = 0;
+    while (done < n) {
+        ssize_t k = write(fd, (const char *)buf + done, n - done);
+        if (k < 0 && errno == EINTR) continue;
+        if (k <= 0) return 0;
+        done += (size_t)k;
+    }
+    return 1;
+}
+
+/* A picture a user's settings name, decoded by a child running as that
+ * user -- never by root. The logon screen is up before anyone has logged
+ * on, and the paths come out of files the user writes: this way the file
+ * is only ever one they could open themselves, and root's decoders never
+ * parse it. A FIFO, a link to /dev/zero or a picture made to take the
+ * decoder's time or memory ends the child, not the logon screen: it has a
+ * gigabyte and ten seconds, and is killed at the deadline even if it has
+ * been stopped. The child keeps no descriptor but the pipe -- nothing of
+ * the X connection, over which the password is typed.
+ *
+ * What comes back is exactly w x h: the picture stretched to it, or with
+ * `square`, cropped to its middle square first. */
+static unsigned char *user_picture(const Who *u, const char *path, int w, int h, int square)
+{
+    if (!path || !path[0] || w <= 0 || h <= 0) return NULL;
+    int fd[2];
+    if (pipe(fd) != 0) return NULL;
+    pid_t pid = fork();
+    if (pid < 0) { close(fd[0]); close(fd[1]); return NULL; }
+    if (pid == 0) {
+        long maxfd = sysconf(_SC_OPEN_MAX);
+        for (int i = 3; i < (maxfd > 0 && maxfd < 65536 ? maxfd : 1024); i++)
+            if (i != fd[1]) close(i);
+        if (lg.pass && lg.pass->text && lg.pass->cap > 0) memset(lg.pass->text, 0, (size_t)lg.pass->cap);
+        signal(SIGALRM, SIG_DFL);
+        alarm(10);
+        struct rlimit mem = { 1UL << 30, 1UL << 30 };
+        setrlimit(RLIMIT_AS, &mem);
+        /* (Root's own look is root's to decode.) */
+        if (geteuid() == 0 && u->uid != 0 &&
+            ((u->name[0] && initgroups(u->name, u->gid) != 0 && setgroups(0, NULL) != 0) ||
+             (!u->name[0] && setgroups(0, NULL) != 0) ||
+             setgid(u->gid) != 0 || setuid(u->uid) != 0 || setuid(0) == 0))
+            _exit(1);
+        /* A regular file, checked on the descriptor and decoded through
+         * it: a FIFO would hold the child to its deadline at every try. */
+        int pf = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY);
+        struct stat st, vs;
+        char via[64];
+        snprintf(via, sizeof via, "/proc/self/fd/%d", pf);
+        if (pf < 0 || fstat(pf, &st) != 0 || !S_ISREG(st.st_mode) ||
+            stat(via, &vs) != 0 || vs.st_ino != st.st_ino || vs.st_dev != st.st_dev)
+            _exit(1);
+        w2k_image_max_pixels = 40L * 1000 * 1000;
+        int iw = 0, ih = 0;
+        unsigned char *rgba = w2k_image_load_scaled(via, w, h, &iw, &ih);
+        if (!rgba || iw <= 0 || ih <= 0) _exit(1);
+        if (square) {
+            int side = iw < ih ? iw : ih, ox = (iw - side) / 2, oy = (ih - side) / 2;
+            for (int y = 0; y < side; y++)
+                memmove(rgba + (size_t)y * side * 4, rgba + ((size_t)(oy + y) * iw + ox) * 4,
+                        (size_t)side * 4);
+            iw = ih = side;
+        }
+        unsigned char *out = iw == w && ih == h ? rgba
+                           : w2k_rgba_resample(rgba, iw, ih, w, h, RS_CUBIC);
+        _exit(out && write_all(fd[1], out, (size_t)w * h * 4) ? 0 : 1);
+    }
+    close(fd[1]);
+    unsigned char *px = malloc((size_t)w * h * 4);
+    if (px && !read_until(fd[0], px, (size_t)w * h * 4, now_ms() + 12000)) { free(px); px = NULL; }
+    close(fd[0]);
+    /* Done, or stuck: either way it goes, and is reaped here. */
+    kill(pid, SIGKILL);
+    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) ;
+    return px;
+}
+
+/* The account picture, through the same child, as whoever it is shown for. */
+static unsigned char *picture_as_user(const char *path, int size, int *w, int *h)
+{
+    unsigned char *px = user_picture(&shown, path, size, size, 1);
+    if (px) *w = *h = size;
+    return px;
 }
 
 /* The look: from the last user's ~/.w2k/logon -- the colour or wallpaper,
- * the banner's artwork, whether the user's picture shows. */
-/* The logon screen runs as root before anyone has logged on, and the
- * paths it is pointed at come out of a file an unprivileged user writes.
- * A picture is opened only when it is a real file, inside that user's own
- * home, owned by them and not a symlink -- so "Wallpaper=/root/secret.png"
- * shows nothing, and root's decoders are never handed another user's or
- * root's files. */
-static int safe_user_file(const char *path, const char *home, uid_t uid)
-{
-    if (!path || !path[0] || !home || !home[0]) return 0;
-    size_t hl = strlen(home);
-    if (strncmp(path, home, hl) || path[hl] != '/') return 0;
-    if (strstr(path, "/../")) return 0;
-    struct stat st;
-    if (lstat(path, &st) != 0) return 0;             /* lstat: a symlink is refused */
-    return S_ISREG(st.st_mode) && st.st_uid == uid;
-}
-
-/* The uid that owns `home`, or (uid_t)-1. */
-static uid_t uid_of_home(const char *home)
-{
-    struct stat st;
-    if (!home || !home[0] || stat(home, &st) != 0) return (uid_t)-1;
-    return st.st_uid;
-}
-
+ * the banner's artwork, whether the user's picture shows. The settings
+ * files are read with lib/logon.c's confined open (no FIFO, no symlink,
+ * owned by the home's owner, small); pictures go through user_picture(). */
 static void look_load(const char *user)
 {
-    char home[1024];
-    home_of(user, home, sizeof home);
-    w2k_logon_load(&lg.cfg, home[0] ? home : NULL);
-    w2k_account_load_from(home);
-    uid_t owner = uid_of_home(home);
-    if (!safe_user_file(lg.cfg.wallpaper, home, owner)) lg.cfg.wallpaper[0] = 0;
-    if (!safe_user_file(w2k_account_picture(), home, owner)) w2k_account_preview("");
+    who_is(user, &shown, 1);
+    w2k_logon_load(&lg.cfg, shown.home[0] ? shown.home : NULL);
+    w2k_account_load_from(shown.home);
+    w2k_account_decoder = picture_as_user;
     if (lg.wall) { XFreePixmap(w2k.dpy, lg.wall); lg.wall = 0; }
     if (lg.art)  { XFreePixmap(w2k.dpy, lg.art);  lg.art = 0; }
-    if (lg.cfg.wallpaper[0]) {
-        int iw = 0, ih = 0;
-        unsigned char *rgba = w2k_image_load(lg.cfg.wallpaper, &iw, &ih);
-        if (rgba && iw > 0 && ih > 0) {
-            unsigned char *sc = w2k_rgba_resample(rgba, iw, ih, w2k.sw, w2k.sh, RS_CUBIC);
-            if (sc) { lg.wall = rgba_pixmap(sc, w2k.sw, w2k.sh, NULL); free(sc); }
-        }
-        free(rgba);
+    if (lg.cfg.wallpaper[0] && shown.home[0]) {
+        unsigned char *px = user_picture(&shown, lg.cfg.wallpaper, w2k.sw, w2k.sh, 0);
+        if (px) { lg.wall = w2k_pixmap_from_rgba(px, w2k.sw, w2k.sh, NULL); free(px); }
     }
     static const int white[3] = { 255, 255, 255 };
     if (lg.cfg.art == LOGON_ART_LINUX2000) {
@@ -259,7 +338,7 @@ static void look_load(const char *user)
         if (rgba && iw > 0 && ih > 0) {
             int h = w2k_px(BANNER_H - 16), w = h * iw / ih;
             unsigned char *sc = w2k_rgba_resample(rgba, iw, ih, w, h, RS_CUBIC);
-            if (sc) { lg.art = rgba_pixmap(sc, w, h, white); lg.art_w = w; lg.art_h = h; free(sc); }
+            if (sc) { lg.art = w2k_pixmap_from_rgba(sc, w, h, white); lg.art_w = w; lg.art_h = h; free(sc); }
         }
         free(rgba);
     } else if (lg.cfg.art == LOGON_ART_DISTRO) {
@@ -270,7 +349,7 @@ static void look_load(const char *user)
         if (rgba && iw > 0 && ih > 0) {
             int s = w2k_px(56);
             unsigned char *sc = w2k_rgba_resample(rgba, iw, ih, s, s, RS_CUBIC);
-            if (sc) { lg.art = rgba_pixmap(sc, s, s, white); lg.art_w = lg.art_h = s; free(sc); }
+            if (sc) { lg.art = w2k_pixmap_from_rgba(sc, s, s, white); lg.art_w = lg.art_h = s; free(sc); }
         }
         free(rgba);
         w2k_distro_pretty_name(lg.distro, sizeof lg.distro);
@@ -282,12 +361,11 @@ static void user_changed(void *u)
 {
     (void)u;
     if (!lg.user || getenv("W2K_RENDER")) return;
-    char home[1024];
-    struct passwd *pw = getpwnam(w2k_edit_text(lg.user));
-    if (!pw || !pw->pw_dir || pw->pw_uid < 1000) return;
-    snprintf(home, sizeof home, "%s", pw->pw_dir);
-    w2k_account_load_from(home);
-    if (!safe_user_file(w2k_account_picture(), home, pw->pw_uid)) w2k_account_preview("");
+    Who who;
+    if (!who_is(w2k_edit_text(lg.user), &who, 0) || who.uid < 1000 || !who.home[0]) return;
+    if (who.uid == shown.uid && !strcmp(who.home, shown.home)) return;
+    shown = who;
+    w2k_account_load_from(shown.home);
     if (lg.win) w2k_win_dirty(lg.win);
 }
 
@@ -477,6 +555,10 @@ static void exec_desktop(struct passwd *pw)
 {
     char **env = pam_getenvlist(pamh);
     char home[1200], usr[300], logname[300], shell[300], path[400], disp[64], xauth[1300];
+    /* Tells l2k-session to hand a shutdown or restart back here (its exit
+     * status) rather than ask for one itself: root does it without the
+     * user's own request being refused while others are logged on. */
+    char marker[] = "L2KDM=1";
     snprintf(home, sizeof home, "HOME=%s", pw->pw_dir);
     snprintf(usr, sizeof usr, "USER=%s", pw->pw_name);
     snprintf(logname, sizeof logname, "LOGNAME=%s", pw->pw_name);
@@ -486,20 +568,21 @@ static void exec_desktop(struct passwd *pw)
     snprintf(xauth, sizeof xauth, "XAUTHORITY=%s/.Xauthority", pw->pw_dir);
     int n = 0;
     for (char **e = env; e && *e; e++) n++;
-    char **envp = calloc((size_t)n + 12, sizeof *envp);
+    char **envp = calloc((size_t)n + 13, sizeof *envp);
     if (!envp) _exit(126);
     int k = 0;
     for (char **e = env; e && *e; e++) envp[k++] = *e;
     envp[k++] = home; envp[k++] = usr; envp[k++] = logname; envp[k++] = shell;
-    envp[k++] = path; envp[k++] = disp; envp[k++] = xauth;
+    envp[k++] = path; envp[k++] = disp; envp[k++] = xauth; envp[k++] = marker;
     envp[k] = NULL;
 
     /* Nothing of ours -- the display connection, the journal -- goes
      * into the session. */
     long maxfd = sysconf(_SC_OPEN_MAX);
     for (int fd = 3; fd < (maxfd > 0 && maxfd < 65536 ? maxfd : 1024); fd++) close(fd);
-    if (initgroups(pw->pw_name, pw->pw_gid) != 0 || setgid(pw->pw_gid) != 0 ||
-        setuid(pw->pw_uid) != 0) _exit(126);
+    /* The groups were set by the leader, before pam_setcred added any of
+     * its own (pam_group): initgroups here threw those away. */
+    if (setgid(pw->pw_gid) != 0 || setuid(pw->pw_uid) != 0 || setuid(0) == 0) _exit(126);
     if (chdir(pw->pw_dir) != 0) chdir("/");
     /* The server's cookie, in the user's own file. */
     char uauth[1200];
@@ -509,6 +592,19 @@ static void exec_desktop(struct passwd *pw)
     snprintf(run, sizeof run, "exec '%s'", session_cmd);
     execle("/bin/sh", "sh", "-l", "-c", run, (char *)NULL, envp);
     _exit(127);
+}
+
+/* The session leader's answer to SIGTERM (the service stopping, the
+ * machine shutting down): pass it to the desktop, and go on waiting so
+ * the session is still closed once that has gone. The leader used to
+ * inherit the service's own handler, which killed the X server and left
+ * at once -- pam_close_session and the rest never ran. */
+static volatile pid_t desktop_pid;
+static volatile sig_atomic_t leader_stop;
+static void leader_forward(int sig)
+{
+    leader_stop = sig;
+    if (desktop_pid > 0) kill(desktop_pid, sig);
 }
 
 /* Run the desktop for an authenticated user and wait for it. A session
@@ -525,6 +621,17 @@ static int run_session(const char *user)
     pid_t leader = fork();
     if (leader == 0) {
         setsid();
+        struct sigaction fw = { .sa_handler = leader_forward };
+        sigemptyset(&fw.sa_mask);
+        sigaction(SIGTERM, &fw, NULL);
+        sigaction(SIGINT, &fw, NULL);
+        sigaction(SIGHUP, &fw, NULL);
+        /* The user's groups before pam_setcred, which may add to them. */
+        if (initgroups(pw->pw_name, pw->pw_gid) != 0) {
+            log_line("no groups for %s", user);
+            pam_end(pamh, PAM_SUCCESS);
+            _exit(124);
+        }
         int rc = pam_setcred(pamh, PAM_ESTABLISH_CRED);
         if (rc == PAM_SUCCESS) rc = pam_open_session(pamh, 0);
         if (rc != PAM_SUCCESS) {
@@ -532,21 +639,41 @@ static int run_session(const char *user)
             pam_end(pamh, rc);
             _exit(124);
         }
-        pid_t pid = fork();
-        if (pid == 0) exec_desktop(pw);
+        /* Held until the desktop's pid is known, so a stop arriving now is
+         * passed on rather than lost. */
+        sigset_t term, old;
+        sigemptyset(&term);
+        sigaddset(&term, SIGTERM);
+        sigaddset(&term, SIGINT);
+        sigaddset(&term, SIGHUP);
+        sigprocmask(SIG_BLOCK, &term, &old);
+        pid_t pid = leader_stop ? -1 : fork();
+        if (pid == 0) {
+            signal(SIGTERM, SIG_DFL);
+            signal(SIGINT, SIG_DFL);
+            signal(SIGHUP, SIG_DFL);
+            sigprocmask(SIG_SETMASK, &old, NULL);
+            exec_desktop(pw);
+        }
+        desktop_pid = pid;
+        sigprocmask(SIG_SETMASK, &old, NULL);
         int st = 0;
         if (pid > 0) while (waitpid(pid, &st, 0) < 0 && errno == EINTR) ;
         pam_finish();
         _exit(pid < 0 ? 1 : WIFEXITED(st) ? WEXITSTATUS(st) : 1);
     }
     if (leader < 0) { pam_end(pamh, PAM_SUCCESS); pamh = NULL; return -1; }
+    /* The leader has its own copy of the handle and closes the session
+     * with it. This one goes now, quietly (PAM_DATA_SILENT: the modules
+     * leave what they set up alone), and the password PAM kept with it as
+     * the authentication token goes too -- it stayed in this process,
+     * which lives for the whole boot, until the user logged off. */
+    pam_end(pamh, PAM_SUCCESS | PAM_DATA_SILENT);
+    pamh = NULL;
     session_pid = leader;
     int st = 0;
     while (waitpid(leader, &st, 0) < 0 && errno == EINTR) ;
     session_pid = 0;
-    /* The leader closed the session; this handle only needs releasing. */
-    pam_end(pamh, PAM_SUCCESS);
-    pamh = NULL;
     return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
 }
 #else
@@ -857,7 +984,13 @@ int main(int argc, char **argv)
         snprintf(last, sizeof last, "%s", user);
         last_user_save(last);
         log_line("%s logged on", user);
+        /* Nothing on the root for this connection while the session runs:
+         * it is not read until the session is over, and the server would
+         * queue every property change the desktop makes for it. */
+        XSelectInput(w2k.dpy, w2k.root, NoEventMask);
+        XSync(w2k.dpy, False);
         int rc = run_session(user);
+        XSelectInput(w2k.dpy, w2k.root, PropertyChangeMask);
         log_line("session for %s ended with %d", user, rc);
         if (rc == 10 || rc == 11) {
             if (own_x) kill(xpid, SIGTERM);
@@ -871,6 +1004,11 @@ int main(int argc, char **argv)
             kill(xpid, SIGTERM);
             int st;
             while (waitpid(xpid, &st, 0) < 0 && errno == EINTR) ;
+            /* start_x() set these for itself: left in, they made the new
+             * instance think it ran under someone else's server, start
+             * none, fail to connect and wait for systemd's restart. */
+            unsetenv("DISPLAY");
+            unsetenv("XAUTHORITY");
             execv("/proc/self/exe", argv);
             return 0;                        /* systemd starts us again */
         }

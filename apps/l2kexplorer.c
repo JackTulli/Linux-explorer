@@ -20,6 +20,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -215,6 +216,7 @@ static int cmp_entries(const void *A, const void *B)
 }
 
 static void entries_clear(void) { nentries = 0; nrowent = 0; }
+static int trusted_shortcut(const char *path);
 
 /* Remember that list row `row` shows entries[i]. */
 static void rowent_set(int row, int i)
@@ -382,7 +384,7 @@ static void refill_list(void)
                 e->mtime = st.st_mtime;
                 e->icon = w2k_file_icon_stat(full, e->name, e->isdir);
                 if (!strcasecmp(w2k_file_ext(de->d_name), "desktop") &&
-                    access(full, X_OK) == 0) {
+                    trusted_shortcut(full)) {
                     /* A shortcut wears the icon of what it points at --
                      * but only a shortcut marked executable is trusted to
                      * be one. Anything else that merely ends in .desktop
@@ -859,9 +861,6 @@ static void undo_push(int op, const char *from, const char *to)
 }
 
 
-/* Copying a folder copies what is in it. Windows does this without
- * comment; doing anything less means dragging a folder in Explorer
- * quietly produces nothing. */
 /* Is `path` the Recycle Bin's folder, or inside it? A prefix match alone
  * would also take a sibling such as Trash-old. */
 static int under_dir(const char *path, const char *dir)
@@ -870,20 +869,6 @@ static int under_dir(const char *path, const char *dir)
     return n && !strncmp(path, dir, n) && (path[n] == '/' || path[n] == 0);
 }
 
-static int copy_tree(const char *from, const char *to, int depth)
-{
-    (void)depth;
-    return w2k_fs_copy_tree(from, to);
-}
-
-
-/* Delete a whole tree -- the second half of a move that had to fall back
- * to copy-and-delete because the two paths are on different filesystems. */
-static int remove_tree(const char *path, int depth)
-{
-    (void)depth;
-    return w2k_fs_remove_tree(path);
-}
 
 
 static void selected_paths(char out[][1024], int max, int *n)
@@ -929,9 +914,23 @@ static void do_delete_ex(int permanent)
         if (!permanent) {
             rc = w2k_trash_move_named(paths[i], binname, sizeof binname);
             if (rc == 0) undo_push(U_TRASH, binname, paths[i]);
+            else if (errno == EXDEV) {
+                /* The bin is on the home drive; a folder on a stick cannot
+                 * go there. Windows deletes such things outright, asking
+                 * first, rather than leave them undeletable. */
+                char m[700];
+                snprintf(m, sizeof m, "'%.200s' is on another drive and cannot be moved to "
+                         "the Recycle Bin. Do you want to permanently delete it?",
+                         strrchr(paths[i], '/') + 1);
+                if (w2k_msgbox(ex.win, "Confirm File Delete", m,
+                               MB_YESNO | MB_ICONWARNING) != ID_YES) continue;
+                rc = w2k_fs_remove_tree(paths[i]) ? 0 : -1;
+            }
         } else {
+            /* Shift+Delete takes a folder with what is in it, as in
+             * Windows; rmdir() alone refused any folder that had files. */
             rc = (lstat(paths[i], &st) == 0 && S_ISDIR(st.st_mode))
-               ? rmdir(paths[i]) : unlink(paths[i]);
+               ? (w2k_fs_remove_tree(paths[i]) ? 0 : -1) : unlink(paths[i]);
         }
         if (rc != 0) {
             char e[1300];
@@ -951,18 +950,35 @@ static void do_rename(void)
 {
     Entry *re = entry_at_row(ex.list->sel);
     if (ex.cur.kind != K_FS || !re) return;
-    const char *old = re->name;
+    /* Taken before the prompt: the list can be refilled meanwhile. */
+    char old[256];
+    snprintf(old, sizeof old, "%s", re->name);
+    char a[2048], b[2048];
+    path_join(a, sizeof a, ex.cur.path, old);
     char out[256];
     if (!w2k_prompt(ex.win, "Rename", "&New name:", old, out, sizeof out,
                     ICO_NONE))
         return;
     if (!out[0] || !strcmp(out, old)) return;
-    char a[2048], b[2048];
-    path_join(a, sizeof a, ex.cur.path, old);
-    path_join(b, sizeof b, ex.cur.path, out);
-    if (rename(a, b) != 0) {
+    if (strchr(out, '/')) {
+        w2k_msgbox(ex.win, "Error Renaming File or Folder",
+                   "A file name cannot contain a slash (/).", MB_OK | MB_ICONERROR);
+        return;
+    }
+    char dir[2048];
+    snprintf(dir, sizeof dir, "%s", a);
+    char *cut = strrchr(dir, '/');
+    if (cut) *cut = 0;
+    path_join(b, sizeof b, dir, out);
+    /* Never over a file that already has the name: rename() would have
+     * replaced it without a word. */
+    if (w2k_fs_rename_noreplace(a, b) != 0) {
         char e[1300];
-        snprintf(e, sizeof e, "Cannot rename %s.\n\n%s", old, strerror(errno));
+        if (errno == EEXIST)
+            snprintf(e, sizeof e, "Cannot rename %s: a file with the name you "
+                     "specified already exists. Specify a different file name.", old);
+        else
+            snprintf(e, sizeof e, "Cannot rename %s.\n\n%s", old, strerror(errno));
         w2k_msgbox(ex.win, "Error Renaming File or Folder", e,
                    MB_OK | MB_ICONERROR);
     } else undo_push(U_RENAME, a, b);
@@ -1065,18 +1081,16 @@ static void do_paste(void)
         base = base ? base + 1 : ex.clip[i];
         char dst[1024];
         path_join(dst, sizeof dst, ex.cur.path, base);
-        if (!strcmp(dst, ex.clip[i])) continue;
         /* One at a time, so each lands in the undo list; a name already
-         * here asks first, as in Windows. */
-        struct stat st;
-        if (lstat(dst, &st) == 0) {
-            int c = drop_confirm(dst, NULL);
-            if (c < 0) break;
-            if (c == 0) continue;
-            w2k_fs_remove_tree(dst);
-        }
-        int ok = ex.clip_cut ? w2k_fs_move(ex.clip[i], dst)
-                             : w2k_fs_copy_tree(ex.clip[i], dst);
+         * here asks first, as in Windows. The shared rules decide the
+         * rest: nothing is deleted before its replacement is in, and the
+         * folder a source lives in is never what gets replaced (a Paste of
+         * project/project into the folder holding the outer one used to
+         * delete both). */
+        int r = w2k_fs_put(ex.clip[i], dst, ex.clip_cut, drop_confirm, NULL);
+        if (r == -1) break;
+        if (r == 0) continue;
+        int ok = r == 1;
         if (ok) undo_push(ex.clip_cut ? U_MOVE : U_COPY, ex.clip[i], dst);
         if (!ok) {
             char e[1300];
@@ -1123,13 +1137,17 @@ static void do_create_shortcut(const char *into)
             w2k_msgbox(ex.win, "Windows Explorer", e, MB_OK | MB_ICONERROR);
             return;
         }
-        /* A folder opens in Explorer; a file goes to whatever opens it. */
-        char cmd[4400], q[4200];
+        /* A folder opens in Explorer; a file goes to whatever opens it.
+         * Both values escaped for the file: a name with a newline in it
+         * could otherwise write an Exec= line of its own choosing. */
+        char cmd[4400], q[4200], ename[512], eexec[9000];
         w2k_shell_quote(paths[i], q, sizeof q);
         if (isdir) snprintf(cmd, sizeof cmd, "l2kexplorer %s", q);
         else       w2k_assoc_command(paths[i], cmd, sizeof cmd);
+        w2k_desktop_escape(base, ename, sizeof ename, 0);
+        w2k_desktop_escape(cmd, eexec, sizeof eexec, 1);
         fprintf(f, "[Desktop Entry]\nType=Application\nName=%s\nExec=%s\n"
-                   "Terminal=false\n", base, cmd);
+                   "Terminal=false\n", ename, eexec);
         fclose(f);
         chmod(link, 0755);                   /* a shortcut we made is trusted */
         undo_push(U_NEW, link, NULL);
@@ -1148,8 +1166,10 @@ static void do_send_to_mydocs(void)
         base = base ? base + 1 : paths[i];
         char dst[2048];
         snprintf(dst, sizeof dst, "%.900s/%.120s", ex.home, base);
-        if (!strcmp(dst, paths[i])) continue;
-        if (copy_tree(paths[i], dst, 0)) undo_push(U_COPY, paths[i], dst);
+        int r = w2k_fs_put(paths[i], dst, 0, drop_confirm, NULL);
+        if (r == -1) break;
+        if (r == 0) continue;
+        if (r == 1) undo_push(U_COPY, paths[i], dst);
         else {
             char e[1300];
             snprintf(e, sizeof e, "Cannot copy %.120s.\n\n%s", base,
@@ -1197,11 +1217,10 @@ static void do_undo(void)
     switch (u.op) {
     case U_RENAME:
     case U_MOVE:
-        ok = rename(u.to, u.from) == 0;
-        if (!ok && copy_tree(u.to, u.from, 0)) {
-            remove_tree(u.to, 0);
-            ok = 1;
-        }
+        /* Back to where it was -- unless something else has the name
+         * there by now, which an undo must not destroy. */
+        ok = w2k_fs_rename_noreplace(u.to, u.from) == 0;
+        if (!ok && errno == EXDEV) ok = w2k_fs_put(u.to, u.from, 1, NULL, NULL) == 1;
         break;
     case U_COPY:
         /* The copy goes to the Recycle Bin, not away for good: what is
@@ -1211,11 +1230,18 @@ static void do_undo(void)
     case U_TRASH:
         ok = w2k_trash_restore(u.from) == 0;
         break;
-    case U_NEW:
+    case U_NEW: {
         /* Only the empty thing that was made: a folder that has since
-         * been filled stays (rmdir refuses it). */
-        ok = rmdir(u.from) == 0 || unlink(u.from) == 0;
+         * been filled stays (rmdir refuses it), and a document someone
+         * has written in since goes to the Recycle Bin, not away for good
+         * -- an hour's work is not undone by one Ctrl+Z. */
+        struct stat nst;
+        if (lstat(u.from, &nst) != 0) { ok = 0; break; }
+        if (S_ISDIR(nst.st_mode)) ok = rmdir(u.from) == 0;
+        else if (nst.st_size == 0) ok = unlink(u.from) == 0;
+        else ok = w2k_trash_move(u.from) == 0;
         break;
+    }
     }
     if (!ok) {
         char e[1300];
@@ -1284,6 +1310,50 @@ static void spawn(const char *fmt, const char *arg)
 
 static void drive_open(const char *dev);
 
+/* File systems with no permissions of their own: FAT, exFAT and NTFS
+ * (the kernel's and ntfs-3g's, which is FUSE) mount with every file
+ * marked executable, so the mark says nothing there. */
+static int permissionless(const char *path)
+{
+    struct statfs sf;
+    if (statfs(path, &sf) != 0) return 0;
+    switch ((unsigned long)sf.f_type) {
+    case 0x4d44UL:        /* msdos / vfat */
+    case 0x2011bab0UL:    /* exfat */
+    case 0x5346544eUL:    /* ntfs */
+    case 0x7366746eUL:    /* ntfs3 */
+    case 0x65735546UL:    /* fuse: ntfs-3g, and any other */
+        return 1;
+    }
+    return 0;
+}
+
+/* A program to run, rather than a document to open: marked executable,
+ * beginning like a program (an ELF image, or "#!" for a script), and on
+ * a file system where the mark means something. A README on a USB stick
+ * used to be run -- as a shell script, since it had no #! line. */
+static int is_program(const char *path)
+{
+    if (access(path, X_OK) != 0 || permissionless(path)) return 0;
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY);
+    if (fd < 0) return 0;
+    unsigned char m[4] = { 0 };
+    ssize_t n = read(fd, m, sizeof m);
+    close(fd);
+    if (n >= 4 && m[0] == 0x7f && m[1] == 'E' && m[2] == 'L' && m[3] == 'F') return 1;
+    return n >= 2 && m[0] == '#' && m[1] == '!';
+}
+
+/* A .desktop file trusted as a shortcut: marked executable by its owner,
+ * who is the user, on a file system that keeps permissions. One that
+ * came on a stick, or out of someone else's folder, opens as text. */
+static int trusted_shortcut(const char *path)
+{
+    struct stat st;
+    return access(path, X_OK) == 0 && lstat(path, &st) == 0 && S_ISREG(st.st_mode) &&
+           st.st_uid == getuid() && !permissionless(path);
+}
+
 static void on_activate(void *u, int idx)
 {
     (void)u;
@@ -1318,7 +1388,7 @@ static void on_activate(void *u, int idx)
      * double-clicking a .lnk does, rather than opening the file itself.
      * Only a shortcut marked executable is trusted that far (the same
      * rule every desktop applies); any other opens as the text it is. */
-    if (!strcasecmp(w2k_file_ext(e->name), "desktop") && e->link) {
+    if (!strcasecmp(w2k_file_ext(e->name), "desktop") && trusted_shortcut(full)) {
         char cmd[1024];
         if (w2k_desktop_entry(full, NULL, 0, cmd, sizeof cmd, NULL, 0)) {
             spawn("%s", cmd);
@@ -1327,8 +1397,8 @@ static void on_activate(void *u, int idx)
     }
 
     /* Whatever the Control Panel says opens this kind of file -- pictures
-     * in the viewer, video in VLC, and so on. An executable still runs. */
-    if (access(full, X_OK) == 0 && !w2k_image_is_image(full) &&
+     * in the viewer, video in VLC, and so on. A program still runs. */
+    if (is_program(full) && !w2k_image_is_image(full) &&
         strcasecmp(w2k_file_ext(e->name), "desktop") &&
         strcmp(w2k_assoc_class_for(full), "video") &&
         strcmp(w2k_assoc_class_for(full), "audio")) {
@@ -1436,9 +1506,16 @@ static int drop_confirm(const char *dst, void *u)
 {
     (void)u;
     const char *base = strrchr(dst, '/');
-    char msg[600];
-    snprintf(msg, sizeof msg, "This folder already contains a file named '%.200s'.\n\n"
-             "Would you like to replace the existing file?", base ? base + 1 : dst);
+    char msg[700];
+    struct stat st;
+    if (stat(dst, &st) == 0 && S_ISDIR(st.st_mode))
+        snprintf(msg, sizeof msg, "This folder already contains a folder named '%.200s'.\n\n"
+                 "If the files in the existing folder have the same name as files in the "
+                 "folder you are moving or copying, they will be replaced. Do you still "
+                 "want to move or copy the folder?", base ? base + 1 : dst);
+    else
+        snprintf(msg, sizeof msg, "This folder already contains a file named '%.200s'.\n\n"
+                 "Would you like to replace the existing file?", base ? base + 1 : dst);
     int r = w2k_msgbox(ex.win, "Confirm File Replace", msg, MB_YESNOCANCEL | MB_ICONQUESTION);
     return r == ID_YES ? 1 : r == ID_NO ? 0 : -1;
 }
@@ -1452,12 +1529,20 @@ static void ex_on_drop(Window w, int x, int y, const char *uris, int move)
     char paths[64][1024];
     int n = w2k_uri_list_paths(uris, paths, 64);
     /* Moving within one folder is a no-op; across folders, files go where
-     * they are dropped. Dragging with Ctrl held copies instead, as in
-     * Windows. */
+     * they are dropped. Dragging with Ctrl held copies instead, and Shift
+     * moves, as in Windows -- and as in Windows, a drag to another drive
+     * copies unless Shift says otherwise: photos dragged off a camera
+     * card used to leave the card empty. */
     Window rw, cw;
     int rxp, ryp, wx, wy;
     unsigned mask = 0;
     XQueryPointer(w2k.dpy, w2k.root, &rw, &cw, &rxp, &ryp, &wx, &wy, &mask);
+    if (move && !(mask & ShiftMask)) {
+        struct stat sd, ss;
+        if (stat(dir, &sd) == 0)
+            for (int i = 0; i < n; i++)
+                if (lstat(paths[i], &ss) == 0 && ss.st_dev != sd.st_dev) { move = 0; break; }
+    }
     if (mask & ControlMask) move = 0;
     XDefineCursor(w2k.dpy, ex.win->win, w2k.cur_wait);
     XFlush(w2k.dpy);
@@ -2151,6 +2236,16 @@ static void do_zip(void)
         return;
     }
 
+    /* Deleting what was added must not take the archive with it. */
+    if (delete)
+        for (int i = 0; i < n; i++)
+            if (under_dir(target, paths[i])) {
+                w2k_msgbox(ex.win, "Add to Archive", "The archive cannot be saved inside a "
+                           "folder whose files are to be deleted after adding. Choose "
+                           "another place for it.", MB_OK | MB_ICONERROR);
+                return;
+            }
+
     files = 0; dirs = 0; bytes = 0;
     for (int i = 0; i < n; i++) count_tree(paths[i], recurse, &files, &dirs, &bytes, 0);
 
@@ -2186,12 +2281,11 @@ static void do_zip(void)
         int level = lv == 0 ? 1 : lv == 1 ? 1 : lv == 3 ? 9 : 6;
         char filter[80] = "";
         if (comp) snprintf(filter, sizeof filter, "-I '%s -%d' ", comp, level);
-        snprintf(cmd, sizeof cmd, "cd %s && tar %s-cvf %s%s%s", qd, filter, qt,
-                 recurse ? "" : " --no-recursion", items);
-        if (delete) {
-            size_t l = strlen(cmd);
-            snprintf(cmd + l, sizeof cmd - l, " && rm -rf%s", items);
-        }
+        /* "Delete files after adding" is tar's own --remove-files: it
+         * leaves the archive it is writing alone, where an "&& rm -rf"
+         * after it deleted an archive written inside a chosen folder. */
+        snprintf(cmd, sizeof cmd, "cd %s && tar %s-cvf %s%s%s%s", qd, filter, qt,
+                 recurse ? "" : " --no-recursion", delete ? " --remove-files" : "", items);
         (void)relative;
     }
     const char *tb = strrchr(target, '/');
@@ -2753,7 +2847,10 @@ static void command(void *user, int id)
         w2k_view_toolbar = ex.show_toolbar;
         w2k_view_address = ex.show_address;
         w2k_view_status = ex.show_status;
+        /* Told to everyone, as every other setting is: a program with the
+         * old value in memory would write it back at its next save. */
         w2k_scheme_save(NULL);
+        w2k_scheme_broadcast();
         layout(ex.win);
         break;
     case ID_ARR_NAME: on_sort(NULL, 0); break;
@@ -2824,6 +2921,7 @@ static void command(void *user, int id)
     case ID_SHOW_HIDDEN:
         w2k_folder_hidden = !w2k_folder_hidden;
         w2k_scheme_save(NULL);
+        w2k_scheme_broadcast();
         refill_list();
         break;
     case ID_REFRESH: refill_list(); break;
@@ -3153,6 +3251,12 @@ static int event(W2kWin *w, XEvent *e)
                 w2k_win_dirty(w);
                 return 1;
             }
+            /* Typing in the box is not talking to the file list: Ctrl+Z
+             * there used to undo the last file operation (deleting a new
+             * document someone had since written in), F2 renamed a file.
+             * Only Alt combinations (the menus) and the F keys that act on
+             * the window go on. */
+            if (!(e->xkey.state & Mod1Mask) && ks != XK_F5 && ks != XK_F1) return 1;
         }
 
         /* Search bar focused: Enter applies the filter and unfocuses;
@@ -3177,6 +3281,10 @@ static int event(W2kWin *w, XEvent *e)
                 w2k_win_dirty(w);
                 return 1;
             }
+            /* As for the Address box: keys meant for the text do not go
+             * on to the files (Tab still moves on). */
+            if (!(e->xkey.state & Mod1Mask) && ks != XK_F5 && ks != XK_F1 &&
+                ks != XK_Tab && ks != XK_ISO_Left_Tab) return 1;
         }
 
         if (e->xkey.state & Mod1Mask) {

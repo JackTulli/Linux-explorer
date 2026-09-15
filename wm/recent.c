@@ -69,21 +69,37 @@ int recent_load(void)
     buf[len] = 0;
     fclose(f);
 
-    /* Newest last in the file, and we want newest first. */
+    /* Newest last in the file, and we want newest first: the last 256,
+     * kept in a ring. (The first 256 were kept, so once the file grew
+     * past that the newest documents never appeared.) */
     char *hrefs[256];
     int n = 0;
-    for (char *p = strstr(buf, "href=\"file://"); p && n < 256;
+    for (char *p = strstr(buf, "href=\"file://"); p;
          p = strstr(p + 1, "href=\"file://")) {
         char *start = p + 13;
         char *end = strchr(start, '"');
         if (!end) break;
         *end = 0;
-        hrefs[n++] = start;
+        hrefs[n++ % 256] = start;
         p = end;
     }
-    for (int i = n - 1; i >= 0 && nrecent < MAX_RECENT; i--) {
+    int kept = n < 256 ? n : 256;
+    for (int k = 0; k < kept && nrecent < MAX_RECENT; k++) {
+        int i = (n - 1 - k) % 256;
         char decoded[1024];
         snprintf(decoded, sizeof decoded, "%.1023s", hrefs[i]);
+        /* An attribute value: XML's escapes first (&amp; for a & in the
+         * name), then the URI's %XX. */
+        char *o = decoded;
+        for (const char *q = decoded; *q; ) {
+            if (!strncmp(q, "&amp;", 5)) { *o++ = '&'; q += 5; }
+            else if (!strncmp(q, "&apos;", 6)) { *o++ = '\''; q += 6; }
+            else if (!strncmp(q, "&quot;", 6)) { *o++ = '"'; q += 6; }
+            else if (!strncmp(q, "&lt;", 4)) { *o++ = '<'; q += 4; }
+            else if (!strncmp(q, "&gt;", 4)) { *o++ = '>'; q += 4; }
+            else *o++ = *q++;
+        }
+        *o = 0;
         unescape(decoded);
         if (access(decoded, R_OK) != 0) continue;      /* gone since */
 

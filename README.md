@@ -17,7 +17,7 @@ Discord server: https://discord.gg/KPQBnSqcK
 **A fresh machine or VM with no desktop** (Debian, Ubuntu, Fedora, Arch,
 openSUSE, Alpine or Void), as root:
 
-    curl -sL jacktulli.github.io/w2k | sh
+    curl -fsSL https://jacktulli.github.io/w2k | sh
 
 That is the whole install. It fetches this repository into
 `/usr/local/src`, installs the X server, sound, VM guest tools and Firefox,
@@ -50,7 +50,7 @@ of what is waiting and one button to install it all.
 
 **From a shell, as root** -- the same command that installed it:
 
-    curl -sL jacktulli.github.io/w2k | sh
+    curl -fsSL https://jacktulli.github.io/w2k | sh
 
 **From a source checkout:**
 

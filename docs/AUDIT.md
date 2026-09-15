@@ -289,3 +289,110 @@ wrong against every backdrop and worse under a compositor, so the option
 is gone from Performance Options and the code with it. The slot in the
 scheme file's `Effects` line is kept, since that line is positional, and
 anything already set there is ignored.
+
+## Fourth pass, 15 September 2026
+
+Against 1.35.0, over the whole tree: 65,000 lines, some 13,000 of them new
+since the third pass (USB setup in Disk Management, Explorer's mount and
+eject, the portal dialogs, System Properties and the drive sheet, the
+graphics chooser, Paint, the Calculator, the colour picker, the composited
+scaler, Bluetooth Devices). It began from three reports: some property
+panels -- Network Connections among them -- were slow to open, the XP-style
+Start menu was broken in the Modern Light and Modern Dark looks, and the
+slide and window animations were slow and glitchy.
+
+### What was run
+
+- **Eight read-only audits by area** -- the window manager, the Start menus
+  and the shell's dialogs, the toolkit core, Explorer and Disk Management,
+  the slow panels, Display Properties with the scaler and the logon screen,
+  Paint with the Calculator and the picture tools, Bluetooth with the
+  portal -- each finding traced to a way of triggering it.
+- **AddressSanitizer and UndefinedBehaviorSanitizer** through all 62 render
+  harnesses, and through the window manager driven with XTest on a private
+  display (dialogs and their owners, five look changes, Show Desktop both
+  ways, snaps, full screen, Alt+Tab, the Start menu, the Recycle Bin
+  filling and emptying): **no reports**. A JPEG with a stray SOI marker
+  after its scan data aborts 1.35.0's picture viewer with a double free;
+  it is now refused.
+- **Every harness rendered before and after.** What differs is what was
+  meant to: the combo-box and submenu arrows (they pointed left), a 4Kn
+  disk's picture, and the live figures that differ between any two runs.
+- **XTest checks of the window manager**: a modal dialog stays above its
+  window and takes the focus when the window is clicked, and is minimised
+  and restored with it; frames re-lay out through Classic (4/22), XP
+  (4/30) and Aero (8/36) with their extents published; Show Desktop brings
+  windows back in their order; a full-screen window covers the bar only
+  while it has the focus; a snapped window is no longer "maximised"; a drag
+  lands where the button came up; the bin icon follows the Trash within
+  0.3 s.
+
+### Bugs found and fixed
+
+| Where | What | Fix |
+|---|---|---|
+| `lib/image.c` | The JPEG error path freed its two buffers twice. A picture with a stray marker after its scan data crashed whatever opened it: the logon screen as root, the shell at every logon when it was the wallpaper. | Freed once. |
+| `apps/l2kdm.c`, `lib/logon.c`, `lib/account.c` | The logon screen runs as root and read `~/.w2k/logon` and `~/.w2k/account` with a plain `fopen`: a FIFO there hung it for good, across restarts, and a link to `/dev/zero` was read without end. Pictures were checked with `lstat` and opened by path later, and root's decoders parsed them. | Settings are opened confined (no FIFO, no symlink, the home's owner, 64 KB). Pictures are decoded by a child running as that user, with a memory and time limit and no descriptor but its pipe. |
+| `apps/l2kdm.c` | The session leader inherited the service's SIGTERM handler: stopping the service or shutting down killed the X server and left without closing the PAM session. | It passes the signal to the desktop, waits, and closes the session. |
+| `apps/l2kdm.c` | `initgroups` after `pam_setcred` threw away the groups pam_group adds; the password stayed in the service's PAM handle until logoff; `DISPLAY` stayed set for the re-exec, so every logoff failed and waited for systemd; a shutdown asked for in the session never reached it. | Groups first; the handle is released at the fork; the variables are unset; `l2k-session` hands 10 and 11 back. |
+| `l2k-session` | The nested server's cookie went on `xauth`'s command line, and without `xauth` the nested server ran with no cookie at all; a scaler that failed to start left the desktop invisible; the log grew for ever. | Through a pipe, and never without one; the start is checked and watched; the last session's log is kept. |
+| `apps/l2kexplorer.c`, `lib/fileops.c` | Paste's Replace deleted the destination first -- a folder holding the source included -- and a copy that then failed lost both. Send To merged into folders unasked. | `w2k_fs_put`: the old item is set aside and put back on failure, the same file is known by device and inode, folders merge. |
+| `apps/l2kexplorer.c` | The execute bit was trusted on exFAT and NTFS sticks, where every file has it: a document double-clicked ran as a shell script, and a `.desktop` file on a stick ran its `Exec=`. | Only ELF files and `#!` scripts run, never from a filesystem without permissions; a shortcut is trusted when it is the user's own on one with them. |
+| `apps/l2kexplorer.c` | Ctrl+Z typed in the Search or Address box undid file operations; undoing New deleted a document written since; undoing a rename or move replaced whatever had the name. | Keys stay in the boxes; a New item with content goes to the bin; undo never replaces. |
+| `apps/l2kexplorer.c`, `lib/fileprops.c`, `wm/desktop.c` | Rename, the Properties name box and the Hidden box replaced an existing file without a word. | `renameat2` with `RENAME_NOREPLACE`, and a message. |
+| `lib/fileprops.c` | For a symlink the mode shown was the link's 0777, and an edit was applied to the target: Read-only on a link to a private key made it world-readable. | The target's mode is shown and never changed through the link. |
+| `lib/trash.c` | `Path=` was written raw and the last one won on restore, so a crafted name restored anywhere; the bin was 0755. | Percent-encoded, the first one in the group, `.trashinfo` claimed with `O_EXCL`, 0700. |
+| `apps/l2kexplorer.c` | Create Shortcut wrote raw names into `Name=` and `Exec=`; a drag across drives moved; tar with "delete files after adding" deleted the new archive. | Escaped; copies (Shift moves); `--remove-files`. |
+| `lib/driveprops.c` | Re-reading the sheet after Disk Cleanup wrote over its own input and could relabel the root filesystem; "temporary files" deleted week-old folders holding today's files. | Its inputs are copied; only files a week old go, never sockets. |
+| `apps/l2kdiskmgmt.c` | Device names are handed out again as disks come and go: after a stick was swapped for a backup drive, Initialize on the stale row wiped the drive. Partition numbers came from kernel names that lag behind, and failures were swallowed. | Every root script checks the disk's `diskseq` and the partition's start first; the number is looked up by start in the table on the disk; failures are reported. |
+| `apps/l2kdiskmgmt.c` | "Busy" was a mount at `/`, `/boot` or `/usr`: the EFI System Partition, a RAID or ZFS member and a btrfs subvolume root could be deleted in use. | Every mount, swap, `/etc/fstab` and an exclusive open are asked; boot and recovery partitions on fixed disks are protected, and the reason is shown. |
+| `apps/l2kdiskmgmt.c` | lsblk counts `START` in 512-byte sectors; multiplied by a 4Kn disk's 4096, partitions were drawn eight times too far along. The selection stayed at its index across a rescan. | 512; the selection is kept by what it is, and prompts name the partition. |
+| `apps/l2kportal.c` | A sandboxed program's "save" could name dotfiles and paths. | Refused before any dialog; replacing asks. |
+| `apps/l2kbluetooth.c` | BlueZ's signals were taken from any sender; Return accepted a pairing the moment the prompt appeared; trusted devices were accepted unasked. | The sender and signature are checked; input waits 750 ms; nothing is accepted unasked. |
+| `apps/l2knetwork.c` | The Wi-Fi key went on `nmcli`'s command line. | A masked prompt, and `--ask` on standard input. |
+| `wm/notifyd.c`, `wm/startdir.c`, `apps/l2kupdate.c` | SIGTERM to any owner of the notification name; Startup programs run unquoted; the installer fetched over plain HTTP. | Only our own daemons of the same user; quoted; `curl -fsSL --proto '=https'`. |
+| `lib/dialogs.c`, `apps/l2knotepad.c` | Save As replaced a file without asking; Notepad's save turned a symlinked file into a plain one and split hard links. | It asks; the save goes through the link, in place for hard links, keeping the owner. |
+| `wm/startpanel.c` | The XP-style Start menu in Modern Light and Dark: the footer's Log Off and Turn Off Computer white on white, the name's shadow smeared, the rules invisible, the search box in the wrong colours. | Colours from the scheme with a contrast guard. |
+| `lib/menu.c`, `lib/dialogs.c`, `wm/startpanel.c` | Submenu arrows and combo-box arrows pointed left. | Right and down. |
+| `lib/font.c` | Text in a colour outside the palette (the Calculator's keys, the looks' panel text) stopped being drawn once eight such colours had been asked for in a session: the cache was full and answered nothing. | Its slots are reused in turn. |
+| `lib/anim.c`, `lib/menu.c`, `lib/dialogs.c`, `wm/input.c` | Menu and combo slides flashed the window's background at every step and grew an empty box; the minimise flight grabbed the whole server and flew over the window it came from. | The picture is painted once and made the window's background, and a shape reveals it on the clock; the flight is a caption-coloured window, with no grab, after the window has gone. |
+| `wm/client.c` | Nothing kept a dialog above its owner: clicking a program's window buried its modal dialog, which has no task button, and the program looked hung. | Dialogs rise with their owner, a modal one takes the focus, and they are minimised and restored with it. |
+| `wm/wm.c`, `wm/client.c` | A look change left every frame at the old size (a new caption half under the client), the work area and maximised windows unchanged, and `_NET_FRAME_EXTENTS` stale. | Re-laid out from the frame's corner, refitted, published. |
+| `wm/client.c`, `wm/input.c` | A window mapped full screen was cascaded, frameless, and vanished when it left; full screen from maximised lost the restore size; a full-screen window stayed over everything unfocused; Win+Left on a maximised window left it stuck "maximised"; a drag landed short of the pointer; with outlines, a snap was overridden. | Each fixed; full screen covers the bar only while focused. |
+| `wm/wm.c`, `wm/client.c` | The in-place restart (updates) ran the Startup folder again, moved and unminimised windows, and framed tray icons; windows on a monitor switched off stayed there; `_NET_WORKAREA` was the primary monitor only. | Fixed; windows come onto the nearest monitor; the screen less the bar. |
+| `wm/taskbar.c`, `wm/desktop.c` | Task buttons never lit on hover in the themed looks; the orb's glow never animated; the clock ignored a new time zone; Refresh on the desktop did not re-read it, and the selection stayed at its index. | Fixed. |
+| `wm/startmenu.c`, `wm/programs.c` | Recent documents were decoded as pictures to draw their icons, freezing the menu on big files; Wine's entries never launched (their escapes were not undone); a hidden user entry did not hide the system one. | Icons by type; the escapes undone; the user's entry wins. |
+| `apps/l2kdisplay.c`, `lib/app.c`, `lib/win.c` | Choices not yet applied were lost to any other program's Apply, and every save undid what other programs had applied since. | Reloads wait while a dialog has changes; a save writes its own changes over the file as it is now. |
+| `apps/l2kdisplay.c` | OK closed the dialog after a refused Apply; Primary and Extend were lost on a tab switch; the lists were stale after Apply; Cancel left the new scaler filter on screen. | Fixed. |
+| `apps/l2ktaskmgr.c`, `apps/l2kdevmgmt.c` | The lists jumped to the top every second, CPU read 375% after returning to Processes; Device Manager's right-click acted on the old selection. | Fixed. |
+| `apps/l2kpaint.c`, `lib/dialogs.c` | Paint: undo across layer changes, a flood-fill hole, Pick reading the bottom layer, a gradient writing past the canvas, a crash opening pictures over 8192 px, quitting without asking; a colour typed in hex was dropped on OK. | Fixed. |
+
+### Speed and memory
+
+| Where | Was | Now |
+|---|---|---|
+| `wm/programs.c`, `lib/xdgicon.c` | The Start menu rescanned every program folder and probed the icon theme file by file at every open: 620 ms cold | The scan kept until a folder changes, icon lookups indexed and cached: 60 ms |
+| `apps/l2kdisplay.c`, `lib/monitors.c` | `xrandr --query` re-probed every monitor before the window opened, and the whole wallpaper was decoded for a 160-pixel preview: 300 ms with a 24-megapixel photograph | The server's current information; the picture decoded at 1/8 by libjpeg after the window is up: 94 ms |
+| `apps/l2knetwork.c`, `lib/driveprops.c`, `apps/l2kdevmgmt.c` | Scans, connects, the Disk Cleanup walk and `modinfo` ran before the window could paint | In the background, or after the first paint |
+| `wm/desktop.c` | Every Apply anywhere decoded and resampled the wallpaper again, 0.5-1 s of frozen shell on a wide desktop | Rebuilt only when its inputs change, and decoded no bigger than the monitors need |
+| `wm/volume.c` | With no sound server, `pactl` was started again on every pass of the loop: 780 wakeups a second | A backoff from 5 s to a minute: under one a second |
+| `wm/desktop.c`, `wm/wm.c` | The shell woke every 2 s for the Recycle Bin, and asked the server for the idle time at every wakeup | The bin's folder is watched; the idle time every 30 s |
+| `wm/frame.c`, `lib/draw.c`, `wm/client.c`, `wm/wm.c` | Every step of a drag rebuilt the frame's shape as a mask; a caption gradient was two requests per column; every click in every program waited on a restack; a title change repainted twice | The shape kept until its size changes, as rectangles; one request per shade; the click goes on first and a window already on top is not restacked; unchanged titles ignored |
+| `lib/win.c`, `lib/app.c` | The event loop woke every second; exposures repainted; colour conversion looked the visual's masks up for every pixel | It sleeps until something is due; exposures are copied from the buffer; the masks are kept |
+| `apps/l2kdm.c`, `lib/skin.c` | The logon wallpaper was built one `XPutPixel` per pixel, eight million at 4K | A row of words at a time |
+| `apps/l2ktaskmgr.c`, `apps/l2kpaint.c` | Command lines re-read every tick; Paint composited every screen pixel over all layers at each motion | Once per process; a kept canvas, updated where it changed |
+
+### Not tested here
+
+A PAM login and anything run as root (the logon screen's switch to the
+user, Disk Management's scripts); Wi-Fi (there is no card); real monitors
+and their EDID reads; a real 4Kn disk.
+
+### Still open
+
+Reported and left for later: the scaler's damage merging, pointer polling
+and mixed-scale layouts; `_NET_MOVERESIZE_WINDOW` taking the client's
+origin; the live glass's cost; Explorer re-reading a folder for every
+sort, drag-and-drop with no timeout, the 64-item limits and copies without
+progress; the Calculator's operator semantics; PNG size limits; the
+updater's blocking checks; Wine icon extraction on the listing path.

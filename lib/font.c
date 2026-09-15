@@ -245,27 +245,33 @@ int w2k_font_px_width(int font, const char *s, int len)
 
 /* A colour that is not in the palette. Windows' calculator keys are a
  * fixed red and blue, not scheme colours, so there has to be a way to ask
- * for one. Cached, since the callers use a handful. */
-static struct { unsigned rgb; XftColor c; int ready; } rgb_cache[8];
+ * for one. Cached, since the callers use a handful -- but more than a
+ * handful over a session (every look has its own title and panel text):
+ * a full cache used to answer NULL and the text was never drawn, so the
+ * slots are reused in turn now. */
+#define RGB_CACHE 32
+static struct { unsigned rgb; XftColor c; int ready; } rgb_cache[RGB_CACHE];
+static int rgb_next;
 
 static XftColor *colour_rgb(int r, int g, int b)
 {
     unsigned key = ((unsigned)r << 16) | ((unsigned)g << 8) | (unsigned)b;
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < RGB_CACHE; i++)
         if (rgb_cache[i].ready && rgb_cache[i].rgb == key)
             return &rgb_cache[i].c;
-    for (int i = 0; i < 8; i++) {
-        if (rgb_cache[i].ready) continue;
-        XRenderColor rc = { (unsigned short)(r * 257), (unsigned short)(g * 257),
-                            (unsigned short)(b * 257), 0xffff };
-        if (!XftColorAllocValue(w2k.dpy, w2k.visual, w2k.cmap, &rc,
-                                &rgb_cache[i].c))
-            return NULL;
-        rgb_cache[i].rgb = key;
-        rgb_cache[i].ready = 1;
-        return &rgb_cache[i].c;
+    int i = rgb_next;
+    rgb_next = (rgb_next + 1) % RGB_CACHE;
+    if (rgb_cache[i].ready) {
+        XftColorFree(w2k.dpy, w2k.visual, w2k.cmap, &rgb_cache[i].c);
+        rgb_cache[i].ready = 0;
     }
-    return NULL;
+    XRenderColor rc = { (unsigned short)(r * 257), (unsigned short)(g * 257),
+                        (unsigned short)(b * 257), 0xffff };
+    if (!XftColorAllocValue(w2k.dpy, w2k.visual, w2k.cmap, &rc, &rgb_cache[i].c))
+        return NULL;
+    rgb_cache[i].rgb = key;
+    rgb_cache[i].ready = 1;
+    return &rgb_cache[i].c;
 }
 
 void w2k_text_rgb(Drawable d, int font, int x, int y, const char *s,

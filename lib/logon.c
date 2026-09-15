@@ -15,7 +15,39 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <sys/stat.h>
+
+/* A small settings file out of a home, read the way the logon screen (as
+ * root, before anyone has logged on) has to read one: not through a
+ * symlink, not blocking, and only a regular file owned by the home's
+ * owner and no bigger than `maxsize`. A FIFO named ~/.w2k/account used to
+ * hang root's fopen for good -- no logon dialog, even across restarts --
+ * and a link to /dev/zero read without end. NULL when it is not that. */
+FILE *w2k_fopen_confined(const char *path, const char *home, long maxsize)
+{
+    /* The owner and the symlink only matter to root: a user's own session
+     * reads what it can, their dotfiles linked in from elsewhere included. */
+    int root = geteuid() == 0;
+    uid_t owner = (uid_t)-1;
+    if (root && home && home[0]) {
+        struct stat hs;
+        if (stat(home, &hs) != 0) return NULL;
+        owner = hs.st_uid;
+    }
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY | (root ? O_NOFOLLOW : 0));
+    if (fd < 0) return NULL;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > maxsize ||
+        (owner != (uid_t)-1 && st.st_uid != owner)) {
+        close(fd);
+        return NULL;
+    }
+    FILE *f = fdopen(fd, "r");
+    if (!f) close(fd);
+    return f;
+}
 
 void w2k_logon_defaults(W2kLogonCfg *c)
 {
@@ -32,7 +64,7 @@ int w2k_logon_load(W2kLogonCfg *c, const char *home)
     if (!home) return 0;
     char p[1100];
     snprintf(p, sizeof p, "%s/.w2k/logon", home);
-    FILE *f = fopen(p, "r");
+    FILE *f = w2k_fopen_confined(p, home, 64 * 1024);
     if (!f) return 0;
     char line[1200];
     while (fgets(line, sizeof line, f)) {

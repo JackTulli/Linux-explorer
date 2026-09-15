@@ -160,8 +160,10 @@ static int  nleft, nright;
 static int  panel_x, panel_y, panel_h;
 static int  hot_col = -1, hot_row = -1;   /* what the pointer is over */
 static Window panel;
+volatile int startpanel_cancel;           /* startmenu_close(), from outside the loop */
 static SearchState ss;                    /* typing searches, inside the panel */
 static int    searching;
+static int    left_skinned;               /* XP's white column, from its skins */
 static void   draw_search(Drawable d);
 
 /* ------------------------------------------------------------------ *
@@ -278,32 +280,66 @@ static int row_at(const Row *rows, int n, int rh, int y0, int y)
 /* ------------------------------------------------------------------ *
  * Painting
  * ------------------------------------------------------------------ */
-/* The right column's ground: XP's pale blue, Windows 7's white, and the
- * face colour when the panel is worn over the classic scheme. */
-static void panel_colours(unsigned long *right_bg, unsigned long *rule,
-                          unsigned long *hdr1, unsigned long *hdr2,
-                          unsigned long *hdr_text)
+/* The panel's colours, as RGB. XP's pale blue right column and blue
+ * header are its own; over any other look they come from the scheme:
+ * the face for the right column, the window colour for the left, and a
+ * header and footer in the title colours -- or, in the Modern look (whose
+ * shadow is the face colour on purpose, so rules drawn in it vanished),
+ * a flat band of its hover grey with rules in its border colour. The
+ * text on the header and footer is whatever reads on them: white on a
+ * blue title, dark on Modern Light's near-white band (the footer's
+ * "Log Off" and "Turn Off Computer" used to be white there, and so
+ * invisible). */
+typedef struct { int right[3], rule[3], hdr1[3], hdr2[3], text[3]; } PanelColours;
+
+static int lum(const int c[3]) { return (c[0] * 299 + c[1] * 587 + c[2] * 114) / 1000; }
+static void set3(int d[3], int r, int g, int b) { d[0] = r; d[1] = g; d[2] = b; }
+static void from_scheme(int d[3], int color)
+{
+    const unsigned char *c = w2k_scheme_rgb(color);
+    set3(d, c[0], c[1], c[2]);
+}
+
+static void panel_colours(PanelColours *pc)
 {
     if (w2k_theme == THEME_XP) {
-        *right_bg  = w2k_rgb(211, 229, 250);
-        *rule      = w2k_rgb(180, 205, 240);
-        *hdr1      = w2k_rgb(0, 83, 225);
-        *hdr2      = w2k_rgb(61, 149, 255);
-        *hdr_text  = w2k_rgb(255, 255, 255);
-    } else if (w2k_theme == THEME_BASIC7) {
-        *right_bg  = w2k_rgb(240, 240, 240);
-        *rule      = w2k_rgb(203, 203, 203);
-        *hdr1      = w2k_rgb(60, 66, 74);
-        *hdr2      = w2k_rgb(32, 36, 42);
-        *hdr_text  = w2k_rgb(255, 255, 255);
+        set3(pc->right, 211, 229, 250);
+        set3(pc->rule, 180, 205, 240);
+        set3(pc->hdr1, 0, 83, 225);
+        set3(pc->hdr2, 61, 149, 255);
+        set3(pc->text, 255, 255, 255);
+        return;
+    }
+    if (w2k_theme == THEME_BASIC7) {
+        set3(pc->right, 240, 240, 240);
+        set3(pc->rule, 203, 203, 203);
+        set3(pc->hdr1, 60, 66, 74);
+        set3(pc->hdr2, 32, 36, 42);
+        set3(pc->text, 255, 255, 255);
+        return;
+    }
+    from_scheme(pc->right, C_FACE);
+    if (w2k_theme == THEME_MODERN) {
+        w2k_modern_rgb(MODERN_BORDER, pc->rule);
+        w2k_modern_rgb(MODERN_HOT, pc->hdr1);
+        memcpy(pc->hdr2, pc->hdr1, sizeof pc->hdr2);
+        from_scheme(pc->text, C_TEXT);
     } else {
-        *right_bg  = w2k.col[C_FACE];
-        *rule      = w2k.col[C_SHADOW];
-        *hdr1      = w2k.col[C_ACTIVETITLE];
-        *hdr2      = w2k.col[C_ACTIVETITLE2];
-        *hdr_text  = w2k.col[C_TITLETEXT];
+        from_scheme(pc->rule, C_SHADOW);
+        from_scheme(pc->hdr1, C_ACTIVETITLE);
+        from_scheme(pc->hdr2, C_ACTIVETITLE2);
+        from_scheme(pc->text, C_TITLETEXT);
+    }
+    /* A title text that does not stand out from its bar (a tint scheme
+     * with a pale title) gives way to black or white, whichever reads. */
+    int hl = (lum(pc->hdr1) + lum(pc->hdr2)) / 2, tl = lum(pc->text);
+    if (tl - hl < 90 && hl - tl < 90) {
+        if (hl > 128) set3(pc->text, 0, 0, 0);
+        else          set3(pc->text, 255, 255, 255);
     }
 }
+
+static unsigned long px3(const int c[3]) { return w2k_rgb(c[0], c[1], c[2]); }
 
 static void fill(Drawable d, int x, int y, int w, int h, unsigned long px)
 {
@@ -319,21 +355,29 @@ static void rect_fg(Drawable d, int x, int y, int w, int h)
     w2k_frame_fg(d, x, y, w, h);
 }
 
-static void hgradient(Drawable d, int x, int y, int w, int h,
-                      unsigned long a, unsigned long b)
+/* From colour a on the left to b on the right: one fill per run of equal
+ * colour (a flat band is one fill). The colours are RGB already -- this
+ * used to ask the server for them, twice a gradient, at every hover. */
+static void hgradient(Drawable d, int x, int y, int w, int h, const int a[3], const int b[3])
 {
-    XColor ca = { .pixel = a }, cb = { .pixel = b };
-    XQueryColor(w2k.dpy, w2k.cmap, &ca);
-    XQueryColor(w2k.dpy, w2k.cmap, &cb);
     int px = w2k_cx(x), py = w2k_cx(y), ph = w2k_cw(y, h);
     w = w2k_cw(x, w);
-    for (int i = 0; i < w; i++) {
-        int t = w > 1 ? i * 255 / (w - 1) : 0;
-        int r = (ca.red >> 8) + ((cb.red >> 8) - (ca.red >> 8)) * t / 255;
-        int g = (ca.green >> 8) + ((cb.green >> 8) - (ca.green >> 8)) * t / 255;
-        int bl = (ca.blue >> 8) + ((cb.blue >> 8) - (ca.blue >> 8)) * t / 255;
-        XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r, g, bl));
-        XFillRectangle(w2k.dpy, d, w2k.gc, px + i, py, 1, (unsigned)ph);
+    int run = 0;
+    unsigned long last = 0;
+    for (int i = 0; i <= w; i++) {
+        unsigned long c = 0;
+        if (i < w) {
+            int t = w > 1 ? i * 255 / (w - 1) : 0;
+            c = w2k_rgb(a[0] + (b[0] - a[0]) * t / 255, a[1] + (b[1] - a[1]) * t / 255,
+                        a[2] + (b[2] - a[2]) * t / 255);
+        }
+        if (i > 0 && (i == w || c != last)) {
+            XSetForeground(w2k.dpy, w2k.gc, last);
+            XFillRectangle(w2k.dpy, d, w2k.gc, px + i - run, py, (unsigned)run, (unsigned)ph);
+            run = 0;
+        }
+        last = c;
+        run++;
     }
 }
 
@@ -341,8 +385,9 @@ static void draw_row(Drawable d, const Row *r, int x, int y, int w, int rh,
                      int hot, unsigned long bg)
 {
     if (r->kind == R_SEP) {
-        unsigned long rbg, rule, h1, h2, ht;
-        panel_colours(&rbg, &rule, &h1, &h2, &ht);
+        PanelColours pc;
+        panel_colours(&pc);
+        unsigned long rule = px3(pc.rule);
         fill(d, x, y, w, SEP_H, bg);
         int left = bg == w2k_rgb(255, 255, 255);   /* the white column */
         if (w2k_theme == THEME_XP) {
@@ -381,7 +426,10 @@ static void draw_row(Drawable d, const Row *r, int x, int y, int w, int rh,
         else if (luna)   w2k_icon_draw_scaled(d, ix, y + 3, r->icon, 24);
         else             w2k_icon_draw(d, ix, y + (rh - 16) / 2, r->icon);
     }
-    int col = hot ? C_HIGHLIGHTTEXT : C_TEXT;
+    /* The text pairs with its ground: the left column is the window
+     * colour, the right the face. In a dark scheme they are both light,
+     * but a high-contrast one can set them apart. */
+    int col = hot ? C_HIGHLIGHTTEXT : bg == w2k.col[C_WINDOW] ? C_WINDOWTEXT : C_TEXT;
     char buf[128];
     w2k_ellipsis(font, r->label, w - (tx - x) - 14, buf, sizeof buf);
     int ty = y + (rh - fh) / 2 - (luna && !r->big ? 1 : 0);
@@ -390,11 +438,11 @@ static void draw_row(Drawable d, const Row *r, int x, int y, int w, int rh,
     else
         w2k_text_mnemonic(d, font, tx, ty, buf, col, 1);
     if (r->kind == R_SUB) {
-        /* The submenu arrow, drawn as the menu control draws it. */
+        /* The submenu arrow, pointing right as the menu control's does. */
         int ax = x + w - 12, ay = y + rh / 2 - 4;
         XSetForeground(w2k.dpy, w2k.gc, w2k.col[col]);
         for (int i = 0; i < 5; i++)
-            w2k_fill_fg(d, ax + i, ay + 4 - i, 1, 2 * i + 1);
+            w2k_fill_fg(d, ax + i, ay + i, 1, 9 - 2 * i);
     }
 }
 
@@ -771,8 +819,9 @@ static void panel_draw(Drawable d)
 {
     if (seven()) { panel7_draw(d); return; }
 
-    unsigned long right_bg, rule, hdr1, hdr2, hdr_text;
-    panel_colours(&right_bg, &rule, &hdr1, &hdr2, &hdr_text);
+    PanelColours pc;
+    panel_colours(&pc);
+    unsigned long right_bg = px3(pc.right), rule = px3(pc.rule);
 
     Pixmap pm = d;
     int body_y = HEADER_H, body_h = panel_h - HEADER_H - FOOTER_H;
@@ -794,8 +843,8 @@ static void panel_draw(Drawable d)
          * the 32-pixel icon centred in its place. */
         w2k_account_picture_draw(pm, 9, 9, 48, ICO_MYCOMPUTER);
     } else {
-        hgradient(pm, 0, 0, PANEL_W, HEADER_H, hdr1, hdr2);
-        hgradient(pm, 0, panel_h - FOOTER_H, PANEL_W, FOOTER_H, hdr2, hdr1);
+        hgradient(pm, 0, 0, PANEL_W, HEADER_H, pc.hdr1, pc.hdr2);
+        hgradient(pm, 0, panel_h - FOOTER_H, PANEL_W, FOOTER_H, pc.hdr2, pc.hdr1);
         w2k_account_picture_draw(pm, 8, (HEADER_H - 48) / 2, 48, ICO_MYCOMPUTER);
         fill(pm, 0, body_y, LEFT_W, body_h, w2k.col[C_WINDOW]);
         fill(pm, LEFT_W, body_y, PANEL_W - LEFT_W, body_h, right_bg);
@@ -803,14 +852,18 @@ static void panel_draw(Drawable d)
         w2k_fill_fg(pm, LEFT_W, body_y, 1, body_h);
     }
     int fhb = w2k_font_height(F_UI_BOLD);
-    int name_x = skinned ? 68 : 52;
-    w2k_text_rgb(pm, F_UI_BOLD, name_x + 1, (64 - fhb) / 2 + 1, user_display_name(),
-                 (int)((hdr1 >> 16) & 0xff) / 2, (int)((hdr1 >> 8) & 0xff) / 2,
-                 (int)(hdr1 & 0xff) / 2);
+    /* Clear of the 48-pixel picture at 8 (it ends at 56). */
+    int name_x = skinned ? 68 : 64;
+    /* XP's white name has a dark shadow under it. Only a light name on a
+     * dark bar gets one: under dark text on a light bar (Modern Light) it
+     * doubled the name into a smear. */
+    if (lum(pc.text) > lum(pc.hdr1) + 60)
+        w2k_text_rgb(pm, F_UI_BOLD, name_x + 1, (64 - fhb) / 2 + 1, user_display_name(),
+                     pc.hdr1[0] / 2, pc.hdr1[1] / 2, pc.hdr1[2] / 2);
     w2k_text_rgb(pm, F_UI_BOLD, name_x, (64 - fhb) / 2, user_display_name(),
-                 (int)((hdr_text >> 16) & 0xff), (int)((hdr_text >> 8) & 0xff),
-                 (int)(hdr_text & 0xff));
+                 pc.text[0], pc.text[1], pc.text[2]);
 
+    left_skinned = skinned;
     int lx = skinned ? 2 : 0, lw = skinned ? LEFT_W - 2 : LEFT_W;
     int rx = LEFT_W + 1, rw = PANEL_W - LEFT_W - 1 - (skinned ? 7 : 0);
     unsigned long lbg = skinned ? w2k_rgb(255, 255, 255) : w2k.col[C_WINDOW];
@@ -902,8 +955,12 @@ static void panel_draw(Drawable d)
             int hot = hot_col == 2 && hot_row == i;
             if (hot) fill(pm, bx, fy + 6, bw, FOOTER_H - 12, w2k.col[C_HIGHLIGHT]);
             w2k_icon_draw(pm, bx + 6, fy + (FOOTER_H - 16) / 2, fb[i].icon);
-            w2k_text_mnemonic_rgb(pm, F_UI, bx + 6 + 16 + 6, fy + (FOOTER_H - fh) / 2,
-                                  fb[i].label, 255, 255, 255, 1);
+            if (hot)
+                w2k_text_mnemonic(pm, F_UI, bx + 6 + 16 + 6, fy + (FOOTER_H - fh) / 2,
+                                  fb[i].label, C_HIGHLIGHTTEXT, 1);
+            else
+                w2k_text_mnemonic_rgb(pm, F_UI, bx + 6 + 16 + 6, fy + (FOOTER_H - fh) / 2,
+                                      fb[i].label, pc.text[0], pc.text[1], pc.text[2], 1);
         }
     }
 
@@ -937,11 +994,20 @@ static void draw_search(Drawable d)
 {
     int x, y, w, h, rowh, bx, by, bw, bh;
     search_area(&x, &y, &w, &h, &rowh, &bx, &by, &bw, &bh);
-    unsigned long white = w2k_rgb(255, 255, 255);
-    fill(d, x, y, w, h, white);
-    if (!seven()) fill(d, bx - 4, by - 4, bw + 8, bh + 8, white);
+    /* The results sit on the left column's own ground: 7's pane and XP's
+     * column are white, and over any other look the column is the window
+     * colour. They were always painted white, and in a dark scheme the
+     * results (in its light text) could not be seen. */
+    unsigned long ground = seven() || left_skinned ? w2k_rgb(255, 255, 255) : w2k.col[C_WINDOW];
+    if (seven()) fill(d, x, y, w, h, ground);
+    else {
+        /* The whole column above All Programs, from the top of the body:
+         * a strip between the box and the first result used to let the
+         * pinned row's icon show through. */
+        fill(d, x, HEADER_H, w, y + h - HEADER_H, ground);
+    }
     startsearch_draw_box(d, &ss, bx, by, bw, bh);
-    startsearch_draw_rows(d, &ss, x, y, w, h, rowh, white, 0);
+    startsearch_draw_rows(d, &ss, x, y, w, h, rowh, ground, 0);
 }
 
 static void panel_paint(void)
@@ -1066,9 +1132,13 @@ static int open_submenu(int id, int x, int y)
             w2k_menu_item(m, 0, "(Empty)", NULL, ICO_NONE);
             w2k_menu_disable(m);
         }
-        for (int i = 0; i < n; i++)
-            w2k_menu_item(m, RECENT_BASE + i, recent_label(i), NULL,
-                          w2k_icon_by_name(recent_file(i)));
+        for (int i = 0; i < n; i++) {
+            /* Its kind of icon, not the file decoded as one (startmenu.c). */
+            char label[260];
+            w2k_menu_escape(recent_label(i), label, sizeof label);
+            w2k_menu_item(m, RECENT_BASE + i, label, NULL,
+                          w2k_file_icon(recent_label(i), 0));
+        }
     }
     /* The panel holds the pointer grab; the menu takes it and gives it
      * back, in the same way the Start menu's context menus do. */
@@ -1197,7 +1267,8 @@ int startpanel_run(int bx, int by)
     long opened = w2k_now_ms();
     int result = 0, done = 0;
     searching = 0;
-    while (!done && running) {
+    startpanel_cancel = 0;
+    while (!done && running && !startpanel_cancel) {
         XEvent e;
         XNextEvent(w2k.dpy, &e);
         switch (e.type) {
@@ -1298,6 +1369,11 @@ int startpanel_run(int bx, int by)
             break;
         }
         case KeyPress: {
+            /* The Windows key again closes the panel. */
+            {
+                KeySym sk = XLookupKeysym(&e.xkey, 0);
+                if (sk == XK_Super_L || sk == XK_Super_R) { done = 1; break; }
+            }
             if (searching) {
                 int r = startsearch_key(&ss, &e.xkey);
                 if (r == SS_RUN) { startsearch_run(&ss, ss.sel); done = 1; }

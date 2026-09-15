@@ -71,19 +71,35 @@ static void sub_open(void)
     fcntl(sub_fd, F_SETFD, FD_CLOEXEC);
 }
 
+/* When the subscription may be started again. With no sound server to
+ * talk to, pactl exits the moment it starts; reopening it at every turn
+ * of the main loop forked a shell and pactl a few hundred times a second
+ * for as long as the server was down. So it waits, longer each time, and
+ * the five-second poll stands in meanwhile. */
+static long sub_retry_at, sub_backoff, sub_opened_at;
+
 static void sub_close(void)
 {
     if (!sub) return;
     pclose(sub);
     sub = NULL;
     sub_fd = -1;
+    long now = w2k_now_ms();
+    /* One that ran for a while was a real subscription: start over. */
+    if (now - sub_opened_at > 60000) sub_backoff = 0;
+    sub_backoff = sub_backoff ? sub_backoff * 2 : 5000;
+    if (sub_backoff > 60000) sub_backoff = 60000;
+    sub_retry_at = now + sub_backoff;
 }
 
 /* The fd to watch, or -1 when there is nothing to subscribe to. */
 int volume_fd(void)
 {
     if (!volume_available()) return -1;
-    if (have_pactl == 1 && !sub) sub_open();
+    if (have_pactl == 1 && !sub && w2k_now_ms() >= sub_retry_at) {
+        sub_open();
+        sub_opened_at = w2k_now_ms();
+    }
     return sub_fd;
 }
 
@@ -99,7 +115,10 @@ int volume_subscribed_event(void)
         if (n > 0) {
             buf[n] = 0;
             got = 1;
-            if (strstr(buf, "sink") || strstr(buf, "server")) want = 1;
+            /* The default sink's level or mute, or the default itself --
+             * not "sink-input", which is every stream that starts or
+             * stops, the shell's own sounds included. */
+            if (strstr(buf, "on sink #") || strstr(buf, "on server")) want = 1;
             if ((size_t)n < sizeof buf - 1) break;
             continue;
         }
@@ -158,7 +177,11 @@ void volume_set(int pct)
     else
         snprintf(cmd, sizeof cmd,
                  "amixer -q set Master %d%% >/dev/null 2>&1", pct);
-    if (system(cmd) == 0) vol_level = pct;
+    /* In the background, the level shown at once: a volume key held down
+     * used to stall the whole shell for a pactl round trip per repeat. The
+     * sink's own change event then confirms it. */
+    vol_level = pct;
+    wm_spawn(cmd);
 }
 
 /* Play, pause and stop for whatever is playing: playerctl if it is
@@ -183,7 +206,8 @@ void volume_toggle_mute(void)
     const char *cmd = have_pactl > 0
         ? "pactl set-sink-mute @DEFAULT_SINK@ toggle >/dev/null 2>&1"
         : "amixer -q set Master toggle >/dev/null 2>&1";
-    if (system(cmd) == 0) vol_muted = !vol_muted;
+    vol_muted = !vol_muted;            /* shown now; done in the background */
+    wm_spawn(cmd);
 }
 
 /* The speaker, drawn at 16x16: a cone, and either arcs or a cross. On

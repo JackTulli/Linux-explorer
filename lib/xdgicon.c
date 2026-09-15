@@ -10,15 +10,12 @@
  * draws, by averaging (a box filter): nearest-neighbour turns a 48-pixel
  * icon into a mess at 16. */
 #include "w2k.h"
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
-
-#define MAX_CACHE 512
-
-static struct { char name[128]; int id; } cache[MAX_CACHE];
-static int ncache;
 
 /* Sizes to try, best first, for a target of 32. */
 static const int size_pref[] = { 32, 48, 24, 64, 22, 16, 96, 128, 256 };
@@ -26,6 +23,96 @@ static const char *categories[] = { "apps", "categories", "devices", "places",
                                     "mimetypes", "actions", "status", NULL };
 
 static int readable(const char *p) { return access(p, R_OK) == 0; }
+
+/* ------------------------------------------------------------------ *
+ * The directories a name is looked for in, and what is in them.
+ *
+ * A name was looked for by asking for every candidate file in turn: six
+ * themes under six bases, nine sizes, seven categories, three layouts --
+ * 6,804 access() calls for a name that is not there, and the first
+ * classic Start menu of a session asked 327,517 times (the better part
+ * of a second). Now the candidate directories that exist are found once,
+ * in the same order of preference, and each one's PNG names are read on
+ * first use into a sorted list: a lookup is a binary search per
+ * directory and no system calls.
+ * ------------------------------------------------------------------ */
+typedef struct {
+    char  *path;
+    char **names;                 /* sorted, ".png" dropped */
+    int    n, loaded;
+} IconDir;
+static IconDir *dirs;
+static int ndirs, capdirs;
+static char dirs_key[256];        /* the theme order they were found for */
+
+static int is_dir(const char *p)
+{
+    struct stat st;
+    return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static void dirs_free(void)
+{
+    for (int i = 0; i < ndirs; i++) {
+        for (int k = 0; k < dirs[i].n; k++) free(dirs[i].names[k]);
+        free(dirs[i].names);
+        free(dirs[i].path);
+    }
+    ndirs = 0;
+}
+
+static void dirs_add(const char *p)
+{
+    for (int i = 0; i < ndirs; i++) if (!strcmp(dirs[i].path, p)) return;
+    if (ndirs == capdirs) {
+        int cap = capdirs ? capdirs * 2 : 64;
+        IconDir *d = realloc(dirs, (size_t)cap * sizeof *d);
+        if (!d) return;
+        dirs = d;
+        capdirs = cap;
+    }
+    char *dup = strdup(p);
+    if (!dup) return;
+    dirs[ndirs++] = (IconDir){ dup, NULL, 0, 0 };
+}
+
+static int cmp_name(const void *a, const void *b)
+{
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+static void dir_load(IconDir *d)
+{
+    d->loaded = 1;
+    DIR *dp = opendir(d->path);
+    if (!dp) return;
+    int cap = 0;
+    struct dirent *de;
+    while ((de = readdir(dp))) {
+        size_t l = strlen(de->d_name);
+        if (l <= 4 || strcmp(de->d_name + l - 4, ".png")) continue;
+        if (d->n == cap) {
+            int nc = cap ? cap * 2 : 64;
+            char **g = realloc(d->names, (size_t)nc * sizeof *g);
+            if (!g) break;
+            d->names = g;
+            cap = nc;
+        }
+        char *s = malloc(l - 3);
+        if (!s) break;
+        memcpy(s, de->d_name, l - 4);
+        s[l - 4] = 0;
+        d->names[d->n++] = s;
+    }
+    closedir(dp);
+    if (d->n > 1) qsort(d->names, (size_t)d->n, sizeof *d->names, cmp_name);
+}
+
+static int dir_has(IconDir *d, const char *name)
+{
+    if (!d->loaded) dir_load(d);
+    return d->n && bsearch(&name, d->names, (size_t)d->n, sizeof *d->names, cmp_name) != NULL;
+}
 
 /* The icon theme the desktop is set to, from the GTK settings we write. */
 static const char *override_theme;      /* w2k_icon_by_name_in() */
@@ -67,41 +154,11 @@ static int try_path(const char *path, char *out, int n)
     return 1;
 }
 
-/* Look for `name` in one theme directory, in both layouts. */
-static int find_in_theme(const char *base, const char *theme, const char *name,
-                         char *out, int n)
+/* The candidate directories for the current theme order, in the order a
+ * name is looked for in them: theme by theme, base by base, then size,
+ * category and layout (<theme>/48x48/apps, <theme>/apps/48, legacy). */
+static void dirs_build(void)
 {
-    char path[1024];
-    for (unsigned s = 0; s < sizeof size_pref / sizeof *size_pref; s++) {
-        int sz = size_pref[s];
-        for (int c = 0; categories[c]; c++) {
-            snprintf(path, sizeof path, "%s/%s/%dx%d/%s/%s.png",
-                     base, theme, sz, sz, categories[c], name);
-            if (try_path(path, out, n)) return 1;
-            snprintf(path, sizeof path, "%s/%s/%s/%d/%s.png",
-                     base, theme, categories[c], sz, name);
-            if (try_path(path, out, n)) return 1;
-            snprintf(path, sizeof path, "%s/%s/%dx%d/%s/%s.png",
-                     base, theme, sz, sz, "legacy", name);
-            if (try_path(path, out, n)) return 1;
-        }
-    }
-    return 0;
-}
-
-/* Resolve an icon name to a PNG on disk. Absolute paths are used as given. */
-static int find_icon_file(const char *name, char *out, int n)
-{
-    if (!name || !*name) return 0;
-    if (strchr(name, '/')) return try_path(name, out, n);
-
-    /* A name that already ends in .png is still just a name to look up, but
-     * strip the suffix so the search does not double it. */
-    char bare[256];
-    snprintf(bare, sizeof bare, "%s", name);
-    size_t bl = strlen(bare);
-    if (bl > 4 && !strcmp(bare + bl - 4, ".png")) bare[bl - 4] = 0;
-
     const char *home = getenv("HOME");
     char h1[512] = "", h2[512] = "", h3[512] = "";
     if (home) {
@@ -118,14 +175,57 @@ static int find_icon_file(const char *name, char *out, int n)
                             "/usr/share/icons", NULL };
     const char *themes[] = { user_theme(), "Chicago95", "hicolor", "Adwaita",
                              "gnome", "locolor", NULL };
+    char key[256];
+    snprintf(key, sizeof key, "%.60s|%.180s", user_theme(), home ? home : "");
+    if (ndirs && !strcmp(key, dirs_key)) return;
+    dirs_free();
+    snprintf(dirs_key, sizeof dirs_key, "%s", key);
 
     for (int t = 0; themes[t]; t++) {
         if (!themes[t][0]) continue;
+        int seen = 0;                          /* the user's theme may be one of these */
+        for (int u = 0; u < t; u++) if (!strcmp(themes[u], themes[t])) seen = 1;
+        if (seen) continue;
         for (int b = 0; bases[b]; b++) {
             if (!bases[b][0]) continue;
-            if (find_in_theme(bases[b], themes[t], bare, out, n)) return 1;
+            char root[1024], p[1200];
+            snprintf(root, sizeof root, "%s/%s", bases[b], themes[t]);
+            if (!is_dir(root)) continue;
+            for (unsigned s = 0; s < sizeof size_pref / sizeof *size_pref; s++) {
+                int sz = size_pref[s];
+                for (int c = 0; categories[c]; c++) {
+                    snprintf(p, sizeof p, "%s/%dx%d/%s", root, sz, sz, categories[c]);
+                    if (is_dir(p)) dirs_add(p);
+                    snprintf(p, sizeof p, "%s/%s/%d", root, categories[c], sz);
+                    if (is_dir(p)) dirs_add(p);
+                    snprintf(p, sizeof p, "%s/%dx%d/legacy", root, sz, sz);
+                    if (is_dir(p)) dirs_add(p);
+                }
+            }
         }
     }
+}
+
+/* Resolve an icon name to a PNG on disk. Absolute paths are used as given. */
+static int find_icon_file(const char *name, char *out, int n)
+{
+    if (!name || !*name) return 0;
+    if (strchr(name, '/')) return try_path(name, out, n);
+
+    /* A name that already ends in .png is still just a name to look up, but
+     * strip the suffix so the search does not double it. */
+    char bare[256];
+    snprintf(bare, sizeof bare, "%s", name);
+    size_t bl = strlen(bare);
+    if (bl > 4 && !strcmp(bare + bl - 4, ".png")) bare[bl - 4] = 0;
+
+    dirs_build();
+    for (int i = 0; i < ndirs; i++)
+        if (dir_has(&dirs[i], bare)) {
+            char path[1400];
+            snprintf(path, sizeof path, "%s/%s.png", dirs[i].path, bare);
+            if (try_path(path, out, n)) return 1;
+        }
 
     /* The flat directories, where a lot of Debian packages put theirs. */
     char path[1024];
@@ -192,22 +292,78 @@ int w2k_icon_by_name_in(const char *name, const char *theme)
     return id;
 }
 
+/* Names already looked up, and what they came to: a hash table that
+ * grows, where a 512-entry list stopped caching when it was full (and
+ * from then on looked every name up, and registered its icon, afresh).
+ * Emptied when the icon theme changes, so a new theme's icons show. */
+typedef struct { char *key; int id; } Named;
+static Named *named;
+static unsigned nnamed, capnamed;
+static char named_theme[64];
+
+static unsigned hash(const char *s)
+{
+    unsigned h = 2166136261u;
+    while (*s) h = (h ^ (unsigned char)*s++) * 16777619u;
+    return h;
+}
+
+static void named_clear(void)
+{
+    for (unsigned i = 0; i < capnamed; i++) free(named[i].key);
+    free(named);
+    named = NULL;
+    nnamed = capnamed = 0;
+}
+
+static Named *named_slot(const char *key)
+{
+    if (!capnamed) return NULL;
+    for (unsigned i = hash(key) & (capnamed - 1);; i = (i + 1) & (capnamed - 1))
+        if (!named[i].key || !strcmp(named[i].key, key)) return &named[i];
+}
+
+static void named_put(const char *key, int id)
+{
+    if ((nnamed + 1) * 4 > capnamed * 3) {
+        unsigned cap = capnamed ? capnamed * 2 : 256;
+        Named *old = named;
+        unsigned oldcap = capnamed;
+        named = calloc(cap, sizeof *named);
+        if (!named) { named = old; return; }
+        capnamed = cap;
+        for (unsigned i = 0; i < oldcap; i++)
+            if (old[i].key) *named_slot(old[i].key) = old[i];
+        free(old);
+    }
+    Named *s = named_slot(key);
+    if (s->key) { s->id = id; return; }
+    s->key = strdup(key);
+    if (!s->key) return;
+    s->id = id;
+    nnamed++;
+}
+
 static int lookup(const char *name, const char *key)
 {
     if (!name || !*name) return ICO_APP;
-    for (int i = 0; i < ncache; i++)
-        if (!strcmp(cache[i].name, key)) return cache[i].id;
+    if (strcmp(named_theme, user_theme())) {
+        named_clear();
+        snprintf(named_theme, sizeof named_theme, "%s", user_theme());
+    }
+    Named *hit = named_slot(key);
+    if (hit && hit->key) return hit->id;
 
     int id = ICO_APP;
     /* A path is a file to read, in whatever format it is; only a bare
-     * name goes through the icon themes. */
+     * name goes through the icon themes. Not anything at all, though: an
+     * icon is small, and a big file named as one (a photo, a video --
+     * music players pass cover art) is not decoded to find that out. */
     if (strchr(name, '/')) {
-        id = w2k_icon_from_file(name);
-        if (ncache < MAX_CACHE) {
-            snprintf(cache[ncache].name, sizeof cache[ncache].name, "%s", key);
-            cache[ncache].id = id;
-            ncache++;
-        }
+        struct stat st;
+        if (stat(name, &st) == 0 && S_ISREG(st.st_mode) && st.st_size <= 2 * 1024 * 1024)
+            id = w2k_icon_from_file(name);
+        named_put(key, id);
         return id;
     }
     char path[1024];
@@ -224,11 +380,6 @@ static int lookup(const char *name, const char *key)
             free(rgba);
         }
     }
-
-    if (ncache < MAX_CACHE) {
-        snprintf(cache[ncache].name, sizeof cache[ncache].name, "%s", key);
-        cache[ncache].id = id;
-        ncache++;
-    }
+    named_put(key, id);
     return id;
 }

@@ -74,13 +74,11 @@ static int read_entry(const char *path, char *name, int nn, char *cmd, int cn,
         char *eq = strchr(line, '=');
         if (!eq) continue;
         *eq = 0;
-        if (!strcmp(line, "Name") && !name[0]) snprintf(name, (size_t)nn, "%s", eq + 1);
-        else if (!strcmp(line, "Exec") && !cmd[0]) snprintf(cmd, (size_t)cn, "%s", eq + 1);
-        else if (!strcmp(line, "Icon") && !icon[0]) snprintf(icon, (size_t)in, "%s", eq + 1);
+        if (!strcmp(line, "Name") && !name[0]) { snprintf(name, (size_t)nn, "%s", eq + 1); w2k_desktop_unescape(name); }
+        else if (!strcmp(line, "Exec") && !cmd[0]) w2k_desktop_exec_command(eq + 1, cmd, (size_t)cn);
+        else if (!strcmp(line, "Icon") && !icon[0]) { snprintf(icon, (size_t)in, "%s", eq + 1); w2k_desktop_unescape(icon); }
     }
     fclose(f);
-    for (char *p = cmd; *p; p++)
-        if (p[0] == '%' && p[1]) { p[0] = 0; break; }
     return name[0] && cmd[0];
 }
 
@@ -182,7 +180,12 @@ void startdir_run_startup(void)
                            icon, sizeof icon))
                 wm_spawn(cmd);
         } else if (access(full, X_OK) == 0) {
-            wm_spawn(full);          /* a plain executable or script */
+            /* A plain executable or script -- quoted: the folder is
+             * ".../Start Menu/Programs/Startup", and unquoted the shell
+             * split it at "Start" and nothing in it ever ran. */
+            char q[4200];
+            w2k_shell_quote(full, q, sizeof q);
+            wm_spawn(q);
         }
     }
     closedir(dp);

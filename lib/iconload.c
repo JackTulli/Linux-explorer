@@ -243,7 +243,7 @@ int w2k_icon_from_file(const char *path)
         i32 = load_ico(path, 32);
     } else {
         int w = 0, h = 0;
-        unsigned char *rgba = w2k_image_load(path, &w, &h);
+        unsigned char *rgba = w2k_image_load_scaled(path, 32, 32, &w, &h);
         if (rgba && w > 0 && h > 0) {
             i16 = w2k_rgba_scale(rgba, w, h, 16);
             i32 = w2k_rgba_scale(rgba, w, h, 32);

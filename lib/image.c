@@ -10,6 +10,11 @@
 #include <string.h>
 #include <setjmp.h>
 #include <jpeglib.h>
+#ifdef HAVE_WEBP
+#include <webp/decode.h>
+#endif
+
+long w2k_image_max_pixels;
 
 /* libjpeg's default error handler exits the process. Longjmp out instead. */
 struct jpeg_bail {
@@ -23,7 +28,11 @@ static void jpeg_bail_out(j_common_ptr cinfo)
     longjmp(e->back, 1);
 }
 
-unsigned char *w2k_jpeg_load(const char *path, int *out_w, int *out_h)
+/* want_w x want_h, when given, is what the picture is going to cover once
+ * scaled: libjpeg then decodes at the smallest of 1/1, 1/2, 1/4 and 1/8
+ * that still covers it, which is also that much less to decode. */
+static unsigned char *jpeg_load(const char *path, int want_w, int want_h,
+                                int *out_w, int *out_h)
 {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -37,8 +46,6 @@ unsigned char *w2k_jpeg_load(const char *path, int *out_w, int *out_h)
     cinfo.err = jpeg_std_error(&err.mgr);
     err.mgr.error_exit = jpeg_bail_out;
     if (setjmp(err.back)) {
-        free(rgba);
-        free(line);
         jpeg_destroy_decompress(&cinfo);
         free(rgba);
         free(line);
@@ -50,10 +57,20 @@ unsigned char *w2k_jpeg_load(const char *path, int *out_w, int *out_h)
     jpeg_stdio_src(&cinfo, f);
     jpeg_read_header(&cinfo, TRUE);
     cinfo.out_color_space = JCS_RGB;
+    if (want_w > 0 && want_h > 0) {
+        unsigned iw = cinfo.image_width, ih = cinfo.image_height;
+        for (unsigned d = 8; d >= 2; d /= 2)
+            if ((iw + d - 1) / d >= (unsigned)want_w && (ih + d - 1) / d >= (unsigned)want_h) {
+                cinfo.scale_num = 1;
+                cinfo.scale_denom = d;
+                break;
+            }
+    }
     jpeg_start_decompress(&cinfo);
 
     int w = (int)cinfo.output_width, h = (int)cinfo.output_height;
-    if (w <= 0 || h <= 0 || w > 16384 || h > 16384) {
+    if (w <= 0 || h <= 0 || w > 16384 || h > 16384 ||
+        (w2k_image_max_pixels && (long)w * h > w2k_image_max_pixels)) {
         jpeg_destroy_decompress(&cinfo);
         fclose(f);
         return NULL;
@@ -89,7 +106,12 @@ unsigned char *w2k_jpeg_load(const char *path, int *out_w, int *out_h)
     return rgba;
 }
 
-unsigned char *w2k_image_load(const char *path, int *w, int *h)
+unsigned char *w2k_jpeg_load(const char *path, int *out_w, int *out_h)
+{
+    return jpeg_load(path, 0, 0, out_w, out_h);
+}
+
+unsigned char *w2k_image_load_scaled(const char *path, int want_w, int want_h, int *w, int *h)
 {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -100,15 +122,65 @@ unsigned char *w2k_image_load(const char *path, int *w, int *h)
 
     static const unsigned char png_sig[8] = { 137, 'P', 'N', 'G', 13, 10, 26, 10 };
     if (n >= 8 && !memcmp(magic, png_sig, 8))       return w2k_png_load(path, w, h);
-    if (magic[0] == 0xff && magic[1] == 0xd8)       return w2k_jpeg_load(path, w, h);
+    if (magic[0] == 0xff && magic[1] == 0xd8)       return jpeg_load(path, want_w, want_h, w, h);
     if (magic[0] == 'B' && magic[1] == 'M')         return w2k_bmp_load(path, w, h);
     if (!memcmp(magic, "RIFF", 4))                  return w2k_webp_load(path, w, h);
     return NULL;
 }
 
+unsigned char *w2k_image_load(const char *path, int *w, int *h)
+{
+    return w2k_image_load_scaled(path, 0, 0, w, h);
+}
+
+/* A picture's size from its header, without decoding it: what a preview
+ * needs to know how small it may decode the picture. 0 when unknown. */
+int w2k_image_dims(const char *path, int *w, int *h)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    unsigned char b[64] = { 0 };
+    size_t n = fread(b, 1, sizeof b, f);
+    int iw = 0, ih = 0;
+    static const unsigned char png_sig[8] = { 137, 'P', 'N', 'G', 13, 10, 26, 10 };
+    if (n >= 24 && !memcmp(b, png_sig, 8) && !memcmp(b + 12, "IHDR", 4)) {
+        iw = (int)((unsigned)b[16] << 24 | (unsigned)b[17] << 16 | (unsigned)b[18] << 8 | b[19]);
+        ih = (int)((unsigned)b[20] << 24 | (unsigned)b[21] << 16 | (unsigned)b[22] << 8 | b[23]);
+    } else if (n >= 26 && b[0] == 'B' && b[1] == 'M') {
+        iw = (int)(b[18] | b[19] << 8 | b[20] << 16 | (unsigned)b[21] << 24);
+        ih = (int)(b[22] | b[23] << 8 | b[24] << 16 | (unsigned)b[25] << 24);
+        if (ih < 0) ih = -ih;
+    } else if (n >= 2 && b[0] == 0xff && b[1] == 0xd8) {
+        rewind(f);
+        struct jpeg_decompress_struct cinfo;
+        struct jpeg_bail err;
+        cinfo.err = jpeg_std_error(&err.mgr);
+        err.mgr.error_exit = jpeg_bail_out;
+        if (setjmp(err.back)) {
+            jpeg_destroy_decompress(&cinfo);
+            fclose(f);
+            return 0;
+        }
+        jpeg_create_decompress(&cinfo);
+        jpeg_stdio_src(&cinfo, f);
+        jpeg_read_header(&cinfo, TRUE);
+        iw = (int)cinfo.image_width;
+        ih = (int)cinfo.image_height;
+        jpeg_destroy_decompress(&cinfo);
+    }
+#ifdef HAVE_WEBP
+    else if (n >= 30 && !memcmp(b, "RIFF", 4) && !WebPGetInfo(b, n, &iw, &ih))
+        iw = ih = 0;
+#endif
+    fclose(f);
+    if (iw <= 0 || ih <= 0) return 0;
+    *w = iw;
+    *h = ih;
+    return 1;
+}
+
 /* WebP, through libwebp when the desktop was built with it. */
 #ifdef HAVE_WEBP
-#include <webp/decode.h>
 unsigned char *w2k_webp_load(const char *path, int *w, int *h)
 {
     FILE *f = fopen(path, "rb");
@@ -122,7 +194,8 @@ unsigned char *w2k_webp_load(const char *path, int *w, int *h)
     fclose(f);
     int iw = 0, ih = 0;
     if (!WebPGetInfo(data, (size_t)n, &iw, &ih) || iw <= 0 || ih <= 0 ||
-        (long)iw * ih > 64L * 1024 * 1024) { free(data); return NULL; }
+        (long)iw * ih > 64L * 1024 * 1024 ||
+        (w2k_image_max_pixels && (long)iw * ih > w2k_image_max_pixels)) { free(data); return NULL; }
     uint8_t *px = WebPDecodeRGBA(data, (size_t)n, &iw, &ih);
     free(data);
     if (!px) return NULL;

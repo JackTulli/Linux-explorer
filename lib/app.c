@@ -1,6 +1,7 @@
 /* app.c -- toolkit initialisation: colours, fonts, GCs, cursors, atoms. */
 #define _POSIX_C_SOURCE 200809L
 #include "w2k.h"
+#include <limits.h>
 #include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -394,6 +395,10 @@ int w2k_color_by_name(const char *name)
 
 static unsigned long alloc_pixel(int r, int g, int b)
 {
+    /* On a TrueColor screen the pixel is arithmetic: XAllocColor would be
+     * a round trip to the server for every one of the ~80 colours each
+     * program sets at start and at every scheme change. */
+    if (w2k.visual && w2k.visual->class == TrueColor) return w2k_rgb(r, g, b);
     XColor c = { .red = r * 257, .green = g * 257, .blue = b * 257,
                  .flags = DoRed | DoGreen | DoBlue };
     if (!XAllocColor(w2k.dpy, w2k.cmap, &c))
@@ -708,13 +713,27 @@ void w2k_scheme_default_path(char *buf, int n)
     snprintf(buf, n, "%s/.w2k/scheme", home ? home : ".");
 }
 
+static char *scheme_text(void);
+static char *scheme_base;            /* the default scheme as last read, in its words */
+
+/* What a later save compares against: see scheme_merge(). */
+static void scheme_base_take(void)
+{
+    free(scheme_base);
+    scheme_base = scheme_text();
+}
+
 int w2k_scheme_load(const char *path)
 {
     char def[1024];
     if (!path) { w2k_scheme_default_path(def, sizeof def); path = def; }
     w2k_scheme_reset();
     FILE *f = fopen(path, "r");
-    if (!f) { w2k_gpu_env_apply(); return 0; }
+    if (!f) {
+        w2k_gpu_env_apply();
+        if (path == def) scheme_base_take();
+        return 0;
+    }
     char line[1200];
     int n = 0;
     /* The theme first, whatever line it is on: it brings a whole colour
@@ -1006,19 +1025,13 @@ int w2k_scheme_load(const char *path)
     /* The graphics processor: into this process's environment, for
      * everything it starts from now on. */
     w2k_gpu_env_apply();
+    if (path == def) scheme_base_take();
     return n;
 }
 
-int w2k_scheme_save(const char *path)
+/* The scheme in the file's own words, as this process has it now. */
+static void write_scheme(FILE *f)
 {
-    char def[1024];
-    if (!path) { w2k_scheme_default_path(def, sizeof def); path = def; }
-    char dir[1024];
-    snprintf(dir, sizeof dir, "%s", path);
-    char *slash = strrchr(dir, '/');
-    if (slash) { *slash = 0; mkdir(dir, 0755); }
-    FILE *f = fopen(path, "w");
-    if (!f) return -1;
     fprintf(f, "# Linux 2000 -- appearance scheme (registry colour names, R G B)\n");
     for (int i = 0; i < N_COLORS; i++)
         if (color_names[i] && i != C_BLACK && i != C_WHITE)
@@ -1122,7 +1135,137 @@ int w2k_scheme_save(const char *path)
                 m->enabled, m->rate[0] ? m->rate : "auto",
                 m->scale ? m->scale : 100);
     }
+}
+
+static char *scheme_text(void)
+{
+    char *buf = NULL;
+    size_t n = 0;
+    FILE *m = open_memstream(&buf, &n);
+    if (!m) return NULL;
+    write_scheme(m);
+    if (fclose(m) != 0) { free(buf); return NULL; }
+    return buf;
+}
+
+/* The lines of `text` whose key is `key` (all of them: Monitor= repeats),
+ * joined; NULL when there are none. */
+static char *key_lines(const char *text, const char *key, size_t kl)
+{
+    char *out = NULL;
+    size_t on = 0;
+    for (const char *p = text; p && *p; ) {
+        const char *e = strchr(p, '\n');
+        size_t ll = e ? (size_t)(e - p) : strlen(p);
+        if (p[0] != '#' && ll > kl && p[kl] == '=' && !strncasecmp(p, key, kl)) {
+            char *g = realloc(out, on + ll + 2);
+            if (!g) break;
+            out = g;
+            memcpy(out + on, p, ll);
+            on += ll;
+            out[on++] = '\n';
+            out[on] = 0;
+        }
+        p = e ? e + 1 : NULL;
+    }
+    return out;
+}
+
+static int same_text(const char *a, const char *b)
+{
+    return a && b ? !strcmp(a, b) : a == b;
+}
+
+/* Every program keeps the whole scheme in memory, and wrote the whole of
+ * it back on a save: a save undid whatever another program had applied
+ * since this one last read the file. Now a save writes this process's own
+ * changes -- the keys that differ from the file as it last read it
+ * (`base`) -- over the file as it is now (`theirs`), and keeps the rest of
+ * that file, keys this version does not know included. */
+static char *scheme_merge(const char *mine, const char *base, const char *theirs)
+{
+    char *out = NULL;
+    size_t on = 0;
+    FILE *m = open_memstream(&out, &on);
+    if (!m) return NULL;
+    fprintf(m, "# Linux 2000 -- appearance scheme (registry colour names, R G B)\n");
+    char done[512][40];
+    int ndone = 0;
+    const char *texts[2] = { mine, theirs };
+    for (int t = 0; t < 2; t++)
+        for (const char *p = texts[t]; p && *p; ) {
+            const char *e = strchr(p, '\n');
+            const char *eq = strchr(p, '=');
+            if (p[0] != '#' && eq && (!e || eq < e) && eq - p > 0 && eq - p < 40) {
+                size_t kl = (size_t)(eq - p);
+                int seen = 0;
+                for (int i = 0; i < ndone && !seen; i++)
+                    seen = strlen(done[i]) == kl && !strncasecmp(done[i], p, kl);
+                if (!seen && ndone < 512) {
+                    memcpy(done[ndone], p, kl);
+                    done[ndone++][kl] = 0;
+                    char *mk = key_lines(mine, p, kl), *bk = key_lines(base, p, kl);
+                    char *tk = key_lines(theirs, p, kl);
+                    /* Changed here: this process's. Otherwise the file's --
+                     * or this process's when there is no file to go by. */
+                    const char *pick = !same_text(mk, bk) ? mk : theirs ? tk : mk;
+                    if (pick) fputs(pick, m);
+                    free(mk); free(bk); free(tk);
+                }
+            }
+            p = e ? e + 1 : NULL;
+        }
+    if (fclose(m) != 0) { free(out); return NULL; }
+    return out;
+}
+
+/* A text file of up to `max` bytes, whole; NULL if it cannot be read. */
+static char *slurp(const char *path, long max)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+    char *buf = malloc((size_t)max + 1);
+    size_t n = buf ? fread(buf, 1, (size_t)max, f) : 0;
+    int bad = !buf || ferror(f) || !feof(f);
     fclose(f);
+    if (bad) { free(buf); return NULL; }
+    buf[n] = 0;
+    return buf;
+}
+
+int w2k_scheme_save(const char *path)
+{
+    char def[1024];
+    if (!path) { w2k_scheme_default_path(def, sizeof def); path = def; }
+    char dir[1024];
+    snprintf(dir, sizeof dir, "%s", path);
+    char *slash = strrchr(dir, '/');
+    if (slash) { *slash = 0; mkdir(dir, 0755); }
+    /* Written beside the file and renamed over it: every program reads
+     * the scheme when it starts and whenever it changes, and one that
+     * read it half-written got the defaults. Through a symlink (a dotfile
+     * collection) to the file it points at, so the link stays a link. */
+    char real[PATH_MAX], tmp[PATH_MAX + 32];
+    const char *dest = realpath(path, real) ? real : path;
+    snprintf(tmp, sizeof tmp, "%s.%ld.tmp", dest, (long)getpid());
+    char *mine = scheme_text();
+    if (!mine) return -1;
+    char *text = mine;
+    if (path == def && scheme_base) {
+        char *theirs = slurp(dest, 1L << 20);
+        char *merged = scheme_merge(mine, scheme_base, theirs);
+        free(theirs);
+        if (merged) text = merged;
+    }
+    FILE *f = fopen(tmp, "w");
+    if (f) fputs(text, f);
+    if (text != mine) free(text);
+    free(mine);
+    if (!f) return -1;
+    if (ferror(f) | fclose(f) || rename(tmp, dest) != 0) {
+        unlink(tmp);
+        return -1;
+    }
     /* The user's own scheme also reaches GTK and Qt programs. */
     if (path == def) w2k_scheme_export_gtk();
     return 0;
@@ -1298,49 +1441,101 @@ int w2k_init(const char *appname)
     w2k_monitors_init();
     w2k_accel_reset();              /* underlines hidden until Alt? */
 
-#define A(f, n) w2k.f = XInternAtom(d, n, False)
-    A(a_wm_protocols,   "WM_PROTOCOLS");
-    A(a_wm_delete,      "WM_DELETE_WINDOW");
-    A(a_wm_state,       "WM_STATE");
-    A(a_wm_take_focus,  "WM_TAKE_FOCUS");
-    A(a_wm_change_state,"WM_CHANGE_STATE");
-    A(a_motif_hints,    "_MOTIF_WM_HINTS");
-    A(a_net_supported,  "_NET_SUPPORTED");
-    A(a_net_wm_name,    "_NET_WM_NAME");
-    A(a_net_wm_state,   "_NET_WM_STATE");
-    A(a_net_wm_state_fullscreen,   "_NET_WM_STATE_FULLSCREEN");
-    A(a_net_wm_state_maxv,         "_NET_WM_STATE_MAXIMIZED_VERT");
-    A(a_net_wm_state_maxh,         "_NET_WM_STATE_MAXIMIZED_HORZ");
-    A(a_net_wm_state_hidden,       "_NET_WM_STATE_HIDDEN");
-    A(a_net_wm_state_skip_taskbar, "_NET_WM_STATE_SKIP_TASKBAR");
-    A(a_net_wm_state_above,        "_NET_WM_STATE_ABOVE");
-    A(a_net_wm_state_modal,        "_NET_WM_STATE_MODAL");
-    A(a_net_wm_window_type,        "_NET_WM_WINDOW_TYPE");
-    A(a_net_wm_wt_dock,    "_NET_WM_WINDOW_TYPE_DOCK");
-    A(a_net_wm_wt_dialog,  "_NET_WM_WINDOW_TYPE_DIALOG");
-    A(a_net_wm_wt_normal,  "_NET_WM_WINDOW_TYPE_NORMAL");
-    A(a_net_wm_wt_menu,    "_NET_WM_WINDOW_TYPE_MENU");
-    A(a_net_wm_wt_utility, "_NET_WM_WINDOW_TYPE_UTILITY");
-    A(a_net_wm_wt_splash,  "_NET_WM_WINDOW_TYPE_SPLASH");
-    A(a_net_wm_wt_toolbar, "_NET_WM_WINDOW_TYPE_TOOLBAR");
-    A(a_net_client_list,   "_NET_CLIENT_LIST");
-    A(a_net_active_window, "_NET_ACTIVE_WINDOW");
-    A(a_net_current_desktop,   "_NET_CURRENT_DESKTOP");
-    A(a_net_number_of_desktops,"_NET_NUMBER_OF_DESKTOPS");
-    A(a_net_wm_desktop,        "_NET_WM_DESKTOP");
-    A(a_net_supporting_wm_check,"_NET_SUPPORTING_WM_CHECK");
-    A(a_net_close_window,  "_NET_CLOSE_WINDOW");
-    A(a_net_moveresize_window, "_NET_MOVERESIZE_WINDOW");
-    A(a_net_frame_extents, "_NET_FRAME_EXTENTS");
-    A(a_net_workarea,      "_NET_WORKAREA");
-    A(a_net_wm_moveresize, "_NET_WM_MOVERESIZE");
-    A(a_net_wm_icon,       "_NET_WM_ICON");
-    A(a_net_wm_pid,        "_NET_WM_PID");
-    A(a_utf8,              "UTF8_STRING");
-    A(a_w2k_command,       "_W2K_COMMAND");
-    A(a_w2k_notify,        "_W2K_NOTIFY");
-    A(a_w2k_scheme,        "_W2K_SCHEME");
-#undef A
+    /* One round trip for the lot, rather than one each. */
+    {
+        static char *names[] = {
+            "WM_PROTOCOLS",
+            "WM_DELETE_WINDOW",
+            "WM_STATE",
+            "WM_TAKE_FOCUS",
+            "WM_CHANGE_STATE",
+            "_MOTIF_WM_HINTS",
+            "_NET_SUPPORTED",
+            "_NET_WM_NAME",
+            "_NET_WM_STATE",
+            "_NET_WM_STATE_FULLSCREEN",
+            "_NET_WM_STATE_MAXIMIZED_VERT",
+            "_NET_WM_STATE_MAXIMIZED_HORZ",
+            "_NET_WM_STATE_HIDDEN",
+            "_NET_WM_STATE_SKIP_TASKBAR",
+            "_NET_WM_STATE_ABOVE",
+            "_NET_WM_STATE_MODAL",
+            "_NET_WM_WINDOW_TYPE",
+            "_NET_WM_WINDOW_TYPE_DOCK",
+            "_NET_WM_WINDOW_TYPE_DIALOG",
+            "_NET_WM_WINDOW_TYPE_NORMAL",
+            "_NET_WM_WINDOW_TYPE_MENU",
+            "_NET_WM_WINDOW_TYPE_UTILITY",
+            "_NET_WM_WINDOW_TYPE_SPLASH",
+            "_NET_WM_WINDOW_TYPE_TOOLBAR",
+            "_NET_CLIENT_LIST",
+            "_NET_ACTIVE_WINDOW",
+            "_NET_CURRENT_DESKTOP",
+            "_NET_NUMBER_OF_DESKTOPS",
+            "_NET_WM_DESKTOP",
+            "_NET_SUPPORTING_WM_CHECK",
+            "_NET_CLOSE_WINDOW",
+            "_NET_MOVERESIZE_WINDOW",
+            "_NET_FRAME_EXTENTS",
+            "_NET_WORKAREA",
+            "_NET_WM_MOVERESIZE",
+            "_NET_WM_ICON",
+            "_NET_WM_PID",
+            "UTF8_STRING",
+            "_W2K_COMMAND",
+            "_W2K_NOTIFY",
+            "_W2K_SCHEME",
+        };
+        Atom *dst[] = {
+            &w2k.a_wm_protocols,
+            &w2k.a_wm_delete,
+            &w2k.a_wm_state,
+            &w2k.a_wm_take_focus,
+            &w2k.a_wm_change_state,
+            &w2k.a_motif_hints,
+            &w2k.a_net_supported,
+            &w2k.a_net_wm_name,
+            &w2k.a_net_wm_state,
+            &w2k.a_net_wm_state_fullscreen,
+            &w2k.a_net_wm_state_maxv,
+            &w2k.a_net_wm_state_maxh,
+            &w2k.a_net_wm_state_hidden,
+            &w2k.a_net_wm_state_skip_taskbar,
+            &w2k.a_net_wm_state_above,
+            &w2k.a_net_wm_state_modal,
+            &w2k.a_net_wm_window_type,
+            &w2k.a_net_wm_wt_dock,
+            &w2k.a_net_wm_wt_dialog,
+            &w2k.a_net_wm_wt_normal,
+            &w2k.a_net_wm_wt_menu,
+            &w2k.a_net_wm_wt_utility,
+            &w2k.a_net_wm_wt_splash,
+            &w2k.a_net_wm_wt_toolbar,
+            &w2k.a_net_client_list,
+            &w2k.a_net_active_window,
+            &w2k.a_net_current_desktop,
+            &w2k.a_net_number_of_desktops,
+            &w2k.a_net_wm_desktop,
+            &w2k.a_net_supporting_wm_check,
+            &w2k.a_net_close_window,
+            &w2k.a_net_moveresize_window,
+            &w2k.a_net_frame_extents,
+            &w2k.a_net_workarea,
+            &w2k.a_net_wm_moveresize,
+            &w2k.a_net_wm_icon,
+            &w2k.a_net_wm_pid,
+            &w2k.a_utf8,
+            &w2k.a_w2k_command,
+            &w2k.a_w2k_notify,
+            &w2k.a_w2k_scheme,
+        };
+        enum { NATOMS = (int)(sizeof names / sizeof *names) };
+        Atom got[NATOMS];
+        if (XInternAtoms(d, names, NATOMS, False, got))
+            for (int i = 0; i < NATOMS; i++) *dst[i] = got[i];
+        else
+            for (int i = 0; i < NATOMS; i++) *dst[i] = XInternAtom(d, names[i], False);
+    }
     /* Hear about scheme changes made by Display Properties. The window
      * manager adds its own masks to the root later; this one is harmless. */
     XSelectInput(d, w2k.root, PropertyChangeMask);
@@ -1379,18 +1574,38 @@ unsigned long w2k_rgb(int r, int g, int b)
 {
     Visual *v = w2k.visual;
     if (v->class == TrueColor || v->class == DirectColor) {
-        unsigned long out = 0;
-        const unsigned long masks[3] = { v->red_mask, v->green_mask, v->blue_mask };
-        const int vals[3] = { r, g, b };
-        for (int i = 0; i < 3; i++) {
-            unsigned long m = masks[i];
-            if (!m) continue;
-            int shift = 0, bits = 0;
-            while (!((m >> shift) & 1)) shift++;
-            for (unsigned long t = m >> shift; t & 1; t >>= 1) bits++;
-            unsigned long maxv = (1UL << bits) - 1;
-            out |= ((unsigned long)vals[i] * maxv / 255UL) << shift;
+        /* The masks are worked out once per visual: this runs per pixel
+         * in skin and icon builds and per line in every gradient. */
+        static Visual *known;
+        static int shift[3], bits[3], eight;
+        static unsigned long maxv[3];
+        if (v != known) {
+            const unsigned long masks[3] = { v->red_mask, v->green_mask, v->blue_mask };
+            eight = 1;
+            for (int i = 0; i < 3; i++) {
+                unsigned long m = masks[i];
+                shift[i] = bits[i] = 0;
+                if (m) {
+                    while (!((m >> shift[i]) & 1)) shift[i]++;
+                    for (unsigned long t = m >> shift[i]; t & 1; t >>= 1) bits[i]++;
+                }
+                maxv[i] = bits[i] ? (1UL << bits[i]) - 1 : 0;
+                if (bits[i] != 8) eight = 0;
+            }
+            known = v;
         }
+        /* Out of range from a gradient's rounding: the nearest colour, not
+         * a carry into the next channel. */
+        r = r < 0 ? 0 : r > 255 ? 255 : r;
+        g = g < 0 ? 0 : g > 255 ? 255 : g;
+        b = b < 0 ? 0 : b > 255 ? 255 : b;
+        if (eight)
+            return ((unsigned long)r << shift[0]) | ((unsigned long)g << shift[1]) |
+                   ((unsigned long)b << shift[2]);
+        const int vals[3] = { r, g, b };
+        unsigned long out = 0;
+        for (int i = 0; i < 3; i++)
+            if (bits[i]) out |= ((unsigned long)vals[i] * maxv[i] / 255UL) << shift[i];
         return out;
     }
     /* Paletted visual: cache allocations so repeated gradient draws are cheap. */

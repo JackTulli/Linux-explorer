@@ -369,6 +369,9 @@ static void update_clock(void)
 {
     time_t t = time(NULL);
     struct tm tm;
+    /* localtime_r does not look at the time zone again by itself: a zone
+     * chosen in Date/Time Properties showed only after a restart. */
+    tzset();
     localtime_r(&t, &tm);
     int h12 = tm.tm_hour % 12;
     if (!h12) h12 = 12;
@@ -1331,7 +1334,12 @@ static void arrange_on(int how, const W2kMonitor *mon)
                                cw - 2 * b, chh - 2 * b - cap);
         }
     } else if (how == TB_MINALL) {
-        for (int i = 0; i < n; i++) client_minimize(list[i]);
+        /* Quietly, and settled once: each window used to fly down with
+         * its own sound and a repaint of the bar. */
+        w2k_sound_play(SND_MINIMIZE);
+        for (int i = 0; i < n; i++) client_minimize_quiet(list[i]);
+        clients_restack();
+        taskbar_paint();
     }
 }
 
@@ -1404,15 +1412,10 @@ static void taskbar_context_menu(int x, int y)
 
 static void show_desktop_toggle(void)
 {
-    int any = 0;
-    for (Client *c = clients; c; c = c->next)
-        if (!c->minimized && !c->skip_taskbar) { any = 1; break; }
-    for (Client *c = clients; c; c = c->next) {
-        if (c->skip_taskbar) continue;
-        if (any) client_minimize(c);
-        else if (c->minimized) client_restore(c);
-    }
+    wm_show_desktop();                 /* the same quiet path as Win+D */
 }
+
+static void hover_clear(void);
 
 /* Called from the main loop: put a tooltip up once the pointer has been
  * still over a button for long enough, and take it down again. */
@@ -1420,7 +1423,9 @@ void taskbar_hover_tick(void)
 {
     if (hover_task < 0 || tip_up || !hover_since) return;
     if (w2k_now_ms() - hover_since < 500) return;
-    if (hover_task >= ntasks || !tasks[hover_task].c) return;
+    /* The button went (its window closed) under the pointer: forget it,
+     * or the loop woke every 10 ms for its tooltip until the pointer moved. */
+    if (hover_task >= ntasks || !tasks[hover_task].c) { hover_clear(); return; }
 
     Window r, ch;
     int rx, ry, wx, wy;
@@ -1534,6 +1539,9 @@ int taskbar_event(XEvent *e)
             hover_clear();
             hover_task = over;
             hover_since = over >= 0 ? w2k_now_ms() : 0;
+            /* The themed buttons light under the pointer: they did not
+             * until something else repainted the bar, and then stayed lit. */
+            if (w2k_theme != THEME_CLASSIC) taskbar_paint();
         }
         /* Windows 7 lights a pinned item under the pointer. */
         int oq = -1;
@@ -1544,7 +1552,7 @@ int taskbar_event(XEvent *e)
         return 1;
     }
     if (e->type == LeaveNotify && e->xcrossing.window == tb) {
-        int lit = hover_ql >= 0;
+        int lit = hover_ql >= 0 || (hover_task >= 0 && w2k_theme != THEME_CLASSIC);
         hover_clear();
         if (lit) taskbar_paint();
         if (start_hot) { start_hot = 0; start_hot_changed(); }

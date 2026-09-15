@@ -2,7 +2,7 @@
 # bootstrap.sh -- from a bare Debian (or any of the distributions install.sh
 # knows) to Linux 2000, the Windows 2000-like desktop, in one command, run as root:
 #
-#   curl -sL jacktulli.github.io/w2k | sh
+#   curl -fsSL https://jacktulli.github.io/w2k | sh
 #
 # (which serves a copy of this file; the long form is
 #   sh -c "$(curl -fsSL https://raw.githubusercontent.com/JackTulli/Linux-explorer/main/bootstrap.sh)")

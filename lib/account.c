@@ -18,12 +18,16 @@ static int  loaded;
 static Pixmap pic_pm;
 static int    pic_size;
 static char   pic_path[1024];
+static int    pic_failed;          /* pic_path at pic_size could not be read */
+
+unsigned char *(*w2k_account_decoder)(const char *path, int size, int *w, int *h);
 
 static void pic_drop(void)
 {
     if (pic_pm && w2k.dpy) XFreePixmap(w2k.dpy, pic_pm);
     pic_pm = 0;
     pic_path[0] = 0;
+    pic_failed = 0;
 }
 
 static void path_of(char *buf, size_t n)
@@ -65,7 +69,7 @@ void w2k_account_load_from(const char *home)
     if (!home || !*home) return;
     char p[1100];
     snprintf(p, sizeof p, "%s/.w2k/account", home);
-    FILE *f = fopen(p, "r");
+    FILE *f = w2k_fopen_confined(p, home, 64 * 1024);   /* see lib/logon.c */
     if (!f) return;
     char line[1200];
     while (fgets(line, sizeof line, f)) {
@@ -139,10 +143,16 @@ static Pixmap picture_pixmap(int size)
 {
     const char *path = w2k_account_picture();
     if (!path[0] || size < 1 || !w2k.dpy) return 0;
-    if (pic_pm && pic_size == size && !strcmp(pic_path, path)) return pic_pm;
+    if ((pic_pm || pic_failed) && pic_size == size && !strcmp(pic_path, path)) return pic_pm;
     pic_drop();
+    /* A picture that cannot be read is not tried again at every repaint
+     * -- for the logon screen that was a child and a timeout each time. */
+    pic_failed = 1;
+    pic_size = size;
+    snprintf(pic_path, sizeof pic_path, "%s", path);
     int w = 0, h = 0;
-    unsigned char *rgba = w2k_image_load(path, &w, &h);
+    unsigned char *rgba = w2k_account_decoder ? w2k_account_decoder(path, size, &w, &h)
+                                              : w2k_image_load_scaled(path, size, size, &w, &h);
     if (!rgba || w < 1 || h < 1) { free(rgba); return 0; }
     int side = w < h ? w : h, ox = (w - side) / 2, oy = (h - side) / 2;
     unsigned char *sq = malloc((size_t)side * side * 4);
@@ -155,28 +165,10 @@ static Pixmap picture_pixmap(int size)
                       : w2k_rgba_resample(sq, side, side, size, size, RS_CUBIC);
     if (sc != sq) free(sq);
     if (!sc) return 0;
-    pic_pm = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)size, (unsigned)size, w2k.depth);
-    char *pixels = malloc((size_t)size * size * 4);
-    XImage *im = pixels ? XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap, 0,
-                                       pixels, (unsigned)size, (unsigned)size, 32, 0)
-                        : NULL;
-    if (im) {
-        for (int y = 0; y < size; y++)
-            for (int x = 0; x < size; x++) {
-                const unsigned char *p = sc + ((size_t)y * size + x) * 4;
-                int a = p[3];
-                XPutPixel(im, x, y, w2k_rgb((p[0] * a + 255 * (255 - a)) / 255,
-                                            (p[1] * a + 255 * (255 - a)) / 255,
-                                            (p[2] * a + 255 * (255 - a)) / 255));
-            }
-        XPutImage(w2k.dpy, pic_pm, w2k.gc, im, 0, 0, 0, 0, (unsigned)size, (unsigned)size);
-        XDestroyImage(im);
-    } else {
-        free(pixels);
-    }
+    static const int white[3] = { 255, 255, 255 };
+    pic_pm = w2k_pixmap_from_rgba(sc, size, size, white);
     free(sc);
-    pic_size = size;
-    snprintf(pic_path, sizeof pic_path, "%s", path);
+    pic_failed = !pic_pm;
     return pic_pm;
 }
 

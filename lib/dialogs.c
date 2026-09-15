@@ -49,12 +49,14 @@ void w2k_combo_add(W2kCombo *c, const char *text)
     if (c->sel < 0) c->sel = 0;
 }
 
-/* The drop-down button's triangle. */
+/* The drop-down button's triangle: pointing down, 7 wide and 4 tall
+ * (rows of 7, 5, 3 and 1). It was drawn on its side -- columns of 1, 3, 5
+ * and 7, a triangle pointing left -- in every combo box since the start. */
 static void down_arrow(Drawable d, int x, int y, int color)
 {
     XSetForeground(w2k.dpy, w2k.gc, w2k.col[color]);
     for (int i = 0; i < 4; i++)
-        w2k_fill_fg(d, x + i, y + 3 - i, 1, 1 + 2 * i);
+        w2k_fill_fg(d, x + i, y + i, 7 - 2 * i, 1);
 }
 
 void w2k_combo_draw(Drawable d, W2kCombo *c)
@@ -450,6 +452,11 @@ static void cp_hit_hue(ColorPick *p, int y)
 
 static void cp_unfocus_edits(ColorPick *p)
 {
+    /* A colour typed in hex counts once its box is left -- for OK too,
+     * whose press takes the focus from the boxes before its release
+     * applies them: the typed colour was thrown away, and the stale R, G
+     * and B boxes won. */
+    if (p->ed_hex && p->ed_hex->focused) { cp_apply_hex_edit(p); cp_sync_edits(p); }
     if (p->ed_r) p->ed_r->focused = 0;
     if (p->ed_g) p->ed_g->focused = 0;
     if (p->ed_b) p->ed_b->focused = 0;
@@ -634,6 +641,23 @@ int w2k_color_picker(W2kWin *over, int *r, int *g, int *b)
 }
 
 /* A modal drop-down list. Returns the chosen index, or -1. */
+
+/* The open list: rows from `top`, `hot` highlighted. */
+static void combo_list_paint(Drawable pm, W2kCombo *c, int w, int h, int row, int rows,
+                             int top, int hot)
+{
+    w2k_fill(pm, 0, 0, w, h, C_WINDOW);
+    w2k_frame(pm, 0, 0, w, h, C_WINDOWFRAME);
+    for (int i = 0; i < rows && top + i < c->n; i++) {
+        int iy = 2 + i * row;
+        int sel = (top + i == hot);
+        if (sel) w2k_fill(pm, 2, iy, w - 4, row, C_HIGHLIGHT);
+        char b2[200];
+        w2k_ellipsis(F_UI, c->items[top + i], w - 10, b2, sizeof b2);
+        w2k_text(pm, F_UI, 4, iy + 1, b2, sel ? C_HIGHLIGHTTEXT : C_WINDOWTEXT);
+    }
+}
+
 static int combo_dropdown(W2kCombo *c, int rx, int ry)
 {
     int row = w2k_font_height(F_UI) + 3;
@@ -659,16 +683,17 @@ static int combo_dropdown(W2kCombo *c, int rx, int ry)
                                CWOverrideRedirect | CWSaveUnder | CWBackPixel |
                                CWEventMask, &a);
 
-    /* "Slide open combo boxes": grow the list down out of the box. */
+    int top = 0, hot = c->sel;
+    if (hot >= rows) top = hot - rows + 1;
+
+    /* "Slide open combo boxes": the list slides out of the box -- painted
+     * first, so what slides is the list, not an empty white box that was
+     * only filled in once it had stopped (lib/anim.c). */
     if (w2k_effects[FX_SLIDE_COMBO] && h > 20) {
-        XMapRaised(w2k.dpy, win);
-        for (int step = 1; step < 4; step++) {
-            int sh = ph * step / 4;
-            XResizeWindow(w2k.dpy, win, (unsigned)pw, sh < 4 ? 4 : sh);
-            XFlush(w2k.dpy);
-            usleep(8000);
-        }
-        XResizeWindow(w2k.dpy, win, (unsigned)pw, (unsigned)ph);
+        Pixmap first = XCreatePixmap(w2k.dpy, win, (unsigned)pw, (unsigned)ph, w2k.depth);
+        combo_list_paint(first, c, w, h, row, rows, top, hot);
+        w2k_slide_in(win, first, rx, y, pw, ph, y < ry, 70);
+        w2k_free_pixmap(first);             /* the server keeps what the background needs */
     }
     XMapRaised(w2k.dpy, win);
     /* Without the pointer grab a click outside would never arrive and the
@@ -682,25 +707,13 @@ static int combo_dropdown(W2kCombo *c, int rx, int ry)
     }
     XGrabKeyboard(w2k.dpy, win, True, GrabModeAsync, GrabModeAsync, CurrentTime);
 
-    int top = 0, hot = c->sel;
-    if (hot >= rows) top = hot - rows + 1;
     int result = -1, done = 0, repaint = 1;
     long opened = w2k_now_ms();
 
     while (!done && !w2k_win_abort) {       /* SIGTERM must not leave the grabs held */
         if (repaint) {
             Pixmap pm = XCreatePixmap(w2k.dpy, win, (unsigned)pw, (unsigned)ph, w2k.depth);
-            w2k_fill(pm, 0, 0, w, h, C_WINDOW);
-            w2k_frame(pm, 0, 0, w, h, C_WINDOWFRAME);
-            for (int i = 0; i < rows && top + i < c->n; i++) {
-                int iy = 2 + i * row;
-                int sel = (top + i == hot);
-                if (sel) w2k_fill(pm, 2, iy, w - 4, row, C_HIGHLIGHT);
-                char b2[200];
-                w2k_ellipsis(F_UI, c->items[top + i], w - 10, b2, sizeof b2);
-                w2k_text(pm, F_UI, 4, iy + 1, b2,
-                         sel ? C_HIGHLIGHTTEXT : C_WINDOWTEXT);
-            }
+            combo_list_paint(pm, c, w, h, row, rows, top, hot);
             XCopyArea(w2k.dpy, pm, win, w2k.gc, 0, 0, (unsigned)pw, (unsigned)ph, 0, 0);
             w2k_free_pixmap(pm);
             repaint = 0;
@@ -868,14 +881,31 @@ static int prompt_event(W2kWin *w, XEvent *e)
 
 static void blink_cb(void *v) { w2k_edit_blink(v); }
 
-int w2k_prompt(W2kWin *over, const char *title, const char *label,
-               const char *initial, char *out, int outsz, int icon)
+/* A result cut to fit must not end in half a character: the next thing
+ * to read it (libdbus, for one) may refuse the whole string -- and libdbus
+ * refuses by aborting the program. */
+static void utf8_trim(char *s)
+{
+    size_t n = strlen(s);
+    if (!n) return;
+    size_t i = n;
+    while (i > 0 && (s[i - 1] & 0xc0) == 0x80) i--;         /* continuation bytes */
+    if (i == 0) { s[0] = 0; return; }
+    unsigned char lead = (unsigned char)s[i - 1];
+    size_t want = lead < 0x80 ? 1 : (lead & 0xe0) == 0xc0 ? 2 : (lead & 0xf0) == 0xe0 ? 3 :
+                  (lead & 0xf8) == 0xf0 ? 4 : 1;
+    if (n - (i - 1) < want) s[i - 1] = 0;
+}
+
+static int prompt_run(W2kWin *over, const char *title, const char *label,
+                      const char *initial, char *out, int outsz, int icon, int secret)
 {
     Prompt p = { .label = label, .icon = icon, .focus = 0 };
     int cw = 350, chh = 130;
 
     W2kWin *w = w2k_win_new(title, "w2kdialog", cw, chh, 0);
     p.edit = w2k_edit_new(0);
+    p.edit->password = secret;
     w2k_edit_bind(p.edit, w);
     w2k_edit_set(p.edit, initial ? initial : "");
     w2k_edit_select_all(p.edit);
@@ -900,9 +930,24 @@ int w2k_prompt(W2kWin *over, const char *title, const char *label,
     int r = w2k_win_modal(w);
     w2k_del_timer(blink_cb, p.edit);
 
-    if (r == ID_OK) snprintf(out, outsz, "%s", w2k_edit_text(p.edit));
+    if (r == ID_OK) { snprintf(out, outsz, "%s", w2k_edit_text(p.edit)); utf8_trim(out); }
+    if (secret) w2k_edit_wipe(p.edit);
     w2k_edit_free(p.edit);
     return r == ID_OK;
+}
+
+int w2k_prompt(W2kWin *over, const char *title, const char *label,
+               const char *initial, char *out, int outsz, int icon)
+{
+    return prompt_run(over, title, label, initial, out, outsz, icon, 0);
+}
+
+/* The same, for a password or a network key: shown as stars, and the box
+ * scrubbed once it is read. The caller scrubs `out` when done with it. */
+int w2k_prompt_secret(W2kWin *over, const char *title, const char *label,
+                      char *out, int outsz, int icon)
+{
+    return prompt_run(over, title, label, "", out, outsz, icon, 1);
 }
 
 /* ------------------------------------------------------------------ *
@@ -1032,6 +1077,24 @@ static void fd_chdir(FileDlg *f, const char *sub)
     f->list->vsb.pos = 0;
 }
 
+/* Saving over a file that is there: only when the answer is yes. Paint,
+ * Notepad and the Snipping Tool all wrote over whatever had the name. */
+static int fd_replace_ok(FileDlg *f)
+{
+    if (!f->save || f->folder) return 1;
+    const char *nm = w2k_edit_text(f->name);
+    if (!nm || !*nm) return 1;
+    char full[2048];
+    if (nm[0] == '/') snprintf(full, sizeof full, "%s", nm);
+    else snprintf(full, sizeof full, "%s%s%s", f->dir, strcmp(f->dir, "/") ? "/" : "", nm);
+    struct stat st;
+    if (stat(full, &st) != 0 || S_ISDIR(st.st_mode)) return 1;
+    const char *base = strrchr(full, '/');
+    char msg[2400];
+    snprintf(msg, sizeof msg, "%s already exists.\nDo you want to replace it?", base ? base + 1 : full);
+    return w2k_msgbox(f->w, "Save As", msg, MB_YESNO | MB_ICONWARNING) == ID_YES;
+}
+
 static void fd_activate(void *user, int idx)
 {
     FileDlg *f = user;
@@ -1042,8 +1105,10 @@ static void fd_activate(void *user, int idx)
         if (f->folder) w2k_edit_set(f->name, "");   /* the folder now shown */
     } else {
         w2k_edit_set(f->name, nm);
-        f->accepted = 1;
-        w2k_win_close(f->w, ID_OK);
+        if (fd_replace_ok(f)) {
+            f->accepted = 1;
+            w2k_win_close(f->w, ID_OK);
+        }
     }
     w2k_win_dirty(f->w);
 }
@@ -1226,8 +1291,10 @@ static int fd_event(W2kWin *w, XEvent *e)
         f->down = 0;
         f->place_hot = -1;
         if (d == 1 && w2k_rect_hit(&f->ok, e->xbutton.x, e->xbutton.y)) {
-            f->accepted = 1;
-            w2k_win_close(w, ID_OK);
+            if (fd_replace_ok(f)) {
+                f->accepted = 1;
+                w2k_win_close(w, ID_OK);
+            }
         } else if (d == 2 && w2k_rect_hit(&f->cancel, e->xbutton.x, e->xbutton.y))
             w2k_win_close(w, ID_CANCEL);
         w2k_win_dirty(w);
@@ -1307,7 +1374,7 @@ static int fd_event(W2kWin *w, XEvent *e)
                      strcmp(f->dir, "/") ? "/" : "", nm);
             if (!f->save && !f->folder && stat(full, &st) == 0 && S_ISDIR(st.st_mode)) {
                 fd_chdir(f, nm);
-            } else {
+            } else if (fd_replace_ok(f)) {
                 f->accepted = 1;
                 w2k_win_close(w, ID_OK);
             }

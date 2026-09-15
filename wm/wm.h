@@ -69,6 +69,13 @@ struct Client {
     unsigned deleteable  : 1;      /* supports WM_DELETE_WINDOW   */
     unsigned take_focus_proto : 1; /* supports WM_TAKE_FOCUS      */
     unsigned state_read  : 1;      /* _NET_WM_STATE taken from the app once */
+    unsigned modal       : 1;      /* _NET_WM_STATE_MODAL: its owner waits on it */
+    unsigned net_name    : 1;      /* has _NET_WM_NAME: WM_NAME changes are ignored */
+    unsigned init_skip   : 1;      /* asked for no task button in its own state */
+    unsigned hidden_by_owner : 1;  /* minimised along with the window it belongs to */
+    Window   transient_for;        /* the window this one is a dialog of, or None */
+    int      fb, fcap;             /* border and caption the frame was laid out with */
+    int      shape_w, shape_h, shape_key;   /* what the frame's shape was built for */
 
     int      icon;                 /* w2k icon id for caption/taskbar */
     int      btn_down;             /* caption button being clicked    */
@@ -101,7 +108,7 @@ Client *client_find(Window w);
 Client *client_find_frame(Window w);
 void    client_manage(Window w, int initial_map);
 void    client_unmanage(Client *c, int destroyed);
-void    client_update_name(Client *c);
+int     client_update_name(Client *c);   /* 1 when the title changed */
 void    client_update_hints(Client *c);
 void    client_update_type(Client *c);
 void    client_move_resize(Client *c, int x, int y, int w, int h);
@@ -111,7 +118,10 @@ void    client_close(Client *c);
 void    client_minimize(Client *c);
 void    client_minimize_quiet(Client *c);   /* no animation, no restack */
 void    client_restore(Client *c);
+void    client_restore_quiet(Client *c);    /* no animation, no restack, no focus */
 void    client_maximize(Client *c, int on);
+void    client_refit_maximized(Client *c);  /* to its work area again, quietly */
+void    client_relayout(Client *c);         /* after the frame's measurements changed */
 void    client_fullscreen(Client *c, int on);
 void    client_publish_state(Client *c);  /* write _NET_WM_STATE back */
 void    client_send_protocol(Client *c, Atom proto);
@@ -136,6 +146,7 @@ Cursor  frame_cursor(int ht);
 void    do_move(Client *c, XButtonEvent *e);
 void    do_resize(Client *c, XButtonEvent *e, int ht);
 void    grab_keys(void);
+void    wm_show_desktop(void);        /* everything minimised, or all of it back */
 void    handle_key(XKeyEvent *e);
 void    handle_key_release(XKeyEvent *e);
 void    taskbar_skins_reload(void);
@@ -293,6 +304,7 @@ int      programs_entry(int id, char *cmd, int cn, char *name, int nn,
                         char *icon, int in);
 void     programs_note_use(const char *name);
 int      programs_is_chevron(int id, int *group);
+extern volatile int startpanel_cancel;     /* ends the panel's loop */
 void     programs_expand(int group);
 W2kMenu *programs_expand_menu(int id);
 void     programs_collapse_all(void);
@@ -329,6 +341,8 @@ void    glass_live_refresh(void);     /* repaint the glass after the windows cha
 
 void    desktop_wall_copy(Drawable d, int sx, int sy, int w, int h, int dx, int dy);
 void    desktop_bin_tick(void);       /* has the Recycle Bin filled up? */
+int     desktop_bin_fd(void);         /* the bin folder's watch, or -1 */
+void    desktop_bin_event(void);      /* ...which has something to say */
 /* How long the shell may sleep before each part needs attention again.
  * The main loop sleeps for the smallest of them instead of waking on a
  * fixed tick, so an idle desktop costs almost nothing. */

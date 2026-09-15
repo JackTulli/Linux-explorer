@@ -161,7 +161,10 @@ void startsearch_draw_rows(Drawable d, SearchState *s, int x, int y, int w, int 
         char buf[160];
         int tx = x + (menu_look ? 26 : 32);
         w2k_ellipsis(F_UI, r->name, w - (tx - x) - 8, buf, sizeof buf);
-        w2k_text(d, F_UI, tx, ry + (rowh - fh) / 2, buf, sel ? C_HIGHLIGHTTEXT : (menu_look ? C_MENUTEXT : C_TEXT));
+        /* Panel rows sit on a window-coloured ground (7's and XP's white
+         * pane, or the column over other looks): the text that goes with it. */
+        w2k_text(d, F_UI, tx, ry + (rowh - fh) / 2, buf,
+                 sel ? C_HIGHLIGHTTEXT : (menu_look ? C_MENUTEXT : C_WINDOWTEXT));
     }
     if (!s->n && s->query[0]) {
         XSetForeground(w2k.dpy, w2k.gc, bg);
@@ -255,7 +258,8 @@ void startsearch_classic(const char *first, int bx, int by, int mw, int mh,
     int rows_y = box_y + box_h + 4, rows_h = mh - bd - 2 - rows_y;
     int done = 0, run = -1;
     Pixmap pm = XCreatePixmap(w2k.dpy, win, (unsigned)pw, (unsigned)ph, w2k.depth);
-    while (!done && running) {
+    startpanel_cancel = 0;
+    while (!done && running && !startpanel_cancel) {
         XEvent e;
         XNextEvent(w2k.dpy, &e);
         int paint = 0;
@@ -277,6 +281,8 @@ void startsearch_classic(const char *first, int bx, int by, int mw, int mh,
             }
             break;
         case KeyPress: {
+            KeySym sk = XLookupKeysym(&e.xkey, 0);
+            if (sk == XK_Super_L || sk == XK_Super_R) { done = 1; break; }
             int r = startsearch_key(&s, &e.xkey);
             if (r == SS_RUN) { run = s.sel; done = 1; }
             else if (r == SS_ESC || r == SS_EMPTY) done = 1;

@@ -398,15 +398,28 @@ void w2k_gradient(Drawable d, int x, int y, int w, int h, int c1, int c2)
     int r1, g1, b1, r2, g2, b2;
     w2k_color_rgb(c1, &r1, &g1, &b1);
     w2k_color_rgb(c2, &r2, &g2, &b2);
-    int px = w2k_cx(x), py = w2k_cx(y), ph = w2k_cw(y, h);
+    int px = w2k_cx(x), py = w2k_cx(y), ph = w2k_cw(y, h), lw = w;
     w = w2k_cw(x, w);
-    if (w == 1) { w2k_fill(d, x, y, 1, h, c1); return; }
-    for (int i = 0; i < w; i++) {
-        int r = r1 + (r2 - r1) * i / (w - 1);
-        int g = g1 + (g2 - g1) * i / (w - 1);
-        int b = b1 + (b2 - b1) * i / (w - 1);
-        XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r, g, b));
-        XFillRectangle(w2k.dpy, d, w2k.gc, px + i, py, 1, (unsigned)ph);
+    if (w == 1 || (r1 == r2 && g1 == g2 && b1 == b2)) { w2k_fill(d, x, y, lw, h, c1); return; }
+    /* A band per colour, not a column per pixel: a 2560-pixel caption was
+     * 5,120 requests at every repaint of a frame -- every step of a drag,
+     * every change of focus -- though it holds at most 256 shades each way. */
+    unsigned long last = 0;
+    int start = 0;
+    for (int i = 0; i <= w; i++) {
+        unsigned long px_c = 0;
+        if (i < w) {
+            int r = r1 + (r2 - r1) * i / (w - 1);
+            int g = g1 + (g2 - g1) * i / (w - 1);
+            int b = b1 + (b2 - b1) * i / (w - 1);
+            px_c = w2k_rgb(r, g, b);
+            if (i == 0) { last = px_c; continue; }
+            if (px_c == last) continue;
+        }
+        XSetForeground(w2k.dpy, w2k.gc, last);
+        XFillRectangle(w2k.dpy, d, w2k.gc, px + start, py, (unsigned)(i - start), (unsigned)ph);
+        start = i;
+        last = px_c;
     }
 }
 
@@ -518,6 +531,19 @@ static int strip_mnemonic(const char *s, char *out, int outsz, int *ul)
     }
     out[n] = '\0';
     return n;
+}
+
+/* A name that comes from data -- a file, a program -- made safe to use as
+ * a label: "&" doubled, so "Tom & Jerry.mp4" shows as it is rather than
+ * with an underlined space where the ampersand was. */
+void w2k_menu_escape(const char *in, char *out, size_t n)
+{
+    size_t o = 0;
+    for (const char *p = in ? in : ""; *p && o + 2 < n; p++) {
+        if (*p == '&') out[o++] = '&';
+        out[o++] = *p;
+    }
+    if (n) out[o < n ? o : n - 1] = 0;
 }
 
 int w2k_mnemonic_width(int font, const char *s)

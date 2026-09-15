@@ -103,10 +103,16 @@ static void measure(Props *p)
     if (lstat(full, &p->st) != 0) return;
     p->islink = S_ISLNK(p->st.st_mode);
     p->isdir = S_ISDIR(p->st.st_mode);
+    mode_t shown_mode = p->st.st_mode;
     if (p->islink) {
+        /* A link's own mode is always 0777 and means nothing; what it
+         * points at is shown. Nothing is changed through it -- chmod()
+         * follows the link, and ticking Read-only on a link to a private
+         * key used to leave the key readable by everyone. */
         struct stat ts;
-        if (stat(full, &ts) == 0) p->isdir = S_ISDIR(ts.st_mode);
+        if (stat(full, &ts) == 0) { p->isdir = S_ISDIR(ts.st_mode); shown_mode = ts.st_mode; }
     }
+    p->st.st_mode = (p->st.st_mode & ~(mode_t)07777) | (shown_mode & 07777);
     p->readonly = p->was_ro = !(p->st.st_mode & S_IWUSR);
     p->hidden = p->was_hidden = p->file[0] == '.';
     p->mode = p->was_mode = p->st.st_mode & 07777;
@@ -310,7 +316,11 @@ static int apply(Props *p)
         p->mode = m;
         mode_to_edit(p);
     }
-    if ((p->mode & 07777) != (p->was_mode & 07777) || p->readonly != p->was_ro) {
+    if (p->islink) {                 /* see measure(): not through a link */
+        p->mode = p->was_mode;
+        p->readonly = p->was_ro;
+        mode_to_edit(p);
+    } else if ((p->mode & 07777) != (p->was_mode & 07777) || p->readonly != p->was_ro) {
         if (chmod(full, p->mode & 07777) != 0) {
             fail(p, "set permissions");
             return 0;
@@ -340,7 +350,19 @@ static int apply(Props *p)
         }
         char to[2048];
         snprintf(to, sizeof to, "%s/%s", p->dir, target);
-        if (rename(full, to) != 0) { fail(p, "rename this item"); return 0; }
+        /* Never over something else with that name: ticking Hidden on
+         * "profile" used to replace an existing ".profile". */
+        if (w2k_fs_rename_noreplace(full, to) != 0) {
+            if (errno == EEXIST) {
+                char m[400];
+                snprintf(m, sizeof m, "Cannot rename: there is already a file named "
+                         "'%.200s' in this folder.", target);
+                w2k_msgbox(p->w, "Properties", m, MB_OK | MB_ICONERROR);
+                return 0;
+            }
+            fail(p, "rename this item");
+            return 0;
+        }
         snprintf(p->file, sizeof p->file, "%s", target);
         p->was_hidden = p->hidden;
         w2k_edit_set(p->name, want);

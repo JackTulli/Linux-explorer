@@ -27,6 +27,12 @@ static void power_idle_poll(void)
     static int fired;
     static int have = -1;
     if (w2k_standby_min <= 0 && w2k_hibernate_min <= 0) return;
+    /* Every half minute, as it says above -- not at every wakeup of the
+     * loop, each of which cost a round trip to the server. */
+    static long last;
+    long now = w2k_now_ms();
+    if (last && now - last < 30000) return;
+    last = now;
     if (have < 0) {
         int ev, err;
         have = XScreenSaverQueryExtension(w2k.dpy, &ev, &err) ? 1 : 0;
@@ -185,10 +191,22 @@ void wm_workarea_of_client(Client *c, int *x, int *y, int *w, int *h)
 
 void wm_update_workarea(void)
 {
-    /* _NET_WORKAREA is a single rectangle for the whole desktop, so it can
-     * only describe one monitor; the primary is the useful answer. Our own
+    /* _NET_WORKAREA is a single rectangle for the whole desktop: the
+     * screen, less the bar's strip when the bar is on the screen's edge.
+     * It used to be the primary monitor alone, and Qt, which intersects it
+     * with each monitor, found no room at all on the others. Our own
      * placement code asks wm_workarea_of_client() instead. */
-    wm_workarea_of(w2k_monitor_primary(), &wa_x, &wa_y, &wa_w, &wa_h);
+    const W2kMonitor *pm = w2k_monitor_primary();
+    wa_x = 0; wa_y = 0; wa_w = w2k.sw; wa_h = w2k.sh;
+    if (pm && !w2k_taskbar_autohide) {
+        int t = taskbar_thickness();
+        switch (w2k_taskbar_edge) {
+        case TB_TOP:   if (pm->y == 0) { wa_y += t; wa_h -= t; } break;
+        case TB_LEFT:  if (pm->x == 0) { wa_x += t; wa_w -= t; } break;
+        case TB_RIGHT: if (pm->x + pm->w == w2k.sw) wa_w -= t; break;
+        default:       if (pm->y + pm->h == w2k.sh) wa_h -= t; break;
+        }
+    }
     long wa[4] = { wa_x, wa_y, wa_w, wa_h };
     XChangeProperty(w2k.dpy, w2k.root, w2k.a_net_workarea, XA_CARDINAL, 32,
                     PropModeReplace, (unsigned char *)wa, 4);
@@ -201,14 +219,32 @@ void wm_layout_changed(void)
     taskbar_init();                 /* re-homes the bar on the primary */
     desktop_init();
     /* A maximised window is sized to a work area that may have just moved
-     * out from under it; re-apply so it fills its monitor again. */
+     * out from under it; re-apply so it fills its monitor again. A full-
+     * screen one covers its monitor again. Any other window left where no
+     * monitor shows it any more -- one was switched off -- comes onto the
+     * nearest, keeping its size where that fits. */
     for (Client *c = clients; c; c = c->next) {
-        if (!c->maximized) continue;
-        int x, y, w, h;
-        wm_workarea_of_client(c, &x, &y, &w, &h);
+        if (c->fullscreen) {
+            const W2kMonitor *m = w2k_monitor_at(c->x + c->w / 2, c->y + c->h / 2);
+            client_move_resize(c, m->x, m->y, m->w, m->h);
+            continue;
+        }
+        if (c->maximized) { client_refit_maximized(c); continue; }
+        int fx = c->x - client_border(c), fy = c->y - client_border(c) - client_caption_h(c);
+        int fw = client_frame_w(c), fh = client_frame_h(c), seen = 0;
+        for (int k = 0; k < w2k_monitor_count() && !seen; k++) {
+            const W2kMonitor *m = w2k_monitor(k);
+            seen = fx < m->x + m->w && fx + fw > m->x && fy < m->y + m->h && fy + 20 > m->y;
+        }
+        if (seen) continue;
+        int ax, ay, aw, ah;
+        wm_workarea_at(c->x + c->w / 2, c->y + c->h / 2, &ax, &ay, &aw, &ah);
+        if (fw > aw) fw = aw;
+        if (fh > ah) fh = ah;
+        int nx = fx < ax ? ax : fx + fw > ax + aw ? ax + aw - fw : fx;
+        int ny = fy < ay ? ay : fy + fh > ay + ah ? ay + ah - fh : fy;
         int b = client_border(c), cap = client_caption_h(c);
-        client_move_resize(c, x + b, y + b + cap, w - 2 * b, h - 2 * b - cap);
-        frame_paint(c);
+        client_move_resize(c, nx + b, ny + b + cap, fw - 2 * b, fh - 2 * b - cap);
     }
 }
 
@@ -544,10 +580,14 @@ void wm_handle_event(XEvent *e)
          * application still receives the click. */
         c = client_find(e->xbutton.window);
         if (c) {
+            /* The click goes on to the application first. The pointer
+             * stayed frozen until the raise and focus were done -- a
+             * restack of every window, with live glass a repaint of every
+             * frame -- so every click in every program waited on them. */
+            XAllowEvents(w2k.dpy, ReplayPointer, e->xbutton.time);
+            XFlush(w2k.dpy);
             client_raise(c);
             client_focus(c);
-            XAllowEvents(w2k.dpy, ReplayPointer, e->xbutton.time);
-            XSync(w2k.dpy, False);
         }
         break;
 
@@ -581,17 +621,22 @@ void wm_handle_event(XEvent *e)
                 /* The theme may have changed with the scheme: the bar,
                  * the Start button and the menu style all follow it. */
                 taskbar_init();
+                /* A look brings its own bar height (28 against 40): the
+                 * work area, and with it every maximised window, follow. */
+                wm_update_workarea();
                 w2k_cursors_init();
                 XDefineCursor(w2k.dpy, w2k.root, w2k.cur_arrow);
                 desktop_reload();
                 glass_live_apply();
                 for (Client *k = clients; k; k = k->next) {
                     /* ForceDecorations lives in the scheme file too, so a
-                     * window may have just gained or lost its frame. */
-                    int was = k->decorate;
+                     * window may have just gained or lost its frame -- and
+                     * a look change gives every frame new measurements. */
                     client_update_type(k);
-                    if (k->decorate != was)
-                        client_move_resize(k, k->x, k->y, k->w, k->h);
+                    client_relayout(k);
+                    if (k->maximized) client_refit_maximized(k);
+                    k->shape_key = 0;             /* the look's corners, whatever the size */
+                    frame_shape(k);
                     frame_paint(k);
                 }
                 taskbar_paint();
@@ -600,11 +645,16 @@ void wm_handle_event(XEvent *e)
         }
         c = client_find(e->xproperty.window);
         if (!c) break;
-        if (e->xproperty.atom == XA_WM_NAME ||
+        /* A title arrives twice, as WM_NAME and _NET_WM_NAME: the second
+         * is the one read, and nothing is repainted when it is the same
+         * text -- a page retitling itself every second repainted the frame
+         * and the whole bar twice a second. */
+        if ((e->xproperty.atom == XA_WM_NAME && !c->net_name) ||
             e->xproperty.atom == w2k.a_net_wm_name) {
-            client_update_name(c);
-            frame_paint(c);
-            taskbar_paint();
+            if (client_update_name(c)) {
+                frame_paint(c);
+                taskbar_paint();
+            }
         } else if (e->xproperty.atom == XA_WM_NORMAL_HINTS) {
             client_update_hints(c);
         }
@@ -663,6 +713,16 @@ static void manage_own_window(Window w)
  * process keeps its pid, so l2k-session is none the wiser. */
 static void wm_restart(void)
 {
+    /* Which windows were minimised, for the new process to minimise
+     * again: every window used to come back restored. */
+    static char iconic[4096];
+    iconic[0] = 0;
+    for (Client *c = clients; c; c = c->next)
+        if (c->minimized) {
+            size_t l = strlen(iconic);
+            snprintf(iconic + l, sizeof iconic - l, "%s0x%lx", l ? "," : "", (unsigned long)c->win);
+        }
+    setenv("W2K_RESTART_ICONIC", iconic, 1);
     for (Client *c = clients; c; c = c->next)
         if (c->minimized) { c->minimized = 0; XMapWindow(w2k.dpy, c->frame); }
     XSetInputFocus(w2k.dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
@@ -704,9 +764,22 @@ static void scan_existing(void)
         XWindowAttributes wa;
         if (!XGetWindowAttributes(w2k.dpy, kids[i], &wa)) continue;
         if (wa.override_redirect || wa.map_state != IsViewable) continue;
+        /* A tray icon left at the root by the shell before this one: it
+         * docks again when its program sees the new tray, and framed it
+         * would be a tiny window with a taskbar button of its own. */
+        Atom xe = XInternAtom(w2k.dpy, "_XEMBED_INFO", True), type;
+        int fmt;
+        unsigned long nitems = 0, after;
+        unsigned char *data = NULL;
+        if (xe != None && XGetWindowProperty(w2k.dpy, kids[i], xe, 0, 2, False, AnyPropertyType,
+                                             &type, &fmt, &nitems, &after, &data) == Success && data) {
+            XFree(data);
+            if (nitems) { XUnmapWindow(w2k.dpy, kids[i]); continue; }
+        }
         client_manage(kids[i], 0);
     }
     if (kids) XFree(kids);
+    unsetenv("W2K_RESTART_ICONIC");          /* for this restart only */
 }
 
 int main(int argc, char **argv)
@@ -887,14 +960,17 @@ int main(int argc, char **argv)
     taskbar_sync();
     XSync(w2k.dpy, False);
 
-    startdir_run_startup();
-
-    /* Anything on the command line after "--" is autostarted. */
-    for (int i = 1; i < argc; i++)
-        if (!strcmp(argv[i], "--") ) {
-            for (int j = i + 1; j < argc; j++) wm_spawn(argv[j]);
-            break;
-        }
+    /* The Startup folder, and anything on the command line after "--",
+     * once a session -- not again at an in-place restart (an update
+     * restarts the shell this way), which started them all a second time. */
+    if (!getenv("W2K_RESTARTED")) {
+        startdir_run_startup();
+        for (int i = 1; i < argc; i++)
+            if (!strcmp(argv[i], "--") ) {
+                for (int j = i + 1; j < argc; j++) wm_spawn(argv[j]);
+                break;
+            }
+    }
 
     int fd = ConnectionNumber(w2k.dpy);
     notifyd_init();                     /* the desktop's notification service */
@@ -906,6 +982,9 @@ int main(int argc, char **argv)
         }
         if (!running) break;
         if (restarting) wm_restart();
+        /* The toolkit's timers -- the orb's glow, for one -- ran only
+         * inside modal loops, so the glow never moved in the shell. */
+        int tw = w2k_run_timers();
 
         /* Sleep until either X has something to say or something on the
          * shell is due: the clock at the next minute, a tooltip half a
@@ -919,11 +998,14 @@ int main(int argc, char **argv)
         if (nfd >= 0) FD_SET(nfd, &r);
         int vfd = volume_fd();          /* pactl subscribe, when there is one */
         if (vfd >= 0) FD_SET(vfd, &r);
+        int bfd = desktop_bin_fd();     /* the Recycle Bin's folder */
+        if (bfd >= 0) FD_SET(bfd, &r);
         int wait = taskbar_next_tick_ms();
         int d = desktop_next_tick_ms();
         if (d < wait) wait = d;
         int b = balloon_next_tick_ms();
         if (b >= 0 && b < wait) wait = b;
+        if (tw >= 0 && tw < wait) wait = tw;
         /* A log-off is waiting on windows to close; one that refuses
          * sends no events, so keep checking the deadline. */
         if (logging_out && wait > 200) wait = 200;
@@ -935,6 +1017,7 @@ int main(int argc, char **argv)
         int maxfd = fd;
         if (nfd > maxfd) maxfd = nfd;
         if (vfd > maxfd) maxfd = vfd;
+        if (bfd > maxfd) maxfd = bfd;
         int rc = select(maxfd + 1, &r, NULL, NULL, &tv);
         power_idle_poll();
         if (rc < 0 && errno == EBADF && nfd >= 0) {
@@ -955,6 +1038,7 @@ int main(int argc, char **argv)
         taskbar_tick();
         taskbar_hover_tick();
         balloon_tick();
+        if (bfd >= 0 && rc > 0 && FD_ISSET(bfd, &r)) desktop_bin_event();
         desktop_bin_tick();
         desktop_hover_tick();
         logout_poll();

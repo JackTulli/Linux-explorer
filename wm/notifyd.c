@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #ifdef HAVE_DBUS
@@ -220,6 +221,31 @@ static DBusHandlerResult on_message(DBusConnection *c, DBusMessage *msg, void *u
 
 static const DBusObjectPathVTable vtable = { NULL, on_message, NULL, NULL, NULL, NULL };
 
+/* Only a notification daemon on its own -- dunst and its like, the
+ * user's own -- is asked to leave. Anything else holding the name is left
+ * alone and the shell does without: started inside GNOME or Plasma, it
+ * used to stop gnome-shell or plasmashell, and a pid from another
+ * namespace could be an unrelated process. */
+static int standalone_daemon(pid_t pid)
+{
+    static const char *const known[] = { "dunst", "xfce4-notifyd", "mako", "notification-daemon",
+        "notify-osd", "lxqt-notificationd", "mate-notification-daemon", "deadd-notification",
+        "swaync", "fnott", "linux_notification_center", "notification-daemon-xfce", NULL };
+    char p[64], comm[64] = "";
+    snprintf(p, sizeof p, "/proc/%ld/comm", (long)pid);
+    FILE *f = fopen(p, "r");
+    if (!f) return 0;
+    if (!fgets(comm, sizeof comm, f)) comm[0] = 0;
+    fclose(f);
+    comm[strcspn(comm, "\n")] = 0;
+    struct stat st;
+    snprintf(p, sizeof p, "/proc/%ld", (long)pid);
+    if (stat(p, &st) != 0 || st.st_uid != getuid()) return 0;
+    for (int i = 0; known[i]; i++)
+        if (!strncmp(comm, known[i], 15)) return 1;         /* comm is cut at 15 */
+    return 0;
+}
+
 int notifyd_init(void)
 {
     DBusError err;
@@ -242,7 +268,7 @@ int notifyd_init(void)
          * to leave, then take the name. */
         dbus_error_free(&err);
         pid_t owner_pid = owner_process(NOTIFY_IFACE);
-        if (owner_pid > 0 && owner_pid != getpid()) {
+        if (owner_pid > 0 && owner_pid != getpid() && standalone_daemon(owner_pid)) {
             fprintf(stderr, "l2kwm: notifications: stopping the daemon holding %s (pid %ld)\n",
                     NOTIFY_IFACE, (long)owner_pid);
             kill(owner_pid, SIGTERM);

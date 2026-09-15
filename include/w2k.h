@@ -8,6 +8,7 @@
 #define W2K_H
 
 #include <stddef.h>
+#include <stdio.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
@@ -183,6 +184,10 @@ void  w2k_color_set(int color, int r, int g, int b);
 int   w2k_scheme_load(const char *path);        /* NULL = default file   */
 int   w2k_scheme_save(const char *path);
 void  w2k_scheme_broadcast(void);               /* tell other processes  */
+/* While this returns non-zero, another program's broadcast does not reload
+ * the scheme here (the dialog it belongs to has changes not yet applied);
+ * it is reloaded once it returns 0. */
+extern int (*w2k_scheme_hold)(void);
 void  w2k_scheme_reset(void);                   /* back to Windows Standard */
 /* A theme's built-in value for one colour. */
 void  w2k_theme_colour(int theme, int color, unsigned char rgb[3]);
@@ -273,6 +278,10 @@ unsigned char *w2k_png_load(const char *path, int *w, int *h);
 unsigned char *w2k_jpeg_load(const char *path, int *w, int *h);
 /* Any of the above, chosen by what the file actually contains. */
 unsigned char *w2k_image_load(const char *path, int *w, int *h);
+/* The same, for a picture about to be scaled down to cover want_w x
+ * want_h: a JPEG twice that size or more is decoded at 1/2, 1/4 or 1/8. */
+unsigned char *w2k_image_load_scaled(const char *path, int want_w, int want_h, int *w, int *h);
+int w2k_image_dims(const char *path, int *w, int *h);   /* from the header; 0: unknown */
 /* File operations shared by everything that takes a drop (lib/fileops.c). */
 int  w2k_fs_copy_tree(const char *from, const char *to);
 int  w2k_fs_remove_tree(const char *path);
@@ -282,6 +291,14 @@ int  w2k_fs_move(const char *from, const char *to);      /* rename, or copy and 
  * many landed. */
 int  w2k_fs_transfer(char paths[][1024], int n, const char *dir, int move,
                      int (*confirm)(const char *dst, void *user), void *user);
+/* One item to `to` (the full destination path), by the same rules: what
+ * is replaced goes only once its replacement is in, folders merge, and
+ * the source's own folder is never replaced. 1 done, 0 skipped, -1
+ * stopped by `confirm`, -2 failed with errno set. */
+int  w2k_fs_put(const char *from, const char *to, int move,
+                int (*confirm)(const char *dst, void *user), void *user);
+/* rename() that fails with EEXIST rather than replace what is at `to`. */
+int  w2k_fs_rename_noreplace(const char *from, const char *to);
 /* Mounted media and /mnt, lettered from D:. `dev` is what is mounted
  * (/dev/sdb1, or a network or FUSE source); `path` is empty for a volume
  * that is not mounted; `ejectable` when it sits on a USB stick, a card or
@@ -355,6 +372,8 @@ W2kSkin *w2k_skin_load_scaled(const char *path, int scale);
 /* A skin from pixels already in memory (RGBA, row-major); the caller keeps
  * the buffer. */
 W2kSkin *w2k_skin_from_rgba(const unsigned char *rgba, int w, int h);
+/* Straight RGBA as a pixmap over the colour bg (NULL: alpha ignored). */
+Pixmap w2k_pixmap_from_rgba(const unsigned char *rgba, int w, int h, const int *bg);
 void     w2k_skin_free(W2kSkin *s);
 void     w2k_skin_cache_flush(void);   /* re-read the artwork on the next paint */
 GC       w2k_copy_gc(void);   /* a GC that copies and nothing else: no clip, no tile */
@@ -429,6 +448,33 @@ void w2k_accel_reset(void);     /* a menu closed: hide them again */
  * listed). Any of the three outputs may be NULL. */
 int w2k_desktop_entry(const char *path, char *name, int nn,
                       char *exec, int en, char *icon, int in);
+/* ---- Animations (lib/anim.c) ---- *
+ * Slide `win` (unmapped) into view at x,y,pw,ph, `picture` its finished
+ * content, from its top edge -- or from its bottom when `upward`, as a
+ * menu over the taskbar opens -- in `ms` milliseconds. */
+void w2k_slide_in(Window win, Pixmap picture, int x, int y, int pw, int ph,
+                  int upward, int ms);
+/* A name from data as a label: its "&"s doubled, so none is a mnemonic. */
+void w2k_menu_escape(const char *in, char *out, size_t n);
+/* Run between animation frames, when set (the window manager's exposures). */
+extern void (*w2k_anim_frame)(void);
+/* A caption-coloured bar (c1 to c2) flying from one rectangle to another. */
+void w2k_zoom_rect(int fx, int fy, int fw, int fh, int tx, int ty, int tw, int th,
+                   int ms, unsigned long c1, unsigned long c2);
+
+/* A settings file out of `home`, opened as the logon screen must (no
+ * symlink, no FIFO, owned by the home's owner, at most maxsize bytes). */
+FILE *w2k_fopen_confined(const char *path, const char *home, long maxsize);
+/* Pictures bigger than this many pixels are not decoded (0: no limit).
+ * The logon screen, decoding as root what a user named, sets one. */
+extern long w2k_image_max_pixels;
+
+/* The spec's escapes (\s \n \t \r \\) undone, in place. */
+void w2k_desktop_unescape(char *s);
+/* An Exec value as a command for sh -c: unescaped, field codes out. */
+void w2k_desktop_exec_command(const char *exec, char *out, size_t n);
+/* A value escaped for writing into a .desktop file; `exec` doubles %. */
+void w2k_desktop_escape(const char *in, char *out, size_t n, int exec);
 
 /* ---- File types ---------------------------------------------------- *
  * The friendly name and icon for a file, by extension: "Text Document",
@@ -776,6 +822,8 @@ int      w2k_menu_border(void);
 /* While a menu is modal the rest of the desktop still needs to repaint.
  * The window manager points this at its own event handler. */
 extern void (*w2k_menu_foreign_event)(XEvent *e);
+/* Nonzero closes every open menu at its next event. */
+extern volatile int w2k_menu_cancel;
 /* Called when the menu chain closes, so the opener can un-press its button. */
 extern void (*w2k_menu_closed)(void);
 
@@ -956,6 +1004,10 @@ int   w2k_account_save(const char *name, const char *picture);
 void  w2k_account_reload(void);
 void  w2k_account_preview(const char *picture);   /* this process only */
 void  w2k_account_picture_draw(Drawable d, int x, int y, int size, int fallback);
+/* What decodes the picture, when not the image loader: the logon screen,
+ * running as root, has it done by a child running as the picture's
+ * owner. Returns straight RGBA of any size (the caller crops it). */
+extern unsigned char *(*w2k_account_decoder)(const char *path, int size, int *w, int *h);
 
 /* Register an icon file (.ico, .png, .bmp, .jpg) as a new icon id. */
 int  w2k_icon_from_file(const char *path);

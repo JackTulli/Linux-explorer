@@ -46,9 +46,11 @@ static int addcat(W2kDeviceSet *s,const char *name,const char *icon){
     if(s->count>=W2K_DEV_MAX_CATS)return -1;
     W2kDeviceCategory *c=&s->cats[s->count++]; memset(c,0,sizeof *c);
     cp(c->name,sizeof c->name,name); cp(c->icon,sizeof c->icon,icon);
-    c->devices=calloc(64,sizeof *c->devices); return (int)(s->count-1);
+    return (int)(s->count-1);
 }
-static W2kDevice *adddev(W2kDeviceSet *s,int ci){W2kDeviceCategory *c=&s->cats[ci];if(c->count%64==0){size_t nc=c->count+64;W2kDevice *p=realloc(c->devices,nc*sizeof *p);if(!p)return NULL;c->devices=p;}W2kDevice *d=&c->devices[c->count++];memset(d,0,sizeof *d);cp(d->status,sizeof d->status,"This device is working properly.");return d;}
+/* Grown as devices come: every category used to start with room for 64
+ * (263 KB each, some five megabytes a scan for one of real data). */
+static W2kDevice *adddev(W2kDeviceSet *s,int ci){W2kDeviceCategory *c=&s->cats[ci];if(c->count==c->cap){size_t nc=c->cap?c->cap*2:8;W2kDevice *p=realloc(c->devices,nc*sizeof *p);if(!p)return NULL;c->devices=p;c->cap=nc;}W2kDevice *d=&c->devices[c->count++];memset(d,0,sizeof *d);cp(d->status,sizeof d->status,"This device is working properly.");return d;}
 static int validmod(const char *s);
 static int runv(const char *const av[], char *err, size_t n);
 
@@ -344,6 +346,13 @@ static int runv(const char *const av[], char *err, size_t n)
         dup2(p[1], STDOUT_FILENO);
         dup2(p[1], STDERR_FILENO);
         close(p[0]); close(p[1]);
+        /* modinfo and dkms live in /usr/sbin, which a user's session does
+         * not have on its PATH on Debian: the driver's version and author
+         * always came out "Unknown", and Uninstall failed. */
+        const char *path = getenv("PATH");
+        char np[4096];
+        snprintf(np, sizeof np, "%s%s/usr/sbin:/sbin", path ? path : "", path && *path ? ":" : "");
+        setenv("PATH", np, 1);
         execvp(av[0], (char *const *)av);
         _exit(127);
     }
@@ -435,7 +444,9 @@ int w2k_device_uninstall_dkms(const W2kDevice*d,char*err,size_t n){
     const char *av[]={"pkexec","dkms","remove",spec,"--all",NULL}; return runv(av,err,n);
 }
 int w2k_device_install_dkms(const char*path,char*err,size_t n){if(!path||path[0]!='/'){cp(err,n,"Driver source must be an absolute path.");return -1;}char real[PATH_MAX];if(!realpath(path,real)){cp(err,n,strerror(errno));return -1;}struct stat st;if(stat(real,&st)||!S_ISDIR(st.st_mode)){cp(err,n,"Driver source is not a directory.");return -1;}char conf[PATH_MAX];snprintf(conf,sizeof conf,"%s/dkms.conf",real);if(access(conf,R_OK)){cp(err,n,"Selected directory has no dkms.conf.");return -1;}const char *av[]={"pkexec","dkms","install",real,NULL};return runv(av,err,n);}
-static int launchv(char *const av[]){ pid_t pid=fork(); if(pid<0)return -1; if(pid==0){setsid(); execvp(av[0],av); _exit(127);} return 0; }
+/* In the background, twice forked so nothing is left to reap: the single
+ * fork left a zombie behind for every "Search automatically". */
+static int launchv(char *const av[]){ pid_t pid=fork(); if(pid<0)return -1; if(pid==0){ if(fork()==0){setsid(); execvp(av[0],av);} _exit(127);} waitpid(pid,NULL,0); return 0; }
 int w2k_device_update_driver(const W2kDevice*d,char*err,size_t n){(void)d; const char *names[]={"plasma-discover","gnome-software",NULL}; for(int i=0;names[i];i++){char *path=getenv("PATH"); if(!path) path="/usr/bin:/bin"; char *copy=strdup(path); if(!copy) continue; char *save=NULL; for(char*q=strtok_r(copy,":",&save);q;q=strtok_r(NULL,":",&save)){char tmp[PATH_MAX];snprintf(tmp,sizeof tmp,"%s/%s",q,names[i]);if(access(tmp,X_OK)==0){free(copy);if(!strcmp(names[i],"plasma-discover")){char*av[]={(char*)names[i],"--mode","Update",NULL};return launchv(av);}char*av[]={(char*)names[i],NULL};return launchv(av);}}free(copy);}cp(err,n,"No graphical driver/software updater was found.");return -1;}
 
 static int uevent_fd=-1;

@@ -142,6 +142,7 @@ presets[] = {
 };
 #define NPRESET ((int)(sizeof presets / sizeof *presets))
 static int matching_preset(void);
+static void fill_monitor_combos(void);
 
 /* ------------------------------------------------------------------ *
  * Settings: monitors via xrandr
@@ -227,7 +228,11 @@ static void read_monitors(void)
 {
     nmons = 0;
     if (read_monitors_nested()) return;
-    FILE *p = popen("xrandr --query 2>/dev/null", "r");
+    /* --current: what the server knows, not a new probe of every
+     * connector. --query read each monitor's EDID again, tens of
+     * milliseconds a screen and seconds behind some docks, before the
+     * window could open. */
+    FILE *p = popen("xrandr --current 2>/dev/null", "r");
     if (!p) return;
     char line[512];
     Monitor *m = NULL;
@@ -463,7 +468,11 @@ static void apply_monitors(void)
         snprintf(msg, sizeof msg, "xrandr reported:\n\n%s", out);
         w2k_msgbox(NULL, "Display Properties", msg, MB_OK | MB_ICONWARNING);
     }
+    /* Read back in the order they are now arranged -- and the lists with
+     * them, or the next change went to the monitor that used to be at that
+     * place in the list. */
     read_monitors();
+    fill_monitor_combos();
 }
 
 /* ------------------------------------------------------------------ *
@@ -747,6 +756,20 @@ static int is_picture(const char *name)
  * as the real dialog does. The monitor stands in for the primary screen
  * (or, for Span, the whole desktop) at the same shape. Built once per
  * picture and style and kept. */
+/* The window goes up first and the picture follows: decoding a
+ * photograph takes a good part of a tenth of a second, and the dialog
+ * used to wait for it before it showed at all. */
+static int preview_go;                 /* 2: the picture may be drawn */
+static void preview_later(void *u)
+{
+    (void)u;
+    /* Twice: the first time is still in the pass that painted the window,
+     * before its picture has been sent to the server. */
+    if (++preview_go < 2) return;
+    w2k_del_timer(preview_later, NULL);
+    w2k_win_dirty(dl.win);
+}
+
 static void wallpaper_preview(Drawable d, int x, int y, int w, int h)
 {
     static Pixmap cache;
@@ -763,8 +786,43 @@ static void wallpaper_preview(Drawable d, int x, int y, int w, int h)
         XCopyArea(w2k.dpy, cache, d, w2k_copy_gc(), 0, 0, (unsigned)w, (unsigned)h, x, y);
         return;
     }
-    int iw, ih;
-    unsigned char *rgba = w2k_image_load(w2k_wallpaper, &iw, &ih);
+    if (preview_go < 2 && !getenv("W2K_RENDER")) {
+        XSetForeground(w2k.dpy, w2k.gc, w2k.col[C_DESKTOP]);
+        XFillRectangle(w2k.dpy, d, w2k.gc, x, y, (unsigned)w, (unsigned)h);
+        if (!preview_go) w2k_add_timer(0, preview_later, NULL);
+        return;
+    }
+    /* The screen the preview stands for, so the picture keeps its scale. */
+    const W2kMonitor *m = w2k_monitor_primary();
+    int SW = w2k_wallpaper_style == 5 ? w2k.sw : m->w;
+    int SH = w2k_wallpaper_style == 5 ? w2k.sh : m->h;
+    if (SW <= 0 || SH <= 0) { SW = 1024; SH = 768; }
+    int st = w2k_wallpaper_style;
+    /* Decoded no bigger than the little monitor needs: libjpeg shrinks a
+     * photograph by up to 8 as it reads it. The whole of it was decoded for
+     * a preview 160 pixels wide -- a third of a second, for a camera's 24
+     * megapixels, before the window could appear. */
+    int iw = 0, ih = 0, iw0, ih0;
+    unsigned char *rgba;
+    if (w2k_image_dims(w2k_wallpaper, &iw0, &ih0)) {
+        double f = 1.0;                         /* screen pixels per picture pixel */
+        if (st == 3 || st == 4) {
+            double fw = (double)SW / iw0, fh = (double)SH / ih0;
+            f = st == 3 ? (fw < fh ? fw : fh) : (fw > fh ? fw : fh);
+        }
+        int nw = st == 2 || st == 5 ? w : (int)(iw0 * f * w / SW) + 1;
+        int nh = st == 2 || st == 5 ? h : (int)(ih0 * f * h / SH) + 1;
+        rgba = w2k_image_load_scaled(w2k_wallpaper, nw, nh, &iw, &ih);
+        /* Decoded smaller, the screen it stands for shrinks with it: all
+         * the placing below is in the picture's own pixels. */
+        if (rgba && iw > 0 && iw < iw0) {
+            SW = (int)((long)SW * iw / iw0);
+            SH = (int)((long)SH * ih / ih0);
+            if (SW < 1) SW = 1;
+            if (SH < 1) SH = 1;
+        }
+    } else
+        rgba = w2k_image_load(w2k_wallpaper, &iw, &ih);
     if (!rgba || iw <= 0 || ih <= 0) {
         free(rgba);
         XSetForeground(w2k.dpy, w2k.gc, w2k.col[C_DESKTOP]);
@@ -775,13 +833,6 @@ static void wallpaper_preview(Drawable d, int x, int y, int w, int h)
     cache = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)w, (unsigned)h, w2k.depth);
     snprintf(cache_path, sizeof cache_path, "%s", w2k_wallpaper);
     cache_style = w2k_wallpaper_style; cache_w = w; cache_h = h; cache_method = w2k_resample;
-
-    /* The screen the preview stands for, so the picture keeps its scale. */
-    const W2kMonitor *m = w2k_monitor_primary();
-    int SW = w2k_wallpaper_style == 5 ? w2k.sw : m->w;
-    int SH = w2k_wallpaper_style == 5 ? w2k.sh : m->h;
-    if (SW <= 0 || SH <= 0) { SW = 1024; SH = 768; }
-    int st = w2k_wallpaper_style;
     long fx = 0, ox = 0, oy = 0;
     if (st == 3 || st == 4) {
         long sw = ((long)iw << 16) / SW, shh = ((long)ih << 16) / SH;
@@ -881,9 +932,10 @@ static void fill_walls(void)
         struct dirent *de;
         while ((de = readdir(dp))) {
             if (de->d_name[0] == '.' || !is_picture(de->d_name)) continue;
-            char *full = w2k_alloc(2048);
-            int len = snprintf(full, 2048, "%s/%s", dirs[d], de->d_name);
-            if (len >= 2048) { free(full); continue; }
+            char path[2048];
+            int len = snprintf(path, sizeof path, "%s/%s", dirs[d], de->d_name);
+            if (len >= (int)sizeof path) continue;
+            char *full = w2k_strdup(path);
             int k = w2k_list_add(dl.walls, ICO_PAINT, full);
             char label[300];
             const char *dot = strrchr(de->d_name, '.');
@@ -1518,13 +1570,13 @@ static int fd_event(W2kWin *w, XEvent *e)
         int b = fd->down, x = e->xbutton.x, y = e->xbutton.y;
         fd->down = 0;
         if (b == 1 && w2k_rect_hit(&fd->ok, x, y)) w2k_win_close(w, ID_OK);
-        else if (b == 2 && w2k_rect_hit(&fd->cancel, x, y)) { fd_revert(fd); w2k_win_close(w, ID_CANCEL); }
+        else if (b == 2 && w2k_rect_hit(&fd->cancel, x, y)) w2k_win_close(w, ID_CANCEL);
         w2k_win_dirty(w);
         return 1;
     }
     case KeyPress: {
         KeySym ks = XLookupKeysym(&e->xkey, 0);
-        if (ks == XK_Escape) { fd_revert(fd); w2k_win_close(w, ID_CANCEL); return 1; }
+        if (ks == XK_Escape) { w2k_win_close(w, ID_CANCEL); return 1; }
         if (ks == XK_Return || ks == XK_KP_Enter) { w2k_win_close(w, ID_OK); return 1; }
         if (w2k_combo_key(fd->filter, &e->xkey)) { w2k_win_dirty(w); return 1; }
         return 1;
@@ -1563,10 +1615,14 @@ static void compositor_dialog(void)
     fd.cancel = (W2kRect){ cw - 12 - 75, by, 75, 23 };
     fd.ok     = (W2kRect){ cw - 12 - 75 * 2 - 6, by, 75, 23 };
     w2k_win_center(w, dl.win);
-    w2k_win_modal(w);
+    /* Anything but OK puts the old filter back on the screen -- the
+     * title bar's close button included, which used to leave the new one. */
+    if (w2k_win_modal(w) != ID_OK) fd_revert(&fd);
+    w2k_combo_free(fd.filter);
 }
 
-static void do_apply(void)
+/* 1 when applied; 0 when refused, and the dialog stays open. */
+static int do_apply(void)
 {
     /* Settings-tab changes apply whichever tab is showing when OK or Apply
      * is pressed; before, switching tabs after choosing a scale lost it. */
@@ -1591,17 +1647,19 @@ static void do_apply(void)
                      "and the X server allows at most 16384 each way.\n\nChoose Sharp or Screen, "
                      "a smaller scale, or fewer monitors.", right, bottom);
             w2k_msgbox(dl.win, "Display Properties", msg, MB_OK | MB_ICONWARNING);
-            return;
+            return 0;
         }
     }
     if (monitors) record_monitors();
     w2k_compositor = dl.compositor;
     w2k_scheme_save(NULL);
+    /* Nothing pending now: the broadcast comes back here too, and reloads
+     * what other programs may have applied meanwhile (the save kept it). */
+    dl.dirty = dl.mon_dirty = 0;
     w2k_scheme_broadcast();
     /* Inside the nested compositor the layout is the session's; xrandr
      * there would only confuse it. The scheme still records the wish. */
     if (monitors && !(getenv("W2K_MONITORS") && *getenv("W2K_MONITORS"))) apply_monitors();
-    dl.dirty = dl.mon_dirty = 0;
     w2k_win_dirty(dl.win);
     int wanted = w2k_scale_mode != SCALE_XRANDR ? w2k_ui_scale_pref : 100;
     if (monitors && wanted != running)
@@ -1609,13 +1667,23 @@ static void do_apply(void)
                    "The desktop scale takes effect the next time you log on.\n"
                    "Log off and back on to see the desktop at the new size.",
                    MB_OK | MB_ICONINFO);
+    return 1;
 }
 
 static void do_cancel(void)
 {
     w2k_scheme_load(NULL);          /* discard unapplied edits locally */
+    dl.dirty = dl.mon_dirty = 0;
+    /* The filter sheet changes the running scaler as it goes: it gets the
+     * saved settings back too, or the one chosen stayed on the screen. */
+    w2k_compositor_push();
     w2k_win_close(dl.win, ID_CANCEL);
 }
+
+/* The dialog's choices live in the shared settings until they are
+ * applied: while there are any, another program's Apply does not
+ * reload them from the file (see w2k_scheme_hold). */
+static int holding(void) { return dl.dirty; }
 
 static void blink_cb(void *v) { w2k_edit_blink(v); }
 
@@ -1676,7 +1744,7 @@ static int event(W2kWin *w, XEvent *e)
                 /* Exactly one primary, always. */
                 for (int i = 0; i < nmons; i++) mons[i].want_primary = (i == cur);
                 fill_monitor_combos();      /* the "(primary)" label moved */
-                dl.dirty = 1;
+                dl.dirty = dl.mon_dirty = 1;
                 w2k_win_dirty(w);
                 return 1;
             }
@@ -1698,7 +1766,7 @@ static int event(W2kWin *w, XEvent *e)
                             if (mons[i].want_enabled) { mons[i].want_primary = 1; break; }
                     }
                     if (on) snap_monitor(cur);
-                    dl.dirty = 1;
+                    dl.dirty = dl.mon_dirty = 1;
                 }
                 w2k_win_dirty(w);
                 return 1;
@@ -1764,7 +1832,7 @@ static int event(W2kWin *w, XEvent *e)
         w2k_edit_release(dl.red); w2k_edit_release(dl.green); w2k_edit_release(dl.blue);
         int d = dl.down, x = e->xbutton.x, y = e->xbutton.y;
         dl.down = 0;
-        if (d == 1 && w2k_rect_hit(&dl.ok, x, y)) { do_apply(); w2k_win_close(w, ID_OK); }
+        if (d == 1 && w2k_rect_hit(&dl.ok, x, y)) { if (do_apply()) w2k_win_close(w, ID_OK); }
         else if (d == 2 && w2k_rect_hit(&dl.cancel, x, y)) do_cancel();
         else if (d == 3 && w2k_rect_hit(&dl.apply, x, y)) do_apply();
         else if (d == 5 && w2k_rect_hit(&dl.filter_btn, x, y)) compositor_dialog();
@@ -1786,7 +1854,7 @@ static int event(W2kWin *w, XEvent *e)
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         if (ks == XK_Escape) { do_cancel(); return 1; }
         if (w2k_tabs_key(dl.tabs, &e->xkey)) { w2k_win_dirty(w); return 1; }
-        if (ks == XK_Return || ks == XK_KP_Enter) { do_apply(); w2k_win_close(w, ID_OK); return 1; }
+        if (ks == XK_Return || ks == XK_KP_Enter) { if (do_apply()) w2k_win_close(w, ID_OK); return 1; }
         if (tab == 1) {
             W2kEdit *eds[] = { dl.red, dl.green, dl.blue };
             if (ks == XK_Tab) {
@@ -2030,6 +2098,7 @@ int main(int argc, char **argv)
     dl.qtstyle->r   = (W2kRect){ c.x + 100, c.y + 160, c.w - 110, 21 };
     fill_program_combos();
 
+    w2k_scheme_hold = holding;
     w2k_win_center(dl.win, NULL);
     w2k_win_show(dl.win);
     w2k_run();

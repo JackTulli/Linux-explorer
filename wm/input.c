@@ -56,8 +56,12 @@ static void snap_apply(Client *c, int zone, int px, int py)
     else if (zone == SNAP_RIGHT)  { w = ww / 2; x = wx + ww - w; }
     else if (zone == SNAP_BOTTOM) { h = wh / 2; y = wy + wh - h; }
 
-    /* Remember where it was, so Restore puts it back. */
-    if (!c->maximized) { c->rx = c->x; c->ry = c->y; c->rw = c->w; c->rh = c->h; }
+    /* Remember where it was, so Restore puts it back -- for a maximised
+     * window, the size it had before that, and it is maximised no longer:
+     * it stayed flagged so, half the screen wide, and could then be
+     * neither dragged nor resized. */
+    if (c->maximized) { c->maximized = 0; client_publish_state(c); }
+    else { c->rx = c->x; c->ry = c->y; c->rw = c->w; c->rh = c->h; }
     client_move_resize(c, x + b, y + b + cap, w - 2 * b, h - 2 * b - cap);
 }
 
@@ -154,25 +158,30 @@ static void outline_draw(int x, int y, int w, int h)
 /* Zoom a wire frame from one rectangle to another -- the animation Windows
  * plays when a window minimises to its taskbar button, and back. Each step
  * is drawn and erased, so nothing underneath needs repainting. */
+/* Between the frames of the flight: what it has uncovered of the shell's
+ * own windows -- the task button, desktop icons, frames -- is painted
+ * again at once, rather than left blank until it lands. */
+static void anim_exposures(void)
+{
+    XEvent e;
+    while (XCheckMaskEvent(w2k.dpy, ExposureMask, &e)) wm_handle_event(&e);
+    XFlush(w2k.dpy);
+}
+
 void wm_animate_rect(int fx, int fy, int fw, int fh,
                      int tx, int ty, int tw, int th)
 {
     if (!w2k_effects[FX_ANIM_MINMAX]) return;
     if (fw < 4 || fh < 4 || tw < 4 || th < 4) return;
-
-    XGrabServer(w2k.dpy);
-    for (int i = 1; i <= 7; i++) {
-        int x = fx + (tx - fx) * i / 8;
-        int y = fy + (ty - fy) * i / 8;
-        int w = fw + (tw - fw) * i / 8;
-        int h = fh + (th - fh) * i / 8;
-        outline_draw(x, y, w, h);
-        XFlush(w2k.dpy);
-        usleep(12000);
-        outline_draw(x, y, w, h);          /* drawn twice = erased */
-    }
-    XUngrabServer(w2k.dpy);
-    XFlush(w2k.dpy);
+    /* The caption, not the whole window, is what flies (Windows 2000's
+     * IDANI_CAPTION): the rectangles become caption-high bars. */
+    int cap = w2k_px(W2K_CAPTION_H);
+    if (fh > th) fh = cap < fh ? cap : fh;
+    else         th = cap < th ? cap : th;
+    w2k_anim_frame = anim_exposures;
+    w2k_zoom_rect(fx, fy, fw, fh, tx, ty, tw, th, 150,
+                  w2k.col[C_ACTIVETITLE], w2k.col[C_ACTIVETITLE2]);
+    w2k_anim_frame = NULL;
 }
 
 static void drag_loop(Client *c, int mode, int px, int py, int keyboard)
@@ -200,7 +209,7 @@ static void drag_loop(Client *c, int mode, int px, int py, int keyboard)
         outline_draw(ox, oy, ow, oh);
     }
 
-    int done = 0, gone = 0;
+    int done = 0, gone = 0, cancel = 0, snap = SNAP_NONE, rel_x = px, rel_y = py;
     Window cw = c->win;
     long last = 0;
     while (!done && running) {
@@ -230,10 +239,21 @@ static void drag_loop(Client *c, int mode, int px, int py, int keyboard)
         }
         case ButtonRelease:
             if (!keyboard) {
+                /* Where the button came up is where it goes: motion is
+                 * taken at most every 8 ms, and the last few pixels of
+                 * travel were lost -- the window landed short of the
+                 * pointer, with the snap zone from before. */
+                rel_x = e.xbutton.x_root;
+                rel_y = e.xbutton.y_root;
+                if (outline) {
+                    outline_draw(ox, oy, ow, oh);
+                    drag_geometry(c, &d, rel_x, rel_y, &ox, &oy, &ow, &oh);
+                    outline_draw(ox, oy, ow, oh);
+                } else
+                    drag_apply(c, &d, rel_x, rel_y);
                 /* Dropping against an edge snaps: top fills the monitor,
-                 * the sides take half of it. */
-                if (d.mode == 0) snap_apply(c, d.snap, e.xbutton.x_root,
-                                            e.xbutton.y_root);
+                 * the sides take half of it. Done below, once. */
+                if (d.mode == 0) snap = snap_zone_at(rel_x, rel_y);
                 done = 1;
             }
             break;
@@ -249,18 +269,21 @@ static void drag_loop(Client *c, int mode, int px, int py, int keyboard)
             else if (ks == XK_Up)    ny = -step;
             else if (ks == XK_Down)  ny =  step;
             else if (ks == XK_Return || ks == XK_KP_Enter) { done = 1; break; }
-            else if (ks == XK_Escape) {
-                client_move_resize(c, d.ox, d.oy, d.ow, d.oh);
-                done = 1;
-                break;
-            }
+            else if (ks == XK_Escape) { cancel = 1; done = 1; break; }
             if (nx || ny) {
                 d.gx -= nx; d.gy -= ny;
                 Window r, ch;
                 int rx, ry, wx, wy;
                 unsigned m;
                 XQueryPointer(w2k.dpy, w2k.root, &r, &ch, &rx, &ry, &wx, &wy, &m);
-                drag_apply(c, &d, rx, ry);
+                /* With the wire frame it is the frame the keys move: the
+                 * window moved under it, and Enter put it back. */
+                if (outline) {
+                    outline_draw(ox, oy, ow, oh);
+                    drag_geometry(c, &d, rx, ry, &ox, &oy, &ow, &oh);
+                    outline_draw(ox, oy, ow, oh);
+                } else
+                    drag_apply(c, &d, rx, ry);
             }
             break;
         }
@@ -276,12 +299,20 @@ static void drag_loop(Client *c, int mode, int px, int py, int keyboard)
     }
     if (keyboard) XUngrabKeyboard(w2k.dpy, CurrentTime);
     if (outline) {
-        outline_draw(ox, oy, ow, oh);          /* erase */
+        outline_draw(ox, oy, ow, oh);          /* erase, before anything moves */
         XUngrabServer(w2k.dpy);
-        /* Now put the window where the wire frame ended up. */
-        if (!gone)
-            client_move_resize(c, ox + b, oy + b + cap,
-                               ow - 2 * b, oh - 2 * b - cap);
+    }
+    /* Exactly one ending: back where it was, snapped, or where the wire
+     * frame ended up. A snap used to be applied with the frame still on
+     * the screen and then overridden by the move to it -- a window dropped
+     * on the top edge was left flagged maximised at the dropped size. */
+    if (!gone) {
+        if (cancel) {
+            if (!outline) client_move_resize(c, d.ox, d.oy, d.ow, d.oh);
+        } else if (snap != SNAP_NONE)
+            snap_apply(c, snap, rel_x, rel_y);
+        else if (outline)
+            client_move_resize(c, ox + b, oy + b + cap, ow - 2 * b, oh - 2 * b - cap);
     }
     XUngrabPointer(w2k.dpy, CurrentTime);
     glass_live_refresh();          /* the glass over and under it shows the new place */
@@ -546,18 +577,32 @@ void grab_keys(void)
     }
 }
 
-static void show_desktop(void)
+/* Win+D, the Quick Launch icon and the Windows 7 sliver: everything down,
+ * or everything back, quietly -- one sound, one restack, one repaint of
+ * the bar, where each window used to take its own flight and sound (a
+ * second of grabbed server for a dozen windows). Back in the order they
+ * were stacked, so the window that was on top is on top again and has
+ * the focus; it used to be the oldest. */
+void wm_show_desktop(void)
 {
     int any = 0;
     for (Client *c = clients; c; c = c->next)
         if (!c->minimized && !c->skip_taskbar) { any = 1; break; }
-    if (any) w2k_sound_play(SND_MINIMIZE);
-    for (Client *c = clients; c; c = c->next) {
-        if (c->skip_taskbar) continue;
-        if (any) client_minimize_quiet(c);
-        else if (c->minimized) client_restore(c);
+    w2k_sound_play(any ? SND_MINIMIZE : SND_RESTOREUP);
+    if (any) {
+        for (Client *c = clients; c; c = c->next)
+            if (!c->skip_taskbar) client_minimize_quiet(c);
+    } else {
+        Client *order[256];
+        int n = 0;
+        for (Client *c = stack; c && n < 256; c = c->snext) order[n++] = c;
+        for (int i = n - 1; i >= 0; i--)
+            if (!order[i]->skip_taskbar) client_restore_quiet(order[i]);
+        for (Client *c = stack; c; c = c->snext)
+            if (!c->minimized && c->mapped && !c->skip_taskbar) { client_focus(c); break; }
     }
-    if (any) { clients_restack(); taskbar_paint(); }
+    clients_restack();
+    taskbar_paint();
 }
 
 /* The Windows key opens the Start menu when pressed and released on its
@@ -569,11 +614,17 @@ void handle_key_release(XKeyEvent *e)
 {
     KeySym ks = XLookupKeysym(e, 0);
     if (ks != XK_Super_L && ks != XK_Super_R) return;
-    if (super_down && !super_used) {
-        if (startmenu_is_open()) startmenu_close(); else startmenu_open();
-    }
+    /* Cleared before the menu opens: it runs its own loop until it
+     * closes, and the second press's release came back through here with
+     * the first press still on the books -- which "closed" the menu by
+     * dropping its pointer grab and left it on screen holding the
+     * keyboard. (The second press itself closes it, inside its loop.) */
+    int open = super_down && !super_used;
     super_down = 0;
     super_used = 0;
+    if (open) {
+        if (startmenu_is_open()) startmenu_close(); else startmenu_open();
+    }
 }
 
 void handle_key(XKeyEvent *e)
@@ -634,6 +685,6 @@ void handle_key(XKeyEvent *e)
     }
     if ((mod & Mod4Mask) && ks == XK_e) { wm_spawn("l2kexplorer"); return; }
     if ((mod & Mod4Mask) && ks == XK_r) { wm_run_dialog(); return; }
-    if ((mod & Mod4Mask) && ks == XK_d) { show_desktop(); return; }
+    if ((mod & Mod4Mask) && ks == XK_d) { wm_show_desktop(); return; }
     if ((mod & Mod4Mask) && ks == XK_Pause) { wm_spawn("l2kcontrol system"); return; }
 }

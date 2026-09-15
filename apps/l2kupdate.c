@@ -303,9 +303,13 @@ static void install_release(void)
         /* The installed copy: the same one-line installer that put it
          * there, which updates and restarts a running desktop. */
         snprintf(body, sizeof body,
-                 "if [ \"$(id -u)\" = 0 ]; then W2K_USER=\"${SUDO_USER:-$USER}\" sh -c 'curl -sL jacktulli.github.io/w2k | sh';\n"
-                 "elif command -v sudo >/dev/null 2>&1; then sudo sh -c 'curl -sL jacktulli.github.io/w2k | sh';\n"
-                 "else su -c \"W2K_USER=$USER sh -c 'curl -sL jacktulli.github.io/w2k | sh'\"; fi\n");
+                 /* Over https only, and never a page of error text piped to
+                  * a root shell: the address without a scheme was fetched
+                  * over plain http, which anyone on the network could have
+                  * answered with a script of their own. */
+                 "if [ \"$(id -u)\" = 0 ]; then W2K_USER=\"${SUDO_USER:-$USER}\" sh -c 'curl -fsSL --proto =https https://jacktulli.github.io/w2k | sh';\n"
+                 "elif command -v sudo >/dev/null 2>&1; then sudo sh -c 'curl -fsSL --proto =https https://jacktulli.github.io/w2k | sh';\n"
+                 "else su -c \"W2K_USER=$USER sh -c 'curl -fsSL --proto =https https://jacktulli.github.io/w2k | sh'\"; fi\n");
     }
     run_in_terminal("Updating Linux 2000", body);
 }
@@ -525,7 +529,7 @@ static void paint(W2kWin *w, Drawable d)
         link_add("Read the manual (README)", x, y); y += 17;
         y += 10;
         y += para(d, x, y, maxw,
-                  "To update by hand: as root, curl -sL jacktulli.github.io/w2k | sh. "
+                  "To update by hand: as root, curl -fsSL https://jacktulli.github.io/w2k | sh. "
                   "From a source checkout: git pull, make, sudo make install. "
                   "l2kwm --version says what is installed.");
         break;

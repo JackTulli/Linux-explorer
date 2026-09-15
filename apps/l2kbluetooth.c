@@ -423,11 +423,38 @@ static void bt_dispatch(void)
     }
 }
 
+/* The system bus went away (its daemon restarted): the connection is
+ * dropped and made again every few seconds until the bus is back. The
+ * descriptor used to stay registered, closed -- the loop failed on it at
+ * once, every turn, at 100% of a core for the rest of the session -- and
+ * the agent never registered with BlueZ again. */
+static int bt_fd = -1;
+static int bt_connect(void);
+
+static void bt_reconnect(void *unused)
+{
+    (void)unused;
+    w2k_del_timer(bt_reconnect, NULL);
+    DBusConnection *old = bus;
+    bus = NULL;
+    if (bt_connect()) { if (old) dbus_connection_unref(old); return; }
+    bus = old;
+    w2k_add_timer(5000, bt_reconnect, NULL);
+}
+
 static void bt_io(void *unused)
 {
     (void)unused;
     if (bus) dbus_connection_read_write(bus, 0);
     bt_dispatch();
+    if (bus && !dbus_connection_get_is_connected(bus)) {
+        if (bt_fd >= 0) w2k_del_fd(bt_fd);
+        bt_fd = -1;
+        bluez_up = 0;
+        ndevs = nads = 0;
+        model_dirty = 1;
+        w2k_add_timer(5000, bt_reconnect, NULL);
+    }
 }
 
 /* A blocking call leaves whatever arrived meanwhile queued inside libdbus,
@@ -951,11 +978,50 @@ static void bluez_appeared(void *unused)
     enforce_connectable();
 }
 
+/* Who BlueZ is on the bus: its unique name. The system bus lets any
+ * account send any connection a signal, so BlueZ's signals are believed
+ * only from BlueZ -- a forged PropertiesChanged could otherwise mark a
+ * nearby device Trusted, and its next request would be let through
+ * without asking, or a malformed InterfacesAdded crash the agent. */
+static char bluez_owner[128];
+
+static void owner_refresh(void)
+{
+    bluez_owner[0] = 0;
+    DBusMessage *q = dbus_message_new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                                                  "org.freedesktop.DBus", "GetNameOwner");
+    if (!q) return;
+    const char *n = BLUEZ;
+    dbus_message_append_args(q, DBUS_TYPE_STRING, &n, DBUS_TYPE_INVALID);
+    DBusMessage *r = dbus_connection_send_with_reply_and_block(bus, q, 2000, NULL);
+    dbus_message_unref(q);
+    if (!r) return;
+    const char *o = NULL;
+    if (dbus_message_get_args(r, NULL, DBUS_TYPE_STRING, &o, DBUS_TYPE_INVALID) && o)
+        snprintf(bluez_owner, sizeof bluez_owner, "%s", o);
+    dbus_message_unref(r);
+}
+
 static DBusHandlerResult filter(DBusConnection *c, DBusMessage *m, void *u)
 {
     (void)c; (void)u;
     DBusMessageIter it, sub;
     const char *path = "";
+    const char *sender = dbus_message_get_sender(m);
+    if (dbus_message_get_type(m) != DBUS_MESSAGE_TYPE_SIGNAL) return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    if (dbus_message_is_signal(m, "org.freedesktop.DBus", "NameOwnerChanged")) {
+        if (!sender || strcmp(sender, "org.freedesktop.DBus")) return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    } else if (!sender || !bluez_owner[0] || strcmp(sender, bluez_owner)) {
+        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    }
+    /* And only in the shape BlueZ sends them: the readers below take the
+     * types for granted. */
+    if (dbus_message_is_signal(m, IF_OBJMGR, "InterfacesAdded") &&
+        !dbus_message_has_signature(m, "oa{sa{sv}}")) return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    if (dbus_message_is_signal(m, IF_OBJMGR, "InterfacesRemoved") &&
+        !dbus_message_has_signature(m, "oas")) return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    if (dbus_message_is_signal(m, IF_PROPS, "PropertiesChanged") &&
+        !dbus_message_has_signature(m, "sa{sv}as")) return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
     if (dbus_message_is_signal(m, IF_OBJMGR, "InterfacesAdded")) {
         if (!dbus_message_iter_init(m, &it)) return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
         dbus_message_iter_get_basic(&it, &path);
@@ -1005,6 +1071,7 @@ static DBusHandlerResult filter(DBusConnection *c, DBusMessage *m, void *u)
                                    DBUS_TYPE_STRING, &new_, DBUS_TYPE_INVALID) || strcmp(name, BLUEZ))
             return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
         bluez_up = new_ && *new_;
+        snprintf(bluez_owner, sizeof bluez_owner, "%s", new_ ? new_ : "");
         ndevs = nads = 0;
         model_dirty = 1;
         if (bluez_up) later(bluez_appeared, NULL);
@@ -1029,8 +1096,9 @@ static int bt_connect(void)
     static const DBusObjectPathVTable vt = { .message_function = agent_message };
     dbus_connection_register_object_path(bus, AGENT_PATH, &vt, NULL);
     int fd = -1;
-    if (dbus_connection_get_unix_fd(bus, &fd) && fd >= 0) w2k_add_fd(fd, bt_io, NULL);
-    bluez_up = dbus_bus_name_has_owner(bus, BLUEZ, NULL);
+    if (dbus_connection_get_unix_fd(bus, &fd) && fd >= 0) { w2k_add_fd(fd, bt_io, NULL); bt_fd = fd; }
+    owner_refresh();
+    bluez_up = bluez_owner[0] != 0;
     if (bluez_up) bluez_appeared(NULL);
     model_dirty = 1;
     bt_kick();
@@ -1154,6 +1222,7 @@ typedef struct {
     W2kRect     r1, r2;
     int         down;
     int         text_y, text_w;
+    long        shown;              /* a question nobody asked for: when it appeared */
 } Ask;
 
 #define ASK_W 400
@@ -1198,6 +1267,13 @@ static int ask_event(W2kWin *w, XEvent *e)
 {
     Ask *a = w->user;
     int ok = !a->edit || w2k_edit_text(a->edit)[0];
+    /* A pairing question comes up on its own, over whatever is being
+     * typed: for a moment it takes no keys or clicks at all, and Return
+     * never says yes to it -- the Enter meant for another window used to
+     * pair a stranger's device, and trust it for good. */
+    if (a->shown && (e->type == KeyPress || e->type == ButtonPress || e->type == ButtonRelease) &&
+        w2k_now_ms() - a->shown < 750)
+        return 1;
     switch (e->type) {
     case ButtonPress:
         if (a->edit && w2k_edit_press(a->edit, &e->xbutton)) { w2k_win_dirty(w); return 1; }
@@ -1220,7 +1296,10 @@ static int ask_event(W2kWin *w, XEvent *e)
     case KeyPress: {
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         if (ks == XK_Escape) { w2k_win_close(w, a->b2 || !a->edit ? ID_CANCEL : ID_OK); return 1; }
-        if (ks == XK_Return || ks == XK_KP_Enter) { if (ok) w2k_win_close(w, ID_OK); return 1; }
+        if ((ks == XK_Return || ks == XK_KP_Enter) && (a->edit || !a->shown)) {
+            if (ok) w2k_win_close(w, ID_OK);
+            return 1;
+        }
         if (a->edit) {
             char ch[8];
             int n = XLookupString(&e->xkey, ch, sizeof ch, NULL, NULL);
@@ -1263,7 +1342,7 @@ static int ask(W2kWin *over, W2kWin **handle, const char *title, int icon, const
     w2k_win_center(w, over);
     dialog_hints(w, over);
     if (handle) *handle = w;
-    if (agent_mode) w2k_sound_play(SND_NOTIFICATION);
+    if (agent_mode) { w2k_sound_play(SND_NOTIFICATION); a.shown = w2k_now_ms(); }
     int r = w2k_win_modal(w);
     if (handle) *handle = NULL;
     if (a.edit) {
@@ -3062,7 +3141,16 @@ static void wz_press(int b)
     case WB_ENTER:
         if (areq.msg && wiz_takes(areq.device)) {
             const char *t = w2k_edit_text(wiz.entry);
-            agent_answer(areq.serial, 1, t, (unsigned)strtoul(t, NULL, 10));
+            /* A passkey typed as it is shown, "123 456", is the number
+             * 123456: strtoul stopped at the space and sent 123. */
+            char digits[16];
+            int k = 0;
+            for (const char *q = t; *q && k < 15; q++)
+                if (isdigit((unsigned char)*q)) digits[k++] = *q;
+            digits[k] = 0;
+            unsigned long v = strtoul(digits, NULL, 10);
+            if (v > 999999) v = 999999 + 1;      /* not a passkey: BlueZ refuses it */
+            agent_answer(areq.serial, 1, t, (unsigned)v);
             w2k_edit_set(wiz.entry, "");
         }
         return;
@@ -3290,7 +3378,8 @@ static void agent_ask(void *unused)
     case AR_SERVICE: {
         char buf[64];
         const char *svc = service_name(areq.uuid, buf, sizeof buf);
-        if (d && d->trusted) { agent_answer(serial, 1, NULL, 0); return; }
+        /* (No "trusted, so yes" here: BlueZ never asks about a trusted
+         * device, so a request that says it is one is not believed.) */
         if (!opt.allow) { agent_answer(serial, 0, NULL, 0); return; }
         if (!opt.alert && d && d->paired) { agent_answer(serial, 1, NULL, 0); return; }
         snprintf(text, sizeof text, "%s wants to connect to this computer%s%s.\n\nDo you want to allow it? "

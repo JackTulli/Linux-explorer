@@ -206,18 +206,19 @@ int w2k_monitors_apply_saved(void)
     if (getenv("W2K_MONITORS") && *getenv("W2K_MONITORS")) return 0;
     if (!w2k_monitor_cfg_n) return 0;
 
+    /* The outputs connected now, as the server already knows them: no
+     * xrandr --query, which had every connector probed and every
+     * monitor's EDID read again at each start of the shell. */
     char connected[8][64];
     int nconn = 0;
-    FILE *q = popen("xrandr --query 2>/dev/null", "r");
-    if (!q) return 0;
-    char line[512];
-    while (fgets(line, sizeof line, q) && nconn < 8) {
-        char name[64], state[32];
-        if (line[0] == ' ' || sscanf(line, "%63s %31s", name, state) < 2) continue;
-        if (!strcmp(state, "connected"))
-            snprintf(connected[nconn++], 64, "%s", name);
+    XRRScreenResources *res = XRRGetScreenResourcesCurrent(w2k.dpy, w2k.root);
+    for (int i = 0; res && i < res->noutput && nconn < 8; i++) {
+        XRROutputInfo *o = XRRGetOutputInfo(w2k.dpy, res, res->outputs[i]);
+        if (o && o->connection == RR_Connected && o->name)
+            snprintf(connected[nconn++], 64, "%s", o->name);
+        if (o) XRRFreeOutputInfo(o);
     }
-    pclose(q);
+    if (res) XRRFreeScreenResources(res);
 
     char cmd[2048] = "xrandr";
     int n = 0;

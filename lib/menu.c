@@ -44,6 +44,10 @@ struct W2kMenu {
 };
 
 void (*w2k_menu_foreign_event)(XEvent *e);
+/* Set by whoever wants every open menu closed (the shell's Start menu,
+ * closed from outside its loop); cleared when the first menu opens. */
+volatile int w2k_menu_cancel;
+static int popup_depth;
 
 /* Height of the monitor the menu being laid out will appear on. */
 static int menu_max_h;
@@ -245,12 +249,14 @@ static void draw_bullet(Drawable d, int x, int y, int color)
     w2k_fill(d, x, y + 1, 6, 4, color);
 }
 
-/* Right-pointing solid triangle for submenu items. */
+/* Right-pointing solid triangle for submenu items: columns of 7, 5, 3
+ * and 1 from the left. (It had the columns the other way round and
+ * pointed left, in every menu, from the first version on.) */
 static void draw_arrow(Drawable d, int x, int y, int color)
 {
     XSetForeground(w2k.dpy, w2k.gc, w2k.col[color]);
     for (int i = 0; i < 4; i++)
-        w2k_fill_fg(d, x + i, y + 3 - i, 1, 1 + 2 * i);
+        w2k_fill_fg(d, x + i, y + i, 1, 7 - 2 * i);
 }
 
 /* The Start menu banner gradient.
@@ -554,20 +560,10 @@ static void open_level(Level *lv, W2kMenu *m, int px, int py, int flags,
         slide = menu_buffer_cached(lv->win);
     }
     if (slide) {
-        int up = (flags & MPOP_BOTTOMUP) != 0;
-        Pixmap pm = menu_buffer(lv->win, pw, ph);
-        for (int step = 1; step <= 6; step++) {
-            int sh = ph * step / 6;
-            if (sh < 4) sh = 4;
-            int wy = up ? y + ph - sh : y;
-            XMoveResizeWindow(w2k.dpy, lv->win, x, wy, (unsigned)pw, (unsigned)sh);
-            if (step == 1) XMapRaised(w2k.dpy, lv->win);
-            XCopyArea(w2k.dpy, pm, lv->win, w2k_copy_gc(), 0, up ? ph - sh : 0,
-                      (unsigned)pw, (unsigned)sh, 0, 0);
-            XFlush(w2k.dpy);
-            usleep(12000);
-        }
-        XMoveResizeWindow(w2k.dpy, lv->win, x, y, (unsigned)pw, (unsigned)ph);
+        /* lib/anim.c: the painted menu as the window's background, slid
+         * in from the edge it hangs from, in a tenth of a second. */
+        w2k_slide_in(lv->win, menu_buffer(lv->win, pw, ph), x, y, pw, ph,
+                     (flags & MPOP_BOTTOMUP) != 0, 100);
     } else
         XMapRaised(w2k.dpy, lv->win);
 }
@@ -651,10 +647,12 @@ static int menu_popup(W2kMenu *m, int x, int y, int flags);
  * which draws its chrome raw, opens them. */
 int w2k_menu_popup(W2kMenu *m, int x, int y, int flags)
 {
+    if (popup_depth++ == 0) w2k_menu_cancel = 0;
     int raw = w2k_scale_raw;
     w2k_scale_raw = 0;
     int r = menu_popup(m, x, y, flags);
     w2k_scale_raw = raw;
+    popup_depth--;
     return r;
 }
 
@@ -708,7 +706,7 @@ static int menu_popup(W2kMenu *m, int x, int y, int flags)
 
     /* w2k_win_abort is set by the shell's SIGTERM handler: unwind rather
      * than sit in XNextEvent with the pointer and keyboard grabbed. */
-    while (!done && !w2k_win_abort) {
+    while (!done && !w2k_win_abort && !w2k_menu_cancel) {
         if (repaint) {
             for (int i = 0; i < n; i++)
                 menu_paint(lv[i].m, lv[i].win, lv[i].w, lv[i].h, lv[i].sel);
@@ -797,6 +795,9 @@ static int menu_popup(W2kMenu *m, int x, int y, int flags)
         case KeyPress: {
             KeySym ks = XLookupKeysym(&e.xkey, 0);
             Level *top = &lv[n - 1];
+            /* The Windows key closes an open menu -- the Start menu's own
+             * way of being dismissed, pressed a second time. */
+            if (ks == XK_Super_L || ks == XK_Super_R) { done = 1; break; }
             /* The character this key stands for, looked up into a buffer of
              * our own: XLookupString writes before any test can reject the
              * key, and a Tab or a Ctrl+letter left behind in the caller's

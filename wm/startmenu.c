@@ -280,9 +280,15 @@ void startmenu_open(void)
     int nrec = recent_load();
     if (nrec) {
         w2k_menu_sep(docs);
-        for (int i = 0; i < nrec; i++)
-            w2k_menu_item(docs, RECENT_BASE + i, recent_label(i), NULL,
-                          w2k_icon_by_name(recent_file(i)));
+        for (int i = 0; i < nrec; i++) {
+            /* The document's kind of icon, as Explorer shows it: the file
+             * itself used to be decoded as though it were an icon -- a
+             * photo at full size, a video read whole -- on every opening. */
+            char label[260];
+            w2k_menu_escape(recent_label(i), label, sizeof label);
+            w2k_menu_item(docs, RECENT_BASE + i, label, NULL,
+                          w2k_file_icon(recent_label(i), 0));
+        }
         w2k_menu_sep(docs);
         w2k_menu_item(docs, SM_CLEARDOCS, "&Clear", NULL, ICO_DELETE);
     }
@@ -428,8 +434,10 @@ void startmenu_dispatch(int id)
 
 void startmenu_close(void)
 {
-    /* The menu owns a pointer grab and its own loop; releasing the grab is
-     * what actually tears the chain down. */
-    if (open_flag) XUngrabPointer(w2k.dpy, CurrentTime);
-    open_flag = 0;
+    /* The menu (or panel) runs its own loop: the flags end it at its next
+     * event. Releasing the pointer grab alone left it up. */
+    if (open_flag) {
+        w2k_menu_cancel = 1;
+        startpanel_cancel = 1;
+    }
 }

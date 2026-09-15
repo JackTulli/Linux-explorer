@@ -247,11 +247,39 @@ static void frame_draw_raw(Client *c, Drawable d)
  *
  * Called on every resize; cheap enough (two small pixmaps) and the only
  * way to get the shape right. */
+/* The frame's shape as rows of rectangles, handed to the server as they
+ * are. Rebuilt only when what it depends on changed: every step of a
+ * drag used to build it again, pure moves included -- a frame-sized mask
+ * filled, sent, and turned back into a region by the server, up to 120
+ * times a second. */
+#define SHAPE_ROWS 96
+static XRectangle shape_r[SHAPE_ROWS];
+static int shape_n;
+
+static void shape_row(int x, int y, int w, int h)
+{
+    if (w > 0 && h > 0 && shape_n < SHAPE_ROWS)
+        shape_r[shape_n++] = (XRectangle){ (short)x, (short)y, (unsigned short)w, (unsigned short)h };
+}
+
+static void shape_set(Client *c)
+{
+    XShapeCombineRectangles(w2k.dpy, c->frame, ShapeBounding, 0, 0, shape_r, shape_n,
+                            ShapeSet, Unsorted);
+}
+
 void frame_shape(Client *c)
 {
     if (!c->frame) return;
     int fw = client_frame_w(c), fh = client_frame_h(c);
     if (fw <= 0 || fh <= 0) return;
+    int key = ((frame_theme() * 2 + !!c->maximized) * 2 + !!c->fullscreen) * 2 + !!c->decorate;
+    key = key * 1000 + w2k_ui_scale;
+    if (c->shape_w == fw && c->shape_h == fh && c->shape_key == key) return;
+    c->shape_w = fw;
+    c->shape_h = fh;
+    c->shape_key = key;
+    shape_n = 0;
 
     if (frame_theme() == THEME_MODERN && c->decorate && !c->fullscreen) {
         /* The invisible margin is cut away all round, and the visible
@@ -264,24 +292,14 @@ void frame_shape(Client *c)
         if (vw <= 0 || vh <= 0) return;
         if (2 * rad > vw) rad = vw / 2;
         if (2 * rad > vh) rad = vh / 2;
-        Pixmap mask = XCreatePixmap(w2k.dpy, c->frame, (unsigned)fw,
-                                    (unsigned)fh, 1);
-        GC g = XCreateGC(w2k.dpy, mask, 0, NULL);
-        XSetForeground(w2k.dpy, g, 0);
-        XFillRectangle(w2k.dpy, mask, g, 0, 0, (unsigned)fw, (unsigned)fh);
-        XSetForeground(w2k.dpy, g, 1);
-        if (vh > 2 * rad)
-            XFillRectangle(w2k.dpy, mask, g, m, m + rad, (unsigned)vw,
-                           (unsigned)(vh - 2 * rad));
+        if (vh > 2 * rad) shape_row(m, m + rad, vw, vh - 2 * rad);
         for (int i = 0; i < rad; i++) {
             int ins = w2k_round_inset(rad, i);
             if (2 * ins >= vw) continue;
-            XFillRectangle(w2k.dpy, mask, g, m + ins, m + i, (unsigned)(vw - 2 * ins), 1);
-            XFillRectangle(w2k.dpy, mask, g, m + ins, m + vh - 1 - i, (unsigned)(vw - 2 * ins), 1);
+            shape_row(m + ins, m + i, vw - 2 * ins, 1);
+            shape_row(m + ins, m + vh - 1 - i, vw - 2 * ins, 1);
         }
-        XShapeCombineMask(w2k.dpy, c->frame, ShapeBounding, 0, 0, mask, ShapeSet);
-        XFreeGC(w2k.dpy, g);
-        XFreePixmap(w2k.dpy, mask);
+        shape_set(c);
         return;
     }
     if (frame_theme() == THEME_CLASSIC || !c->decorate || c->maximized ||
@@ -300,21 +318,13 @@ void frame_shape(Client *c)
         /* Aero's corners, top and bottom, follow its corner art: the shape
          * turns opaque where the art does. */
         int n = w2k_aero_corner_rows();
-        Pixmap mask = XCreatePixmap(w2k.dpy, c->frame, (unsigned)fw, (unsigned)fh, 1);
-        GC g = XCreateGC(w2k.dpy, mask, 0, NULL);
-        XSetForeground(w2k.dpy, g, 0);
-        XFillRectangle(w2k.dpy, mask, g, 0, 0, (unsigned)fw, (unsigned)fh);
-        XSetForeground(w2k.dpy, g, 1);
-        if (fh > 2 * n)
-            XFillRectangle(w2k.dpy, mask, g, 0, n, (unsigned)fw, (unsigned)(fh - 2 * n));
+        if (fh > 2 * n) shape_row(0, n, fw, fh - 2 * n);
         for (int i = 0; i < n && i < fh; i++) {
             int t = w2k_aero_corner_inset(i, 0), u = w2k_aero_corner_inset(i, 1);
-            if (2 * t < fw) XFillRectangle(w2k.dpy, mask, g, t, i, (unsigned)(fw - 2 * t), 1);
-            if (2 * u < fw) XFillRectangle(w2k.dpy, mask, g, u, fh - 1 - i, (unsigned)(fw - 2 * u), 1);
+            if (2 * t < fw) shape_row(t, i, fw - 2 * t, 1);
+            if (2 * u < fw) shape_row(u, fh - 1 - i, fw - 2 * u, 1);
         }
-        XShapeCombineMask(w2k.dpy, c->frame, ShapeBounding, 0, 0, mask, ShapeSet);
-        XFreeGC(w2k.dpy, g);
-        XFreePixmap(w2k.dpy, mask);
+        shape_set(c);
         return;
     }
     static const int luna[5] = { 5, 3, 2, 1, 1 };
@@ -322,22 +332,12 @@ void frame_shape(Client *c)
     const int *ins = W2K_THEME_IS7(frame_theme()) ? basic : luna;
     /* On a scaled desktop each measured row stands for a band of rows. */
     int rad = P(5);
-    Pixmap mask = XCreatePixmap(w2k.dpy, c->frame, (unsigned)fw, (unsigned)fh,
-                                1);
-    GC g = XCreateGC(w2k.dpy, mask, 0, NULL);
-    XSetForeground(w2k.dpy, g, 0);
-    XFillRectangle(w2k.dpy, mask, g, 0, 0, (unsigned)fw, (unsigned)fh);
-    XSetForeground(w2k.dpy, g, 1);
-    XFillRectangle(w2k.dpy, mask, g, 0, rad, (unsigned)fw,
-                   (unsigned)(fh - rad));
+    shape_row(0, rad, fw, fh - rad);
     for (int i = 0; i < rad; i++) {
         int off = P(ins[i * 5 / rad]);
-        if (2 * off < fw)
-            XFillRectangle(w2k.dpy, mask, g, off, i, (unsigned)(fw - 2 * off), 1);
+        if (2 * off < fw) shape_row(off, i, fw - 2 * off, 1);
     }
-    XShapeCombineMask(w2k.dpy, c->frame, ShapeBounding, 0, 0, mask, ShapeSet);
-    XFreeGC(w2k.dpy, g);
-    XFreePixmap(w2k.dpy, mask);
+    shape_set(c);
 }
 
 void frame_paint(Client *c)
@@ -538,6 +538,9 @@ void frame_leave(Client *c)
     if (c->btn_hot) { c->btn_hot = 0; frame_paint(c); }
     /* The pointer has left the frame -- or gone into the client, which
      * inherits the frame's cursor unless it sets its own. Either way the
-     * sizing arrow must not stay behind. */
+     * sizing arrow must not stay behind -- and the frame must know it is
+     * gone, or coming back to the border kept the arrow (frame_motion sets
+     * a cursor only when it differs from the one it last set). */
     XDefineCursor(w2k.dpy, c->frame, w2k.cur_arrow);
+    c->cursor = w2k.cur_arrow;
 }

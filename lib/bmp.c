@@ -31,7 +31,8 @@ unsigned char *w2k_bmp_load(const char *path, int *wout, int *hout)
     long ncol = le32(buf + 46);
     int topdown = h < 0;
     if (topdown) h = -h;
-    if (comp != 0 || w <= 0 || h <= 0 || w > 8192 || h > 8192) { free(buf); return NULL; }
+    if (comp != 0 || w <= 0 || h <= 0 || w > 8192 || h > 8192 ||
+        (w2k_image_max_pixels && (long)w * h > w2k_image_max_pixels)) { free(buf); return NULL; }
     if (bpp != 1 && bpp != 4 && bpp != 8 && bpp != 24 && bpp != 32) { free(buf); return NULL; }
     /* Every offset comes from the file, so each one is checked against the
      * file's length before it is used: the info header, the palette that

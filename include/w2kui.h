@@ -33,6 +33,8 @@ struct W2kWin {
     unsigned dirty : 1;
     unsigned alive : 1;
     int      result;
+    unsigned long serial;         /* creation order: a modal dialog shuts out older windows */
+    int      focus;               /* has the keyboard: 1, 0, or -1 before any FocusIn/Out */
     W2kWin  *next;
 };
 
@@ -55,6 +57,10 @@ void    w2k_win_center(W2kWin *w, W2kWin *over);
 int     w2k_run(void);                 /* until every window has closed */
 int     w2k_win_owns(Window win);      /* is this window one of ours? */
 void    w2k_win_repaint_now(W2kWin *w);  /* paint this instant */
+/* Show and paint before returning, ahead of work done outside the loop. */
+void    w2k_win_show_now(W2kWin *w);
+/* Words wrapped at spaces to maxw (the UI font); returns the height used. */
+int     w2k_text_wrapped(Drawable d, int font, int x, int y, int maxw, const char *text, int color);
 /* The Start menu's banner gradient, also used by its settings preview. */
 void    w2k_menu_banner_fill(Drawable d, int x, int y, int w, int h);
 /* Point at a 2-byte buffer to collect the first unclaimed printable key a
@@ -83,10 +89,12 @@ extern void (*w2k_win_mapped)(Window w);
  * Signal-safe on purpose -- nothing else in this header is. */
 extern volatile sig_atomic_t w2k_win_abort;
 int     w2k_win_modal(W2kWin *dlg);    /* nested loop; returns ->result */
+int     w2k_win_modal_depth(void);     /* how many modal loops are running */
 
 /* Timers. Up to eight; `fn` fires every `ms` milliseconds. */
 void    w2k_add_timer(int ms, void (*fn)(void *), void *user);
 void    w2k_del_timer(void (*fn)(void *), void *user);
+int     w2k_run_timers(void);          /* for a loop of one's own: ms to the next, or -1 */
 /* Other file descriptors the loop waits on beside the display's -- a
  * D-Bus connection, a pipe: `fn` runs when `fd` is readable. Up to four. */
 void    w2k_add_fd(int fd, void (*fn)(void *), void *user);
@@ -182,6 +190,9 @@ void     w2k_edit_wipe(W2kEdit *e);
 const char *w2k_edit_text(W2kEdit *e);
 void     w2k_edit_draw(Drawable d, W2kEdit *e);
 int      w2k_edit_key(W2kEdit *e, XKeyEvent *k);   /* 1 if consumed */
+/* The event loop's first stop for every event: 1 when the input method
+ * took it (part of a dead-key or compose sequence) and it goes no further. */
+int      w2k_ime_filter(XEvent *e);
 int      w2k_edit_press(W2kEdit *e, XButtonEvent *b);
 int      w2k_edit_motion(W2kEdit *e, XMotionEvent *m);
 void     w2k_edit_release(W2kEdit *e);
@@ -312,6 +323,7 @@ W2kTreeNode *w2k_tree_add(W2kTree *t, W2kTreeNode *parent, const char *text,
 void         w2k_tree_clear_children(W2kTree *t, W2kTreeNode *n);
 void         w2k_tree_draw(Drawable d, W2kTree *t);
 int          w2k_tree_press(W2kTree *t, XButtonEvent *b);
+W2kTreeNode *w2k_tree_node_at(W2kTree *t, int x, int y);   /* the row's node, or NULL */
 int          w2k_tree_key(W2kTree *t, XKeyEvent *k);
 void         w2k_tree_layout(W2kTree *t);
 void         w2k_tree_select(W2kTree *t, W2kTreeNode *n);
@@ -478,6 +490,9 @@ int  w2k_color_picker_rgba(W2kWin *over, int *r, int *g, int *b, int *a);
 /* Single-line prompt. Returns 1 and fills `out` on OK. */
 int  w2k_prompt(W2kWin *over, const char *title, const char *label,
                 const char *initial, char *out, int outsz, int icon);
+/* The same for a password or key: stars, and the box scrubbed after. */
+int  w2k_prompt_secret(W2kWin *over, const char *title, const char *label,
+                       char *out, int outsz, int icon);
 /* The file/folder property sheet. Returns 1 when the user pressed OK. */
 int  w2k_file_properties(W2kWin *over, const char *path);
 /* System Properties, sysdm.cpl's sheet (lib/sysprops.c). 1 on OK. */
