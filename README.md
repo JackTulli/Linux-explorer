@@ -271,8 +271,10 @@ that version's Windows with winetricks, fetched when it is needed, and
 Proton's decoders are switched off for that game alone. Each version runs
 programs in a Windows of its own under `~/.local/share/l2k/prefixes`, and
 a program installed into one runs there whichever version runs it. Proton
-writes no Start menu entries: Versions > Open C: Drive finds what was
-installed. Options can run programs in the Steam Runtime instead, through
+writes no Start menu entries: the Prefixes tab lists every prefix -- Wine's
+too, and those of versions since removed -- with the programs that run in
+each, and opens its C: drive or its folder, copies its path, or runs Wine
+Settings in it. Options can run programs in the Steam Runtime instead, through
 umu-launcher, which is downloaded when that is turned on. The settings are
 `~/.w2k/compat`; what Proton says goes to `~/.w2k/proton.log`.
 

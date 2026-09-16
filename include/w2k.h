@@ -516,6 +516,8 @@ void w2k_proton_data_dir(char *buf, int n);             /* $XDG_DATA_HOME/l2k */
 /* 1, and the prefix's name, for a program inside one of the prefixes
  * Proton Manager makes -- <data dir>/prefixes/<name>, one for each build. */
 int  w2k_proton_prefix_of(const char *exe, char *name, int n);
+/* Names compared with their numbers as numbers: GE-Proton11-10 after 11-9. */
+int  w2k_natural_cmp(const char *a, const char *b);
 typedef struct {
     char runner[128];        /* "": the default; "wine"; or a build's name */
     char winver[16];         /* "": as the prefix has it; "winxp", "win7"... */

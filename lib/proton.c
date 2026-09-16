@@ -103,6 +103,8 @@ static int natural_cmp(const char *a, const char *b)
     return (unsigned char)*a - (unsigned char)*b;
 }
 
+int w2k_natural_cmp(const char *a, const char *b) { return natural_cmp(a, b); }
+
 static int by_name_newest(const void *x, const void *y)
 {
     const W2kProton *a = x, *b = y;

@@ -706,7 +706,7 @@ static int cmd_run(const char *file, char **extra, int nextra)
     return 1;
 }
 
-static int cmd_winecfg(const char *name)
+static int cmd_winecfg(const char *name, const char *prefix)
 {
     Runner r;
     if (!runner_for(&r, name, NULL)) {
@@ -714,6 +714,11 @@ static int cmd_winecfg(const char *name)
         return 1;
     }
     if (r.wine && !w2k_wine_available()) return no_runner();
+    /* Another build's prefix -- one whose own build has been removed. */
+    if (!r.wine && prefix && prefix[0]) {
+        if (strchr(prefix, '/') || prefix[0] == '.') return 2;
+        snprintf(r.root, sizeof r.root, "%.3800s/prefixes/%.200s", data_dir, prefix);
+    }
     W2kCompatOptions o;
     w2k_compat_options(&o);
     runner_env(&r, NULL, &o);
@@ -1121,13 +1126,14 @@ static const char umu_sh[] =
 /* ------------------------------------------------------------------ *
  * Proton Manager
  * ------------------------------------------------------------------ */
-enum { PG_VERSIONS, PG_DOWNLOAD, PG_PROGRAMS, PG_OPTIONS };
+enum { PG_VERSIONS, PG_DOWNLOAD, PG_PROGRAMS, PG_PREFIXES, PG_OPTIONS };
 
 enum {
     B_NONE, B_OK, B_CANCEL, B_APPLY,
     B_DEFAULT, B_REMOVE, B_DRIVE, B_WINECFG,
     B_REFRESH, B_INSTALL, B_STOP,
     B_ADD, B_CHANGE, B_FORGET, B_RUN,
+    B_PDRIVE, B_PFOLDER, B_PWINECFG, B_PCOPY,
     B_LOG,
     NB
 };
@@ -1147,6 +1153,10 @@ static const struct { int page; const char *label; } btn[NB] = {
     [B_CHANGE]  = { PG_PROGRAMS, "&Change..." },
     [B_FORGET]  = { PG_PROGRAMS, "&Remove" },
     [B_RUN]     = { PG_PROGRAMS, "R&un" },
+    [B_PDRIVE]  = { PG_PREFIXES, "Open &C: Drive" },
+    [B_PFOLDER] = { PG_PREFIXES, "Open &Folder" },
+    [B_PWINECFG]= { PG_PREFIXES, "Wine &Settings..." },
+    [B_PCOPY]   = { PG_PREFIXES, "Copy &Path" },
     [B_LOG]     = { PG_OPTIONS,  "View &Log" },
 };
 
@@ -1156,6 +1166,16 @@ enum { OPT_DXVK, OPT_ESYNC, OPT_FSYNC, OPT_NVAPI, OPT_HUD, OPT_UMU, NOPT };
 
 #define MAX_REL  64
 #define MAX_PROG 256
+#define MAX_PFX  64
+
+/* A prefix: the Windows programs run in, with its own C: drive. */
+typedef struct {
+    char name[128];                     /* its folder: the build that made it, or "wine" */
+    char path[PATH_MAX];                /* WINEPREFIX */
+    char last[128];                     /* the version of Proton that set it up last */
+    char progs[400];                    /* the programs with settings that run in it */
+    int  wine;
+} PfxRow;
 
 static struct {
     W2kWin   *win;
@@ -1185,6 +1205,11 @@ static struct {
     char    (*prog)[4096];
     W2kCompat cs[MAX_PROG];
     int       nprog;
+
+    W2kList  *xlist;                    /* Prefixes */
+    PfxRow   *px;
+    int       npx;
+    char      px_msg[400];
 
     W2kCompatOptions o, saved;          /* Options */
     W2kCombo *def;
@@ -1314,6 +1339,104 @@ static void fill_programs(void)
     list_select(pm.plist, sel >= 0 ? sel : (pm.nprog ? 0 : -1));
 }
 
+static int by_prefix_name(const void *a, const void *b)
+{
+    return w2k_natural_cmp(((const PfxRow *)b)->name, ((const PfxRow *)a)->name);
+}
+
+/* Every prefix there is -- one for each build that has run a program,
+ * kept when the build is removed -- and Wine's own, with the programs
+ * that have settings of their own and run in each. */
+static void fill_prefixes(void)
+{
+    char keep[128] = "";
+    if (pm.xlist->sel >= 0 && pm.xlist->sel < pm.npx) snprintf(keep, sizeof keep, "%s", pm.px[pm.xlist->sel].name);
+    pm.npx = 0;
+    pm.px_msg[0] = 0;
+
+    char dir[PATH_MAX + 16];
+    snprintf(dir, sizeof dir, "%.4000s/prefixes", data_dir);
+    DIR *d = opendir(dir);
+    struct dirent *de;
+    while (d && (de = readdir(d)) && pm.npx < MAX_PFX - 1) {
+        if (de->d_name[0] == '.') continue;
+        PfxRow *x = &pm.px[pm.npx];
+        char root[PATH_MAX], probe[PATH_MAX + 32];
+        snprintf(root, sizeof root, "%.3900s/%.150s", dir, de->d_name);
+        snprintf(probe, sizeof probe, "%s/pfx", root);
+        struct stat st;
+        if (stat(probe, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        memset(x, 0, sizeof *x);
+        snprintf(x->name, sizeof x->name, "%.127s", de->d_name);
+        snprintf(x->path, sizeof x->path, "%.4000s", probe);
+        /* Proton writes the version that set it up in the root; through
+         * umu, one folder down. */
+        snprintf(probe, sizeof probe, "%s/version", root);
+        first_line(probe, x->last, sizeof x->last);
+        if (!x->last[0]) {
+            snprintf(probe, sizeof probe, "%s/pfx/version", root);
+            first_line(probe, x->last, sizeof x->last);
+        }
+        pm.npx++;
+    }
+    if (d) closedir(d);
+    qsort(pm.px, (size_t)pm.npx, sizeof *pm.px, by_prefix_name);
+
+    char wp[PATH_MAX];
+    w2k_wine_prefix(wp, sizeof wp);
+    struct stat st;
+    if (stat(wp, &st) == 0 && S_ISDIR(st.st_mode)) {
+        PfxRow *x = &pm.px[pm.npx++];
+        memset(x, 0, sizeof *x);
+        snprintf(x->name, sizeof x->name, "wine");
+        snprintf(x->path, sizeof x->path, "%s", wp);
+        snprintf(x->last, sizeof x->last, "Wine");
+        x->wine = 1;
+    }
+
+    /* Where each program runs: the prefix it was installed into, else its
+     * version's, or the default's -- as "l2kproton run" decides. */
+    char (*paths)[4096] = malloc(MAX_PROG * sizeof *paths);
+    W2kCompat *cs = malloc(MAX_PROG * sizeof *cs);
+    int n = paths && cs ? w2k_compat_list(paths, cs, MAX_PROG) : 0;
+    for (int i = 0; i < n; i++) {
+        char where[128];
+        if (!w2k_proton_prefix_of(paths[i], where, sizeof where)) {
+            if (cs[i].runner[0] && (!strcmp(cs[i].runner, "wine") || installed(cs[i].runner)))
+                snprintf(where, sizeof where, "%s", cs[i].runner);
+            else
+                w2k_compat_default_runner(paths[i], where, sizeof where);
+        }
+        for (int k = 0; k < pm.npx; k++) {
+            PfxRow *x = &pm.px[k];
+            if (strcmp(x->name, where)) continue;
+            const char *base = strrchr(paths[i], '/');
+            size_t l = strlen(x->progs);
+            snprintf(x->progs + l, sizeof x->progs - l, "%s%s", l ? ", " : "", base ? base + 1 : paths[i]);
+            break;
+        }
+    }
+    free(paths);
+    free(cs);
+
+    w2k_list_clear(pm.xlist);
+    int sel = pm.npx ? 0 : -1;
+    for (int k = 0; k < pm.npx; k++) {
+        PfxRow *x = &pm.px[k];
+        int row = w2k_list_add(pm.xlist, x->wine ? ICO_APP : ICO_FOLDER, NULL);
+        w2k_list_set(pm.xlist, row, 0, x->wine ? "Wine" : x->name);
+        w2k_list_set(pm.xlist, row, 1, x->last[0] ? x->last : "(not set up)");
+        w2k_list_set(pm.xlist, row, 2, x->progs);
+        if (!strcmp(x->name, keep)) sel = row;
+    }
+    list_select(pm.xlist, sel);
+}
+
+static void on_prefix_select(void *u, int row)
+{
+    pm.px_msg[0] = 0;                   /* "Copied": about the row that was */
+}
+
 static void cache_path(char *buf, size_t n)
 {
     const char *x = getenv("XDG_CACHE_HOME");
@@ -1401,6 +1524,7 @@ static void on_tab(void *u, int page)
 {
     if (page == PG_DOWNLOAD) enter_download();
     if (page == PG_PROGRAMS) fill_programs();
+    if (page == PG_PREFIXES) fill_prefixes();
 }
 
 static void work_tick(void *u)
@@ -1674,6 +1798,43 @@ static void paint_programs(Drawable d, W2kRect c)
                      "runs it, and which version of Windows it is told it runs on.", C_GRAYTEXT);
 }
 
+static void paint_prefixes(Drawable d, W2kRect c)
+{
+    int x = c.x + 10, w = c.w - 20, y = c.y + 10;
+    y += w2k_text_wrapped(d, F_UI, x, y, w, "Each version of Proton runs programs in a Windows of its "
+                          "own, a prefix, with its own C: drive: the programs installed there are in "
+                          "it, with their saved games and settings.", C_TEXT) + 8;
+    pm.xlist->r = (W2kRect){ x, y, w, 180 };
+    w2k_list_layout(pm.xlist);
+    w2k_list_draw(d, pm.xlist);
+    if (!pm.npx) {
+        static const char *const none = "No program has run in a prefix yet.";
+        int tw = w2k_text_width(F_UI, none, -1);
+        w2k_text(d, F_UI, x + (w - tw) / 2, y + 40, none, C_GRAYTEXT);
+    }
+    y += pm.xlist->r.h + 8;
+    static const int ids[] = { B_PDRIVE, B_PFOLDER, B_PWINECFG, B_PCOPY };
+    static const int widths[] = { 96, 84, 104, 80 };
+    button_row(y, x, ids, widths, 4);
+    y += 23 + 12;
+
+    int xs = pm.xlist->sel;
+    if (xs < 0 || xs >= pm.npx) return;
+    const PfxRow *p = &pm.px[xs];
+    char text[3 * PATH_MAX], where[PATH_MAX];
+    place(p->path, where, sizeof where);
+    if (pm.px_msg[0])
+        snprintf(text, sizeof text, "%s", pm.px_msg);
+    else if (p->wine)
+        snprintf(text, sizeof text, "Wine's own prefix is %s, and its C: drive %s/drive_c.", where, where);
+    else if (!installed(p->name))
+        snprintf(text, sizeof text, "This prefix is %s. %s is no longer installed: its programs run "
+                 "here with another version.", where, p->name);
+    else
+        snprintf(text, sizeof text, "This prefix is %s, and its C: drive %s/drive_c.", where, where);
+    w2k_text_wrapped(d, F_UI, x, y, w, text, C_GRAYTEXT);
+}
+
 static void paint_options(Drawable d, W2kRect c)
 {
     int fh = w2k_font_height(F_UI);
@@ -1741,7 +1902,7 @@ static int closing(W2kWin *w);
 
 static int enabled(int b)
 {
-    int vs = pm.vlist->sel, rs = pm.rlist->sel, ps = pm.plist->sel;
+    int vs = pm.vlist->sel, rs = pm.rlist->sel, ps = pm.plist->sel, xs = pm.xlist->sel;
     char path[PATH_MAX + 64];
     switch (b) {
     case B_APPLY:   return options_changed();
@@ -1756,6 +1917,15 @@ static int enabled(int b)
     case B_FORGET:  return ps >= 0 && ps < pm.nprog;
     case B_RUN:     return ps >= 0 && ps < pm.nprog && access(pm.prog[ps], F_OK) == 0;
     case B_LOG:     log_path(path, sizeof path); return access(path, F_OK) == 0;
+    case B_PDRIVE:
+        if (xs < 0 || xs >= pm.npx) return 0;
+        snprintf(path, sizeof path, "%.4000s/drive_c", pm.px[xs].path);
+        return access(path, F_OK) == 0;
+    case B_PFOLDER: return xs >= 0 && xs < pm.npx && access(pm.px[xs].path, F_OK) == 0;
+    case B_PWINECFG:
+        if (xs < 0 || xs >= pm.npx) return 0;
+        return pm.px[xs].wine ? w2k_wine_available() : pm.npv > 0;
+    case B_PCOPY:   return xs >= 0 && xs < pm.npx;
     default:        return 1;
     }
 }
@@ -1775,6 +1945,7 @@ static void paint(W2kWin *w, Drawable d)
     case PG_VERSIONS: paint_versions(d, c); break;
     case PG_DOWNLOAD: paint_download(d, c); break;
     case PG_PROGRAMS: paint_programs(d, c); break;
+    case PG_PREFIXES: paint_prefixes(d, c); break;
     default:          paint_options(d, c); break;
     }
     pm.b[B_OK]     = (W2kRect){ w->w - 12 - 75 * 3 - 12, w->h - 12 - 23, 75, 23 };
@@ -1872,7 +2043,7 @@ static void add_program(void)
 
 static void command(int b)
 {
-    int ps = pm.plist->sel;
+    int ps = pm.plist->sel, xs = pm.xlist->sel;
     switch (b) {
     case B_OK:
         if (save_options() && closing(pm.win)) w2k_win_close(pm.win, ID_OK);
@@ -1934,6 +2105,37 @@ static void command(int b)
             spawn(argv);
         }
         break;
+    case B_PDRIVE:
+    case B_PFOLDER:
+        if (xs >= 0 && xs < pm.npx) {
+            char path[PATH_MAX + 16];
+            snprintf(path, sizeof path, "%.4000s%s", pm.px[xs].path, b == B_PDRIVE ? "/drive_c" : "");
+            char *argv[] = { "l2kexplorer", path, NULL };
+            spawn(argv);
+        }
+        break;
+    case B_PWINECFG:
+        if (xs >= 0 && xs < pm.npx) {
+            const PfxRow *p = &pm.px[xs];
+            if (p->wine) {
+                char *argv[] = { self_exe, "winecfg", "wine", NULL };
+                spawn(argv);
+            } else {
+                /* Its own build, or -- that removed -- the default, or the newest. */
+                const char *with = installed(p->name) ? p->name : installed(pm.o.def) ? pm.o.def : pm.pv[0].name;
+                char *argv[] = { self_exe, "winecfg", (char *)with, (char *)p->name, NULL };
+                spawn(argv);
+            }
+        }
+        break;
+    case B_PCOPY:
+        if (xs >= 0 && xs < pm.npx) {
+            char where[PATH_MAX];
+            w2k_clipboard_set(pm.px[xs].path);
+            place(pm.px[xs].path, where, sizeof where);
+            snprintf(pm.px_msg, sizeof pm.px_msg, "Copied %.360s to the clipboard.", where);
+        }
+        break;
     case B_LOG: {
         char path[PATH_MAX];
         log_path(path, sizeof path);
@@ -1951,6 +2153,7 @@ static void on_activate(void *u, int row)
     if (l == pm.vlist && enabled(B_DEFAULT)) command(B_DEFAULT);
     else if (l == pm.rlist && enabled(B_INSTALL)) command(B_INSTALL);
     else if (l == pm.plist && enabled(B_CHANGE)) command(B_CHANGE);
+    else if (l == pm.xlist && enabled(B_PDRIVE)) command(B_PDRIVE);
 }
 
 static void on_default(void *u, int idx)
@@ -1964,6 +2167,7 @@ static W2kList *page_list(void)
     case PG_VERSIONS: return pm.vlist;
     case PG_DOWNLOAD: return pm.rlist;
     case PG_PROGRAMS: return pm.plist;
+    case PG_PREFIXES: return pm.xlist;
     default:          return NULL;
     }
 }
@@ -2018,6 +2222,7 @@ static int event(W2kWin *w, XEvent *e)
             fill_versions();
             if (pm.listed) fill_releases();
             if (pm.tabs->sel == PG_PROGRAMS) fill_programs();
+            if (pm.tabs->sel == PG_PREFIXES) fill_prefixes();
             w2k_win_dirty(w);
         }
         return 0;
@@ -2066,6 +2271,7 @@ static int manager(int page)
     w2k_tabs_add(pm.tabs, "Versions");
     w2k_tabs_add(pm.tabs, "Download");
     w2k_tabs_add(pm.tabs, "Programs");
+    w2k_tabs_add(pm.tabs, "Prefixes");
     w2k_tabs_add(pm.tabs, "Options");
     pm.tabs->r = (W2kRect){ 8, 8, W - 16, H - 8 - 40 };
 
@@ -2084,8 +2290,14 @@ static int manager(int page)
     w2k_list_add_col(pm.plist, "Runs with", 150, 0);
     w2k_list_add_col(pm.plist, "Compatibility mode", 130, 0);
     w2k_list_add_col(pm.plist, "Folder", 240, 0);
-    W2kList *lists[3] = { pm.vlist, pm.rlist, pm.plist };
-    for (int i = 0; i < 3; i++) {
+    pm.xlist = w2k_list_new(LV_REPORT);
+    w2k_list_add_col(pm.xlist, "Prefix", 118, 0);
+    w2k_list_add_col(pm.xlist, "Set up by", 118, 0);
+    w2k_list_add_col(pm.xlist, "Programs", 136, 0);
+    pm.xlist->on_select = on_prefix_select;
+    pm.px = w2k_alloc(MAX_PFX * sizeof *pm.px);
+    W2kList *lists[4] = { pm.vlist, pm.rlist, pm.plist, pm.xlist };
+    for (int i = 0; i < 4; i++) {
         lists[i]->fullrow = 1;
         lists[i]->user = lists[i];
         lists[i]->on_activate = on_activate;
@@ -2114,6 +2326,8 @@ static int manager(int page)
     w2k_list_free(pm.vlist);
     w2k_list_free(pm.rlist);
     w2k_list_free(pm.plist);
+    w2k_list_free(pm.xlist);
+    free(pm.px);
     w2k_combo_free(pm.def);
     w2k_tabs_free(pm.tabs);
     free(pm.prog);
@@ -2126,7 +2340,8 @@ static int usage(void)
     fprintf(stderr, "usage: l2kproton                     Proton Manager\n"
                     "       l2kproton download            ... at its Download page\n"
                     "       l2kproton run FILE [ARG...]   run a Windows program as its Compatibility tab says\n"
-                    "       l2kproton winecfg [NAME]      Wine configuration for a version's Windows\n");
+                    "       l2kproton winecfg [NAME [PREFIX]]  Wine configuration for a version's Windows,\n"
+                    "                                     or another prefix run with that version\n");
     return 2;
 }
 
@@ -2146,7 +2361,8 @@ int main(int argc, char **argv)
         if (argc < 3) return usage();
         return cmd_run(argv[2], argv + 3, argc - 3);
     }
-    if (argc >= 2 && !strcmp(argv[1], "winecfg")) return cmd_winecfg(argc > 2 ? argv[2] : "wine");
+    if (argc >= 2 && !strcmp(argv[1], "winecfg"))
+        return cmd_winecfg(argc > 2 ? argv[2] : "wine", argc > 3 ? argv[3] : NULL);
     if (argc >= 2 && !strcmp(argv[1], "setup")) return cmd_setup(argc > 2 ? argv[2] : NULL);
     if (argc >= 2 && !strcmp(argv[1], "download")) return manager(PG_DOWNLOAD);
     if (argc >= 2) return usage();
