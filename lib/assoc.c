@@ -24,9 +24,10 @@ defaults[] = {
     { "audio", "Music",           "vlc" },
     { "text",  "Text documents",  "l2knotepad" },
     { "web",   "Web pages",       "xdg-open" },
-    /* Wine's start hands a program, installer, shortcut or batch file to
-     * whatever the prefix associates it with, as Explorer would. */
-    { "windows", "Windows programs", "wine start /unix %s" },
+    /* Proton Manager's launcher runs a program, installer, shortcut or
+     * batch file with Wine or the version of Proton its Compatibility tab
+     * names (apps/l2kproton.c). */
+    { "windows", "Windows programs", "l2kproton run %s" },
     { "other", "Everything else", "xdg-open" },
 };
 #define NCLASS ((int)(sizeof defaults / sizeof *defaults))
@@ -67,6 +68,11 @@ void w2k_assoc_get(const char *cls, char *out, int n)
         }
         fclose(f);
     }
+    /* The File Types page writes every class out, so the old default for
+     * Windows programs is in most people's file as though it had been
+     * chosen; it is the new default now, which runs them the same way
+     * unless a Compatibility tab says otherwise. */
+    if (!strcasecmp(cls, "windows") && !strcmp(out, "wine start /unix %s")) out[0] = 0;
     if (out[0]) return;
     for (int i = 0; i < NCLASS; i++)
         if (!strcmp(defaults[i].cls, cls)) {

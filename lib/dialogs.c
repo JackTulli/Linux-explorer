@@ -83,6 +83,17 @@ void w2k_combo_draw(Drawable d, W2kCombo *c)
     const char *txt = (c->sel >= 0 && c->sel < c->n) ? c->items[c->sel] : "";
     int fh = w2k_font_height(F_UI);
     char buf[200];
+    if (c->disabled) {
+        /* Greyed, as Windows shows a drop-down that does not apply: the
+         * well the colour of the dialog, the text and the arrow grey. */
+        w2k_fill(d, c->r.x + 2, c->r.y + 2, c->r.w - 4, c->r.h - 4, C_FACE);
+        w2k_ellipsis(F_UI, txt, c->r.w - bw - 10, buf, sizeof buf);
+        w2k_text(d, F_UI, c->r.x + 4, c->r.y + (c->r.h - fh) / 2, buf, C_GRAYTEXT);
+        int dbx = c->r.x + c->r.w - 2 - bw, dby = c->r.y + 2;
+        w2k_button(d, dbx, dby, bw, c->r.h - 4, 0);
+        down_arrow(d, dbx + (bw - 7) / 2, dby + (c->r.h - 4 - 7) / 2 + 2, C_GRAYTEXT);
+        return;
+    }
     /* The Address bar's combo carries the folder's icon before its name:
      * 16 pixels at 4, the text at 24 (measured off the shell). */
     int tx = c->r.x + 4;
@@ -761,7 +772,7 @@ static int combo_dropdown(W2kCombo *c, int rx, int ry)
 int w2k_combo_press(W2kCombo *c, XButtonEvent *b)
 {
     if (!w2k_rect_hit(&c->r, b->x, b->y)) return 0;
-    if (b->button != Button1) return 1;
+    if (b->button != Button1 || c->disabled) return 1;
 
     /* On an editable combo only the arrow drops the list down; the rest of
      * the control is the text field. */

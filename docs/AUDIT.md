@@ -397,3 +397,10 @@ origin; the live glass's cost; Explorer re-reading a folder for every
 sort, drag-and-drop with no timeout, the 64-item limits and copies without
 progress; the Calculator's operator semantics; PNG size limits; the
 updater's blocking checks; Wine icon extraction on the listing path.
+
+### Corrected since
+
+| Where | Was | Now |
+|---|---|---|
+| `wm/client.c` | The shortcut above for a window already on top also skipped the restack when a window came back from minimised, and minimised frames were left out of the stacking: the only window open, minimised and restored, came back under the desktop, unseen | Coming back from minimised always restacks, and minimised frames keep a place above the desktop |
+| `lib/win.c` | A message box paragraph that wrapped before a line break lost the rest of itself (since the first release) | Past the line break only once the paragraph is used up |

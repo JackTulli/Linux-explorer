@@ -124,6 +124,8 @@ MAP = {
     "ICO_TB_UNDO":       ["tb_undo.png"],
     "ICO_TB_VIEWS":      ["tb_views.png"],
     "ICO_TB_GO":         ["tb_go.png"],
+    # Proton Manager: Windows 2000's program window with a gear in front.
+    "ICO_PROTON":        "w2k_unknown_9",
 }
 
 def best(im, size):

@@ -918,7 +918,9 @@ static int wrap_text(const char *text, int maxw, char **out, int maxlines,
         out[n++] = line;
         p = cut;
         while (*p == ' ') p++;
-        if (nl && p <= nl) p = nl + 1;
+        /* Past the line break only once the paragraph is used up: a
+         * paragraph that wrapped lost the rest of itself to the next. */
+        if (nl && p == nl) p = nl + 1;
     }
     *nlines = n;
     return widest;

@@ -448,6 +448,7 @@ typedef struct {
     int     editable;
     W2kEdit *edit;
     int     icon;                   /* drawn before the text; ICO_NONE for none */
+    int     disabled;               /* greyed, and presses are ignored */
     void  *user;
     void (*on_change)(void *user, int idx);
 } W2kCombo;
@@ -495,6 +496,9 @@ int  w2k_prompt_secret(W2kWin *over, const char *title, const char *label,
                        char *out, int outsz, int icon);
 /* The file/folder property sheet. Returns 1 when the user pressed OK. */
 int  w2k_file_properties(W2kWin *over, const char *path);
+/* The same sheet opened at one of its pages (0 General; for a Windows
+ * program, 1 Compatibility). */
+int  w2k_file_properties_page(W2kWin *over, const char *path, int page);
 /* System Properties, sysdm.cpl's sheet (lib/sysprops.c). 1 on OK. */
 int  w2k_system_properties(W2kWin *over);
 /* A drive's property sheet: `path` is where it is mounted, `name` what

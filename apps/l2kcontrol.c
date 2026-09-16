@@ -82,6 +82,8 @@ static const Applet applets[] = {
       ICO_SETTINGS, NULL, open_performance },
     { "Power Options", "Configures energy-saving settings for your computer.",
       ICO_CP_POWER, NULL, open_power },
+    { "Proton Manager", "Downloads versions of Proton, and chooses which runs your Windows programs.",
+      ICO_PROTON, "l2kproton", NULL },
     { "Sounds and Multimedia", "Assigns sounds to events and configures sound devices.",
       ICO_CP_SOUNDS, NULL, open_sounds },
     { "System", "Provides system information and changes environment settings.",

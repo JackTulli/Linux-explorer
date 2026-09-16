@@ -504,6 +504,42 @@ void w2k_wine_prefix(char *buf, int n);          /* WINEPREFIX, or ~/.wine */
 int  w2k_wine_file(const char *name);            /* .exe .msi .lnk .bat .com .cmd */
 int  w2k_wine_exe_icon(const char *path);        /* the icon inside an .exe, or ICO_APP */
 
+/* ---- Windows programs through Proton (lib/proton.c) ---- */
+typedef struct {
+    char name[128];          /* the build's folder name: "GE-Proton11-7" */
+    char dir[1024];          /* the folder holding its proton script */
+    int  steam;              /* one of Steam's (compatibilitytools.d) */
+} W2kProton;
+int  w2k_proton_list(W2kProton *out, int max);          /* newest first */
+int  w2k_proton_find(const char *name, W2kProton *out); /* 1 when installed */
+void w2k_proton_data_dir(char *buf, int n);             /* $XDG_DATA_HOME/l2k */
+/* 1, and the prefix's name, for a program inside one of the prefixes
+ * Proton Manager makes -- <data dir>/prefixes/<name>, one for each build. */
+int  w2k_proton_prefix_of(const char *exe, char *name, int n);
+typedef struct {
+    char runner[128];        /* "": the default; "wine"; or a build's name */
+    char winver[16];         /* "": as the prefix has it; "winxp", "win7"... */
+    int  wined3d, nosync, hud;
+} W2kCompat;
+typedef struct {
+    char def[128];           /* "wine", or a build's name */
+    int  umu;                /* run inside the Steam Linux Runtime */
+    int  dxvk, esync, fsync, nvapi, hud;
+} W2kCompatOptions;
+int  w2k_compat_get(const char *exe, W2kCompat *c);         /* 1: it has settings of its own */
+int  w2k_compat_set(const char *exe, const W2kCompat *c);   /* NULL or all defaults: forgotten */
+int  w2k_compat_list(char (*paths)[4096], W2kCompat *cs, int max);
+void w2k_compat_options(W2kCompatOptions *o);
+int  w2k_compat_save_options(const W2kCompatOptions *o);
+/* What runs `exe` when it has no choice of its own: "wine" or a build. */
+void w2k_compat_default_runner(const char *exe, char *out, int n);
+/* The versions of Windows a program can be told it runs on, with Wine's
+ * names for them (id64: for a 64-bit program, NULL where there is none). */
+typedef struct { const char *label, *id, *id64; } W2kWinVersion;
+extern const W2kWinVersion w2k_win_versions[];
+extern const int w2k_n_win_versions;
+int  w2k_exe_is_64bit(const char *path);
+
 /* The Recycle Bin: the freedesktop trash under ~/.local/share/Trash. */
 const char *w2k_trash_dir(void);
 const char *w2k_trash_files_dir(void);
@@ -862,6 +898,7 @@ enum {
     ICO_TB_BACK, ICO_TB_FORWARD, ICO_TB_UP, ICO_TB_SEARCH, ICO_TB_FOLDERS,
     ICO_TB_HISTORY, ICO_TB_MOVETO, ICO_TB_COPYTO, ICO_TB_DELETE, ICO_TB_UNDO,
     ICO_TB_VIEWS, ICO_TB_GO,
+    ICO_PROTON,             /* Proton Manager: a program window with a gear */
     N_ICONS
 };
 /* ---- Optional icon skinning -------------------------------------- *

@@ -46,6 +46,7 @@ static const W2kAlias aliases[] = {
     { "lusrmgr",        "User Accounts",        "l2kcontrol users",   ICO_SETTINGS },
     { "sysdm",          "System Properties",    "l2kcontrol system",  ICO_CP_SYSTEM },
     { "cleanmgr",       "Disk Cleanup",         "l2kcontrol cleanup", ICO_DRIVE_HDD },
+    { "proton",         "Proton Manager",       "l2kproton",          ICO_PROTON },
     { "msinfo32",       "About Linux 2000",     "linver",             ICO_STARTFLAG },
     { "logonui",        "Logon Screen",         "l2kcontrol logon",   ICO_LOGOFF },
 };

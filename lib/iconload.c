@@ -49,6 +49,7 @@ static const char *const slugs[N_ICONS] = {
     [ICO_SPEAKER] = "speaker", [ICO_CURSORFILE] = "cursorfile",
     [ICO_FAVORITES] = "favorites", [ICO_FONTS_FOLDER] = "fonts_folder",
     [ICO_RECYCLE_FULL] = "recycle_full",
+    [ICO_PROTON] = "proton",
 };
 
 const char *w2k_icon_slug(int id)

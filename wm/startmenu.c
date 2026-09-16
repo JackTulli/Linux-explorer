@@ -203,6 +203,7 @@ static int on_context(int id, int x, int y)
     case SM_SYSPROPS: own = "l2kcontrol system"; own_label = "System Properties"; own_icon = "w2k:mycomputer"; break;
     case SM_LINVER:   own = "linver";      own_label = "About Linux 2000"; own_icon = "w2k:startflag"; break;
     case SM_UPDATE:   own = "l2kupdate";   own_label = "Windows Update"; own_icon = "w2k:winupdate"; break;
+    case SM_PROTON:   own = "l2kproton";   own_label = "Proton Manager"; own_icon = "w2k:proton"; break;
     case SM_IMAGING:  own = "l2kimage";    own_label = "Imaging"; break;
     case SM_CONTROLPANEL: own = "l2kcontrol"; own_label = "Control Panel"; break;
     }
@@ -247,6 +248,7 @@ void startmenu_open(void)
     prog_item(systools, SM_CLEANUP, "Disk C&leanup", "l2kcontrol", ICO_DRIVE_HDD);
     prog_item(systools, SM_DEVMGMT, "&Device Manager", "l2kdevmgmt", ICO_MYCOMPUTER);
     prog_item(systools, SM_DISKMGMT, "Dis&k Management", "l2kdiskmgmt", ICO_DRIVE_HDD);
+    prog_item(systools, SM_PROTON, "&Proton Manager", "l2kproton", ICO_PROTON);
     prog_item(systools, SM_LINVER, "&About Linux 2000", "linver", ICO_STARTFLAG);
     /* Windows Update is pinned to the Start menu at first, as an ordinary
      * pin; this is where it can be pinned again from. */
@@ -405,6 +407,7 @@ void startmenu_dispatch(int id)
     case SM_CHARMAP:      wm_spawn("l2kcharmap"); break;
     case SM_DEVMGMT:      wm_spawn("l2kdevmgmt"); break;
     case SM_DISKMGMT:     wm_spawn("l2kdiskmgmt"); break;
+    case SM_PROTON:       wm_spawn("l2kproton"); break;
     case SM_LINVER:       wm_spawn("linver"); break;
     case SM_UPDATE:       wm_spawn("l2kupdate"); break;
     case SM_FOLDEROPTS:   wm_spawn("l2kcontrol folders"); break;

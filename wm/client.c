@@ -162,6 +162,7 @@ static int icon_for_class(const char *cls)
     if (!strcasecmp(cls, "l2kcontrol"))  return ICO_CONTROLPANEL;
     if (!strcasecmp(cls, "l2kdisplay"))  return ICO_SETTINGS;
     if (!strcasecmp(cls, "l2kbluetooth")) return ICO_CP_BLUETOOTH;
+    if (!strcasecmp(cls, "l2kproton"))   return ICO_PROTON;
     if (strcasestr(cls, "term"))         return ICO_TERMINAL;
     if (strcasestr(cls, "xcalc"))        return ICO_CALC;
     return ICO_APP;
@@ -171,6 +172,27 @@ static int icon_for_class(const char *cls)
  * programs, then whatever the application publishes, then the icon theme by
  * class name. Results are kept per class, so a hundred Firefox windows cost
  * one lookup and one pair of pixmaps. */
+/* A hash of a window's _NET_WM_ICON, 0 when it has none. */
+static unsigned long icon_property_hash(Window win)
+{
+    Atom type;
+    int fmt;
+    unsigned long n = 0, after = 0;
+    unsigned char *data = NULL;
+    if (XGetWindowProperty(w2k.dpy, win, w2k.a_net_wm_icon, 0, 1L << 20, False,
+                           XA_CARDINAL, &type, &fmt, &n, &after, &data) != Success || !data)
+        return 0;
+    unsigned long h = 0;
+    if (fmt == 32 && n) {
+        h = 1469598103934665603UL;
+        const long *p = (const long *)data;
+        for (unsigned long i = 0; i < n; i++) h = (h ^ (unsigned long)p[i]) * 1099511628211UL;
+        if (!h) h = 1;
+    }
+    XFree(data);
+    return h;
+}
+
 static int icon_for_client(Client *c)
 {
     static struct { char cls[64]; int id; } cache[64];
@@ -180,6 +202,26 @@ static int icon_for_client(Client *c)
     if (built_in == ICO_APP) built_in = icon_for_class(c->cls_name);
     if (built_in != ICO_APP) return built_in;
     if (!c->cls || !c->cls[0]) return ICO_APP;
+
+    /* Proton gives every program's windows the same class -- steam_app_0,
+     * steam_proton -- so there the class says nothing: one game's icon
+     * stood for the next. Those are known by the picture they publish. */
+    char key[64];
+    snprintf(key, sizeof key, "%.63s", c->cls);
+    if (!strncasecmp(c->cls, "steam_app_", 10) || !strcasecmp(c->cls, "steam_proton")) {
+        unsigned long h = icon_property_hash(c->win);
+        if (!h) return ICO_APP;
+        snprintf(key, sizeof key, "\x01%lx", h);
+        for (int i = 0; i < ncache; i++)
+            if (!strcmp(cache[i].cls, key)) return cache[i].id;
+        int id = icon_from_property(c->win);
+        if (id < 0) return ICO_APP;
+        static int next_own;
+        int slot = ncache < (int)(sizeof cache / sizeof *cache) ? ncache++ : next_own++ % (int)(sizeof cache / sizeof *cache);
+        snprintf(cache[slot].cls, sizeof cache[slot].cls, "%s", key);
+        cache[slot].id = id;
+        return id;
+    }
 
     for (int i = 0; i < ncache; i++)
         if (!strcasecmp(cache[i].cls, c->cls)) return cache[i].id;
@@ -441,6 +483,11 @@ void clients_restack(void)
     for (Client *c = stack; c && n < 250; c = c->snext)
         if (!c->above && !c->minimized && !(c->fullscreen && c == focused)) wins[n++] = c->frame;
     if (!w2k_taskbar_ontop) { if (orb) wins[n++] = orb; wins[n++] = taskbar_window(); }
+    /* Minimised frames too, unmapped, over the desktop: left out, they
+     * kept whatever place they had, and the desktop could be restacked
+     * above one -- which, mapped again, came back hidden under it. */
+    for (Client *c = stack; c && n < 250; c = c->snext)
+        if (c->minimized) wins[n++] = c->frame;
     wins[n++] = desktop_window();
     XRestackWindows(w2k.dpy, wins, n);
 }
@@ -474,13 +521,13 @@ static int has_transients(const Client *owner)
     return 0;
 }
 
-void client_raise(Client *c)
+static void raise_client(Client *c, int force)
 {
     if (!c) return;
     /* Already on top, with nothing of its own to bring up: every click in
      * an application comes through here, and each restacked every window
      * (with live glass, repainted every frame) for nothing. */
-    if (stack == c && !has_transients(c)) return;
+    if (!force && stack == c && !has_transients(c)) return;
     stack_remove(c);
     c->snext = stack;
     stack = c;
@@ -488,6 +535,8 @@ void client_raise(Client *c)
     clients_restack();
     glass_live_refresh();
 }
+
+void client_raise(Client *c) { raise_client(c, 0); }
 
 /* The modal dialog a window is waiting on, if one is up: the dialog
  * takes the focus in its place, as Windows gives it. */
@@ -655,6 +704,7 @@ void client_restore(Client *c)
                         client_frame_w(c), client_frame_h(c));
 
     if (!c) return;
+    int was_minimized = c->minimized;
     if (c->minimized) {
         c->minimized = 0;
         XMapWindow(w2k.dpy, c->frame);
@@ -662,7 +712,9 @@ void client_restore(Client *c)
         client_publish_state(c);
         transients_hide(c, 0, 0);
     }
-    client_raise(c);
+    /* Restacked, back from minimised, even when the list already has it
+     * first: the only window, minimised and restored, stayed unseen. */
+    raise_client(c, was_minimized);
     client_focus(c);
     taskbar_paint();
 }

@@ -166,6 +166,11 @@ Try it nested first, without logging out of anything:
                    with 25-400% presets; drag to pan
     l2knotepad, l2kcalc, l2kcharmap,
     l2ksnip        Snipping Tool
+    l2kproton      Proton Manager: the versions of Proton installed and the
+                   default, GE-Proton's releases to download and set up, the
+                   programs with settings of their own, and the options they
+                   run with; `l2kproton run FILE` is what Windows programs
+                   open with, as their Properties' Compatibility tab says
     l2kupdate      Windows Update: checks for and installs a newer Linux 2000
                    on request, and the distribution's own updates (apt, dnf,
                    pacman, zypper, apk, xbps, emerge, Flatpak, Snap)
@@ -240,14 +245,31 @@ for people who choose it.
 
 Windows programs run through Wine as if they were the desktop's own.
 Double-click an .exe, .msi, .lnk or .bat in Explorer and it opens with
-`wine start`: an installer installs, a program runs, a shortcut is
-followed. What gets installed appears in the Start menu under Programs
-> Windows Programs, with its own icons, straight from the entries
-Wine's menu builder writes; an .exe in Explorer shows the icon inside
-it when icoutils is installed. The session makes Wine's prefix
-(`~/.wine`, or `WINEPREFIX`) the first time it is missing. The installer
-brings wine and icoutils; 32-bit programs need the distribution's
-32-bit Wine as well.
+Wine's `start`, or with the version of Proton chosen for it (below): an
+installer installs, a program runs, a shortcut is followed. What Wine
+installs appears in the Start menu under Programs > Windows Programs,
+with its own icons, straight from the entries Wine's menu builder writes;
+an .exe in Explorer shows the icon inside it when icoutils is installed.
+The session makes Wine's prefix (`~/.wine`, or `WINEPREFIX`) the first
+time it is missing. The installer brings wine and icoutils; 32-bit
+programs need the distribution's 32-bit Wine as well.
+
+Or through Proton, the Wine Steam runs games with. Proton Manager
+(Control Panel, Programs > Accessories > System Tools, or Run > `proton`)
+downloads GE-Proton, the build of it made for use outside Steam, from its
+GitHub releases, checks it against the published checksum, unpacks it
+under `~/.local/share/l2k/proton` and sets up a Windows for it; the first
+one installed becomes the default. A program's Properties get a
+Compatibility tab, as on Windows XP: the version of Proton (or Wine) that
+runs that program, the version of Windows it is told it runs on, from
+Windows 95 to Windows 11, and three switches for games -- OpenGL in place
+of Vulkan, esync and fsync off, the frame rate shown. Each version runs
+programs in a Windows of its own under `~/.local/share/l2k/prefixes`, and
+a program installed into one runs there whichever version runs it. Proton
+writes no Start menu entries: Versions > Open C: Drive finds what was
+installed. Options can run programs in the Steam Runtime instead, through
+umu-launcher, which is downloaded when that is turned on. The settings are
+`~/.w2k/compat`; what Proton says goes to `~/.w2k/proton.log`.
 
 Icons come in five sets, from Display Properties > Appearance > Icons:
 Windows 2000 (the built-in artwork), Windows 98, Windows XP, Windows 7 and
