@@ -128,9 +128,14 @@ static void menubar_track(W2kMenubar *mb, int i)
                               mb->item[i].x, mb->r.y + MENUBAR_H,
                               &gx, &gy, &dummy);
 
+        /* The title lights as its menu opens, drawn on the window now: the
+         * owner repaints only once the menu has closed, so it never lit. */
+        w2k_menubar_draw(mb->win_ref, mb);
+        XFlush(w2k.dpy);
         int id = w2k_menu_popup(m, gx, gy, MPOP_LEFT);
         w2k_menu_free(m);
         mb->open = -1;
+        w2k_menubar_draw(mb->win_ref, mb);
 
         if (id) {
             if (mb->on_command) mb->on_command(mb->user, id);

@@ -688,7 +688,8 @@ static int combo_dropdown(W2kCombo *c, int rx, int ry)
 
     /* "Slide open combo boxes": the list slides out of the box -- painted
      * first, so what slides is the list, not an empty white box that was
-     * only filled in once it had stopped (lib/anim.c). */
+     * only filled in once it had stopped (lib/anim.c). It hangs below the
+     * box, or rises above it when it opens upward. */
     if (w2k_effects[FX_SLIDE_COMBO] && h > 20) {
         Pixmap first = XCreatePixmap(w2k.dpy, win, (unsigned)pw, (unsigned)ph, w2k.depth);
         combo_list_paint(first, c, w, h, row, rows, top, hot);

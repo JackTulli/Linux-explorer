@@ -1,27 +1,32 @@
-/* anim.c -- the "slide" and "zoom" of the Visual Effects list, drawn
- * without a compositor and without flicker.
+/* anim.c -- the "slide" of the Visual Effects list (menus, combo boxes),
+ * drawn without a compositor and without disturbing anything around it.
  *
- * The picture is painted once, before anything moves, and made the
- * window's background: the server then puts it up by itself wherever the
- * window newly shows, with no round trip to us and no frame where the
- * window is its plain background colour. The earlier slides resized the
- * window at every step, and every resize had the server wipe it to that
- * colour before the picture was copied back -- a flash per frame -- and
- * the combo box's grew an empty white box that was only painted once it
- * had stopped.
+ * The window is mapped at the place it ends up, and never anywhere else:
+ * what was on the screen there is copied first and made its background,
+ * so it appears showing exactly what it covers, and the finished picture
+ * is then copied in over that, a growing band of it at each step, moving
+ * out from the edge it hangs from. Nothing outside the window's rectangle
+ * is ever covered, so nothing has to repaint -- the taskbar under a Start
+ * menu stays put -- and nothing inside it is ever cleared to a plain
+ * colour, so nothing flashes. This is how Windows animated a menu before
+ * compositors: a copy of the screen beneath and blits over it.
+ *
+ * Earlier attempts each broke one of those. Growing the window had the
+ * server wipe every new strip to the background colour before the picture
+ * arrived. Moving a full-size shaped window in from above its place
+ * uncovered the taskbar and whatever else it passed over, all left blank
+ * until the program that owned them caught up -- the window manager, busy
+ * running the very animation, last of all.
+ *
+ * Under a compositor the screen beneath cannot be read like this (the
+ * windows are drawn off screen), so there the window simply appears.
  *
  * Steps follow the clock, not a count: on a slow server the animation
  * takes the time it should, with fewer frames, rather than longer. */
 #include "w2k.h"
-#include <X11/extensions/shape.h>
+#include <stdio.h>
 #include <time.h>
 #include <unistd.h>
-
-/* Called between frames, when set: the window manager points it at
- * something that repaints its own windows' exposures -- the bar flying
- * off the taskbar uncovers the task button, which otherwise stayed a
- * blank patch until the flight was over. */
-void (*w2k_anim_frame)(void);
 
 static long now_us(void)
 {
@@ -37,95 +42,52 @@ static double ease(double t)
     return 1.0 - u * u * u;
 }
 
-static void shape_rect(Window win, int x, int y, int w, int h)
+/* A compositing manager draws the windows itself, off the screen: then the
+ * screen's own pixels are not what the user sees. */
+static int composited(void)
 {
-    XRectangle r = { (short)x, (short)y, (unsigned short)(w > 0 ? w : 1),
-                     (unsigned short)(h > 0 ? h : 1) };
-    XShapeCombineRectangles(w2k.dpy, win, ShapeBounding, 0, 0, &r, 1, ShapeSet, Unsorted);
+    if (w2k_compositor == COMPOSITOR_COMPOSITE) return 1;
+    char name[32];
+    snprintf(name, sizeof name, "_NET_WM_CM_S%d", DefaultScreen(w2k.dpy));
+    Atom a = XInternAtom(w2k.dpy, name, True);
+    return a != None && XGetSelectionOwner(w2k.dpy, a) != None;
 }
 
 void w2k_slide_in(Window win, Pixmap picture, int x, int y, int pw, int ph,
                   int upward, int ms)
 {
-    int ev, er;
-    if (!XShapeQueryExtension(w2k.dpy, &ev, &er) || pw <= 0 || ph <= 0 || ms <= 0) {
-        XMoveResizeWindow(w2k.dpy, win, x, y, (unsigned)pw, (unsigned)ph);
+    if (pw <= 0 || ph <= 0) return;
+    XMoveResizeWindow(w2k.dpy, win, x, y, (unsigned)pw, (unsigned)ph);
+    if (!picture || ms <= 0 || composited()) {
+        if (picture) XSetWindowBackgroundPixmap(w2k.dpy, win, picture);
         XMapRaised(w2k.dpy, win);
         return;
     }
-    if (picture) XSetWindowBackgroundPixmap(w2k.dpy, win, picture);
-    /* The content moves in from the anchored edge: at first only its far
-     * end shows, just inside the edge, and it slides to where it lands.
-     * The window is full size throughout and shaped to the part in view. */
+    Pixmap under = XCreatePixmap(w2k.dpy, win, (unsigned)pw, (unsigned)ph, w2k.depth);
+    XGCValues gv = { .subwindow_mode = IncludeInferiors, .graphics_exposures = False };
+    GC gc = XCreateGC(w2k.dpy, win, GCSubwindowMode | GCGraphicsExposures, &gv);
+    XCopyArea(w2k.dpy, w2k.root, under, gc, x, y, (unsigned)pw, (unsigned)ph, 0, 0);
+    XSetWindowBackgroundPixmap(w2k.dpy, win, under);
+    XMapRaised(w2k.dpy, win);
+
     long t0 = now_us(), dur = (long)ms * 1000L;
-    int first = 1;
     for (;;) {
         long el = now_us() - t0;
         double t = el >= dur ? 1.0 : (double)el / (double)dur;
         int sh = (int)(ph * ease(t) + 0.5);
-        if (sh < 1) sh = 1;
         if (sh > ph) sh = ph;
-        int wy = upward ? y + (ph - sh) : y - (ph - sh);
-        shape_rect(win, 0, upward ? 0 : ph - sh, pw, sh);
-        XMoveResizeWindow(w2k.dpy, win, x, wy, (unsigned)pw, (unsigned)ph);
-        if (first) { XMapRaised(w2k.dpy, win); first = 0; }
-        XSync(w2k.dpy, False);
-        if (t >= 1.0) break;
-        usleep(8000);
-    }
-    XShapeCombineMask(w2k.dpy, win, ShapeBounding, 0, 0, None, ShapeSet);
-    XMoveResizeWindow(w2k.dpy, win, x, y, (unsigned)pw, (unsigned)ph);
-    XFlush(w2k.dpy);
-}
-
-/* A bar in the caption's colours flying from one rectangle to another --
- * a window to its task button when it is minimised, and back -- the way
- * Windows 2000 animates a caption. A window of its own rather than an XOR
- * outline on the root: that needed the whole server grabbed for the
- * length of the flight (every other program stopped), left trails where
- * anything repainted underneath, and could not be seen through the
- * nested compositor at all. */
-void w2k_zoom_rect(int fx, int fy, int fw, int fh, int tx, int ty, int tw, int th,
-                   int ms, unsigned long c1, unsigned long c2)
-{
-    if (fw < 2 || fh < 2 || tw < 2 || th < 2 || ms <= 0) return;
-    XSetWindowAttributes a = { .override_redirect = True, .background_pixel = c1,
-                               .save_under = True };
-    Window win = XCreateWindow(w2k.dpy, w2k.root, fx, fy, (unsigned)fw, (unsigned)fh, 0,
-                               CopyFromParent, InputOutput, CopyFromParent,
-                               CWOverrideRedirect | CWBackPixel | CWSaveUnder, &a);
-    /* The caption gradient, as one row tiled down the bar. */
-    int gw = fw > tw ? fw : tw;
-    Pixmap grad = XCreatePixmap(w2k.dpy, win, (unsigned)gw, 1, w2k.depth);
-    if (grad) {
-        XColor a1 = { .pixel = c1 }, a2 = { .pixel = c2 };
-        XQueryColor(w2k.dpy, w2k.cmap, &a1);
-        XQueryColor(w2k.dpy, w2k.cmap, &a2);
-        for (int i = 0; i < gw; i++) {
-            int r = (a1.red >> 8) + ((a2.red >> 8) - (a1.red >> 8)) * i / (gw > 1 ? gw - 1 : 1);
-            int g = (a1.green >> 8) + ((a2.green >> 8) - (a1.green >> 8)) * i / (gw > 1 ? gw - 1 : 1);
-            int b = (a1.blue >> 8) + ((a2.blue >> 8) - (a1.blue >> 8)) * i / (gw > 1 ? gw - 1 : 1);
-            XSetForeground(w2k.dpy, w2k.gc, w2k_rgb(r, g, b));
-            XDrawPoint(w2k.dpy, grad, w2k.gc, i, 0);
+        if (sh > 0) {
+            if (upward)        /* rising from its bottom edge: its top shows first */
+                XCopyArea(w2k.dpy, picture, win, gc, 0, 0, (unsigned)pw, (unsigned)sh, 0, ph - sh);
+            else               /* hanging from its top edge: its bottom shows first */
+                XCopyArea(w2k.dpy, picture, win, gc, 0, ph - sh, (unsigned)pw, (unsigned)sh, 0, 0);
         }
-        XSetWindowBackgroundPixmap(w2k.dpy, win, grad);
-    }
-    long t0 = now_us(), dur = (long)ms * 1000L;
-    int first = 1;
-    for (;;) {
-        long el = now_us() - t0;
-        double t = el >= dur ? 1.0 : (double)el / (double)dur;
-        double e = ease(t);
-        int x = fx + (int)((tx - fx) * e), y = fy + (int)((ty - fy) * e);
-        int w = fw + (int)((tw - fw) * e), h = fh + (int)((th - fh) * e);
-        XMoveResizeWindow(w2k.dpy, win, x, y, (unsigned)(w > 1 ? w : 1), (unsigned)(h > 1 ? h : 1));
-        if (first) { XMapRaised(w2k.dpy, win); first = 0; }
         XSync(w2k.dpy, False);
-        if (w2k_anim_frame) w2k_anim_frame();
         if (t >= 1.0) break;
         usleep(8000);
     }
-    XDestroyWindow(w2k.dpy, win);
-    if (grad) w2k_free_pixmap(grad);
-    XFlush(w2k.dpy);
+    /* Exposures from here on are the finished picture's. */
+    XSetWindowBackgroundPixmap(w2k.dpy, win, picture);
+    XFreeGC(w2k.dpy, gc);
+    XFreePixmap(w2k.dpy, under);
 }

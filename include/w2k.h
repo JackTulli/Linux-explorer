@@ -449,18 +449,14 @@ void w2k_accel_reset(void);     /* a menu closed: hide them again */
 int w2k_desktop_entry(const char *path, char *name, int nn,
                       char *exec, int en, char *icon, int in);
 /* ---- Animations (lib/anim.c) ---- *
- * Slide `win` (unmapped) into view at x,y,pw,ph, `picture` its finished
- * content, from its top edge -- or from its bottom when `upward`, as a
- * menu over the taskbar opens -- in `ms` milliseconds. */
+ * Map `win` (unmapped) at x,y,pw,ph with `picture`, its finished content,
+ * sliding in from its top edge -- or from its bottom when `upward`, as a
+ * menu over the taskbar opens -- in `ms` milliseconds. The window stays
+ * inside that rectangle throughout; under a compositor it just appears. */
 void w2k_slide_in(Window win, Pixmap picture, int x, int y, int pw, int ph,
                   int upward, int ms);
 /* A name from data as a label: its "&"s doubled, so none is a mnemonic. */
 void w2k_menu_escape(const char *in, char *out, size_t n);
-/* Run between animation frames, when set (the window manager's exposures). */
-extern void (*w2k_anim_frame)(void);
-/* A caption-coloured bar (c1 to c2) flying from one rectangle to another. */
-void w2k_zoom_rect(int fx, int fy, int fw, int fh, int tx, int ty, int tw, int th,
-                   int ms, unsigned long c1, unsigned long c2);
 
 /* A settings file out of `home`, opened as the logon screen must (no
  * symlink, no FIFO, owned by the home's owner, at most maxsize bytes). */

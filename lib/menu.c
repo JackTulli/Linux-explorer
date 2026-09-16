@@ -560,8 +560,8 @@ static void open_level(Level *lv, W2kMenu *m, int px, int py, int flags,
         slide = menu_buffer_cached(lv->win);
     }
     if (slide) {
-        /* lib/anim.c: the painted menu as the window's background, slid
-         * in from the edge it hangs from, in a tenth of a second. */
+        /* lib/anim.c: the painted menu slid in from the edge it hangs from,
+         * in a tenth of a second, inside its own rectangle. */
         w2k_slide_in(lv->win, menu_buffer(lv->win, pw, ph), x, y, pw, ph,
                      (flags & MPOP_BOTTOMUP) != 0, 100);
     } else
@@ -739,6 +739,10 @@ static int menu_popup(W2kMenu *m, int x, int y, int flags)
                 Item *it = (idx >= 0) ? &lv[li].m->items[idx] : NULL;
                 if (it && it->sub && !it->disabled && n < MAXLEVEL) {
                     int iy = lv[li].y + w2k_px(item_y(lv[li].m, idx));
+                    /* The item lights before its submenu slides out of it:
+                     * it lit only once the slide was over. */
+                    menu_paint(lv[li].m, lv[li].win, lv[li].w, lv[li].h, lv[li].sel);
+                    XFlush(w2k.dpy);
                     open_level(&lv[n], it->sub, 0, iy, 0,
                                lv[li].x + w2k_px(lv[li].m->ix[idx] + lv[li].m->col_w),
                                lv[li].x + w2k_px(lv[li].m->ix[idx]));
@@ -819,6 +823,8 @@ static int menu_popup(W2kMenu *m, int x, int y, int flags)
                 Item *it = (top->sel >= 0) ? &top->m->items[top->sel] : NULL;
                 if (it && it->sub && !it->disabled && n < MAXLEVEL) {
                     int iy = top->y + w2k_px(item_y(top->m, top->sel));
+                    menu_paint(top->m, top->win, top->w, top->h, top->sel);   /* as on hover */
+                    XFlush(w2k.dpy);
                     open_level(&lv[n], it->sub, 0, iy, 0, top->x + top->pw, top->x);
                     lv[n].sel = next_selectable(it->sub, -1, 1);
                     n++;
@@ -831,6 +837,8 @@ static int menu_popup(W2kMenu *m, int x, int y, int flags)
                 if (it && !it->disabled) {
                     if (it->sub && n < MAXLEVEL) {
                         int iy = top->y + w2k_px(item_y(top->m, top->sel));
+                        menu_paint(top->m, top->win, top->w, top->h, top->sel);
+                        XFlush(w2k.dpy);
                         open_level(&lv[n], it->sub, 0, iy, 0, top->x + top->pw, top->x);
                         lv[n].sel = next_selectable(it->sub, -1, 1);
                         n++;
@@ -864,8 +872,12 @@ static int menu_popup(W2kMenu *m, int x, int y, int flags)
                     if (it->disabled) break;
                     top->sel = idx;
                     if (it->sub && n < MAXLEVEL) {
-                        int iy = top->y + item_y(top->m, idx);
-                        open_level(&lv[n], it->sub, 0, iy, 0, top->x + top->w, top->x);
+                        /* In screen pixels, as the other ways in: at a scale
+                         * this one put the submenu beside the wrong place. */
+                        int iy = top->y + w2k_px(item_y(top->m, idx));
+                        menu_paint(top->m, top->win, top->w, top->h, top->sel);
+                        XFlush(w2k.dpy);
+                        open_level(&lv[n], it->sub, 0, iy, 0, top->x + top->pw, top->x);
                         lv[n].sel = next_selectable(it->sub, -1, 1);
                         n++;
                         repaint = 1;

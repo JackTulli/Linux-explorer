@@ -611,20 +611,15 @@ void client_minimize(Client *c)
     /* A dialog has no task button to come back from: it stays. */
     if (c->skip_taskbar) return;
     w2k_sound_play(SND_MINIMIZE);
-    /* The window goes first, then its caption flies down to the task
-     * button, as Windows does it -- the bar used to fly over the window
-     * it had come from, which only vanished when it landed. */
+    /* Fly the wire frame down to the task button on the way out. */
     int bx, by, bw, bh;
-    int fly = c->mapped && taskbar_button_rect(c, &bx, &by, &bw, &bh);
-    int fx = c->x - client_border(c), fy = c->y - client_border(c) - client_caption_h(c);
-    int fw = client_frame_w(c), fh = client_frame_h(c);
+    if (c->mapped && taskbar_button_rect(c, &bx, &by, &bw, &bh))
+        wm_animate_rect(c->x - client_border(c),
+                        c->y - client_border(c) - client_caption_h(c),
+                        client_frame_w(c), client_frame_h(c), bx, by, bw, bh);
     c->minimized = 1;
     XUnmapWindow(w2k.dpy, c->frame);
     transients_hide(c, 1, 0);
-    if (fly) {
-        XSync(w2k.dpy, False);
-        wm_animate_rect(fx, fy, fw, fh, bx, by, bw, bh);
-    }
     wm_set_state(c->win, IconicState);
     client_publish_state(c);
     if (focused == c || !focused) {          /* or its dialog had it */

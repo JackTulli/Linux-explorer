@@ -157,31 +157,27 @@ static void outline_draw(int x, int y, int w, int h)
 
 /* Zoom a wire frame from one rectangle to another -- the animation Windows
  * plays when a window minimises to its taskbar button, and back. Each step
- * is drawn and erased, so nothing underneath needs repainting. */
-/* Between the frames of the flight: what it has uncovered of the shell's
- * own windows -- the task button, desktop icons, frames -- is painted
- * again at once, rather than left blank until it lands. */
-static void anim_exposures(void)
-{
-    XEvent e;
-    while (XCheckMaskEvent(w2k.dpy, ExposureMask, &e)) wm_handle_event(&e);
-    XFlush(w2k.dpy);
-}
-
+ * is drawn and erased, so nothing underneath needs repainting. (1.36.0
+ * flew a caption-coloured bar instead; it looked worse, and this is back.) */
 void wm_animate_rect(int fx, int fy, int fw, int fh,
                      int tx, int ty, int tw, int th)
 {
     if (!w2k_effects[FX_ANIM_MINMAX]) return;
     if (fw < 4 || fh < 4 || tw < 4 || th < 4) return;
-    /* The caption, not the whole window, is what flies (Windows 2000's
-     * IDANI_CAPTION): the rectangles become caption-high bars. */
-    int cap = w2k_px(W2K_CAPTION_H);
-    if (fh > th) fh = cap < fh ? cap : fh;
-    else         th = cap < th ? cap : th;
-    w2k_anim_frame = anim_exposures;
-    w2k_zoom_rect(fx, fy, fw, fh, tx, ty, tw, th, 150,
-                  w2k.col[C_ACTIVETITLE], w2k.col[C_ACTIVETITLE2]);
-    w2k_anim_frame = NULL;
+
+    XGrabServer(w2k.dpy);
+    for (int i = 1; i <= 7; i++) {
+        int x = fx + (tx - fx) * i / 8;
+        int y = fy + (ty - fy) * i / 8;
+        int w = fw + (tw - fw) * i / 8;
+        int h = fh + (th - fh) * i / 8;
+        outline_draw(x, y, w, h);
+        XFlush(w2k.dpy);
+        usleep(12000);
+        outline_draw(x, y, w, h);          /* drawn twice = erased */
+    }
+    XUngrabServer(w2k.dpy);
+    XFlush(w2k.dpy);
 }
 
 static void drag_loop(Client *c, int mode, int px, int py, int keyboard)
