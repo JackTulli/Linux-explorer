@@ -520,6 +520,7 @@ typedef struct {
     char runner[128];        /* "": the default; "wine"; or a build's name */
     char winver[16];         /* "": as the prefix has it; "winxp", "win7"... */
     int  wined3d, nosync, hud;
+    int  wmp;                /* Windows Media Player 9's codecs in place of Proton's */
 } W2kCompat;
 typedef struct {
     char def[128];           /* "wine", or a build's name */

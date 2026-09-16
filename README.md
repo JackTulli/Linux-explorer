@@ -262,8 +262,13 @@ under `~/.local/share/l2k/proton` and sets up a Windows for it; the first
 one installed becomes the default. A program's Properties get a
 Compatibility tab, as on Windows XP: the version of Proton (or Wine) that
 runs that program, the version of Windows it is told it runs on, from
-Windows 95 to Windows 11, and three switches for games -- OpenGL in place
-of Vulkan, esync and fsync off, the frame rate shown. Each version runs
+Windows 95 to Windows 11, and switches for games -- OpenGL in place of
+Vulkan, esync and fsync off, the frame rate shown, and Windows Media Player
+9 for sound and video. That last is for a game that is silent, or freezes
+at its music or videos, under Proton's own decoders (Halo 2's sound is all
+WMA): the first time the game runs, Windows Media Player 9 is installed in
+that version's Windows with winetricks, fetched when it is needed, and
+Proton's decoders are switched off for that game alone. Each version runs
 programs in a Windows of its own under `~/.local/share/l2k/prefixes`, and
 a program installed into one runs there whichever version runs it. Proton
 writes no Start menu entries: Versions > Open C: Drive finds what was

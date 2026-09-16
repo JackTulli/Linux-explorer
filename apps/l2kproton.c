@@ -446,42 +446,37 @@ static void setup_tick(void *u)
     w2k_win_dirty(s->w);
 }
 
-/* 0 when the Windows is ready; -1 when it was cancelled. */
-static int prepare(const Runner *r, const char *name)
+/* argv run beside a box saying `text`, with a Cancel button: its exit
+ * status, or -1 when it was cancelled. Its output goes to the log, but
+ * for standard output when `quiet`. */
+static int work_dialog(const char *text, char *const argv[], int quiet)
 {
-    char *args[] = { "/" };
-    char **v = runner_argv(r, "getcompatpath", args, 1);
     pid_t pid = fork();
-    if (pid < 0) { free(v); return 1; }
+    if (pid < 0) return 1;
     if (pid == 0) {
         setpgid(0, 0);
         stdin_null();
-        int out = open("/dev/null", O_WRONLY);
-        if (out >= 0) { dup2(out, 1); if (out > 2) close(out); }   /* the answer: not wanted */
-        execvp(v[0], v);
+        if (quiet) {
+            int out = open("/dev/null", O_WRONLY);
+            if (out >= 0) { dup2(out, 1); if (out > 2) close(out); }
+        }
+        execvp(argv[0], argv);
         _exit(127);
     }
-    free(v);
     setpgid(pid, pid);
-    unsetenv("PROTON_VERB");
 
     Setup s;
     memset(&s, 0, sizeof s);
     s.pid = pid;
     s.rc = -1;
-    if (r->umu_run[0] && !umu_runtime_present())
-        snprintf(s.text, sizeof s.text, "Downloading the Steam Runtime, and setting up Windows for %s. "
-                 "This is done once, and can take several minutes.", name);
-    else
-        snprintf(s.text, sizeof s.text, "Setting up Windows for %s. This is done once for each "
-                 "version of Proton, and takes a minute or so.", name);
+    snprintf(s.text, sizeof s.text, "%s", text);
     if (!ui()) {
         int st;
         while (waitpid(pid, &st, 0) < 0)
             if (errno != EINTR) return 1;
         return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
     }
-    s.w = w2k_win_new("Proton Manager", "l2kproton", 390, 118, 0);
+    s.w = w2k_win_new("Proton Manager", "l2kproton", 390, 132, 0);
     s.w->user = &s;
     s.w->paint = setup_paint;
     s.w->event = setup_event;
@@ -496,6 +491,130 @@ static int prepare(const Runner *r, const char *name)
         return -1;
     }
     return s.rc;
+}
+
+/* 0 when the Windows is ready; -1 when it was cancelled. */
+static int prepare(const Runner *r, const char *name)
+{
+    char *args[] = { "/" };
+    char **v = runner_argv(r, "getcompatpath", args, 1);
+    char text[400];
+    if (r->umu_run[0] && !umu_runtime_present())
+        snprintf(text, sizeof text, "Downloading the Steam Runtime, and setting up Windows for %s. "
+                 "This is done once, and can take several minutes.", name);
+    else
+        snprintf(text, sizeof text, "Setting up Windows for %s. This is done once for each "
+                 "version of Proton, and takes a minute or so.", name);
+    int rc = work_dialog(text, v, 1);       /* its answer, a path, is not wanted */
+    unsetenv("PROTON_VERB");
+    free(v);
+    return rc;
+}
+
+/* ------------------------------------------------------------------ *
+ * Windows Media Player 9 for a program
+ *
+ * Proton decodes Windows Media sound and video with its own winedmo,
+ * which some games cannot live with: Halo 2, whose every sound is WMA,
+ * spins in it for ever at its main menu. Such a program can be given
+ * Microsoft's decoders instead -- Windows Media Player 9, put into the
+ * build's Windows by winetricks, as Lutris's Halo 2 installer does --
+ * with Proton's own switched off for that program alone, along with what
+ * is built on them and would call into nothing.
+ * ------------------------------------------------------------------ */
+static const char *const wmp_disabled[] = { "winedmo", "mfasfsrcsnk", "mfsrcsnk", "mfmp4srcsnk", "iyuv_32" };
+static const char *const wmp_native[] = { "wmadmod", "wmvcore" };
+
+/* winetricks -- the latest release, fetched the first time it is wanted --
+ * and its wmp9. Everything it is given is an argument. */
+static const char wmp9_sh[] =
+    "set -u\n"
+    "data=$1 bin=$2 pfx=$3\n"
+    "wt=$data/winetricks/winetricks\n"
+    "if [ ! -x \"$wt\" ]; then\n"
+    "  mkdir -p \"$data/winetricks\" || exit 1\n"
+    "  tag=$(curl -fsSL --max-time 30 https://api.github.com/repos/Winetricks/winetricks/releases/latest |"
+    " sed -n 's/.*\"tag_name\": *\"\\([0-9A-Za-z._-]*\\)\".*/\\1/p' | head -n 1)\n"
+    "  curl -fsSL --retry 3 -o \"$wt.part\" \"https://raw.githubusercontent.com/Winetricks/winetricks/${tag:-master}/src/winetricks\" &&"
+    " chmod +x \"$wt.part\" && mv -f \"$wt.part\" \"$wt\" || { rm -f \"$wt.part\"; echo 'winetricks could not be downloaded'; exit 1; }\n"
+    "fi\n"
+    /* Proton's own WMA decoder is a link to a read-only file with a newer
+     * version than Microsoft's, and the installer only replaces older ones. */
+    "sys=$pfx/drive_c/windows/syswow64\n"
+    "if [ -L \"$sys/wmadmod.dll\" ] || head -c 128 \"$sys/wmadmod.dll\" 2>/dev/null | grep -q -a 'Wine builtin DLL'; then rm -f \"$sys/wmadmod.dll\"; fi\n"
+    "export WINEPREFIX=\"$pfx\" WINE=\"$bin/wine\" WINESERVER=\"$bin/wineserver\" WINEDEBUG=-all\n"
+    "export WINETRICKS_CACHE=\"$data/winetricks/cache\" WINETRICKS_LATEST_VERSION_CHECK=disabled\n"
+    "exec \"$wt\" -q --force wmp9\n";
+
+/* Is Microsoft's WMA decoder in the build's Windows -- not Proton's own,
+ * which says it is a builtin in its header? */
+static int wmp9_present(const Runner *r)
+{
+    char path[PATH_MAX + 64], head[128];
+    snprintf(path, sizeof path, "%s/pfx/drive_c/windows/syswow64/wmadmod.dll", r->root);
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    size_t n = fread(head, 1, sizeof head, f);
+    fclose(f);
+    static const char mark[] = "Wine builtin DLL";
+    for (size_t i = 0; i + sizeof mark - 1 <= n; i++)
+        if (!memcmp(head + i, mark, sizeof mark - 1)) return 0;
+    return n >= 64 && head[0] == 'M' && head[1] == 'Z';
+}
+
+/* 0 to stop: the program is not to be started. */
+static int wmp9_setup(const Runner *r, const char *exe, int on, const char *name)
+{
+    const char *slash = strrchr(exe, '/');
+    const char *base = slash ? slash + 1 : exe;
+    if (strlen(base) > 200 || strpbrk(base, "\\\t\n[]\"")) return 1;
+    char marker[PATH_MAX + 32], have[8];
+    snprintf(marker, sizeof marker, "%s/l2k-wmp9", r->root);
+    marker_get(marker, base, have, sizeof have);
+    int was = !strcmp(have, "1");
+
+    if (on && !wmp9_present(r)) {
+        char bin[PATH_MAX + 16], pfx[PATH_MAX + 16], text[400];
+        snprintf(bin, sizeof bin, "%s/files/bin", r->build.dir);
+        snprintf(pfx, sizeof pfx, "%s/pfx", r->root);
+        snprintf(text, sizeof text, "Installing Windows Media Player 9 in the Windows %s runs "
+                 "programs in, for %s's sound and video. This is done once.", name, base);
+        char *argv[] = { "sh", "-c", (char *)wmp9_sh, "sh", data_dir, bin, pfx, NULL };
+        int rc = work_dialog(text, argv, 0);
+        if (rc < 0) return 0;                               /* cancelled */
+        if (rc != 0 || !wmp9_present(r)) {
+            char lp[PATH_MAX], shown[PATH_MAX];
+            log_path(lp, sizeof lp);
+            place(lp, shown, sizeof shown);
+            return say(MB_YESNO | MB_ICONWARNING, "Windows Media Player 9 could not be installed, so "
+                       "%s may have no sound or video.\n\nWhat went wrong is written in %s.\n\n"
+                       "Start it anyway?", base, shown) == ID_YES;
+        }
+    }
+    if (on == was) return 1;
+
+    /* The program's own DLL overrides, in one go: a .reg file imported. */
+    char reg[PATH_MAX + 32], winpath[PATH_MAX + 40];
+    snprintf(reg, sizeof reg, "%s/l2k-wmp9.reg", r->root);
+    FILE *f = fopen(reg, "w");
+    if (!f) return 1;
+    fprintf(f, "REGEDIT4\n\n[HKEY_CURRENT_USER\\Software\\Wine\\AppDefaults\\%s\\DllOverrides]\n", base);
+    for (size_t i = 0; i < sizeof wmp_disabled / sizeof *wmp_disabled; i++)
+        fprintf(f, on ? "\"%s\"=\"\"\n" : "\"%s\"=-\n", wmp_disabled[i]);
+    for (size_t i = 0; i < sizeof wmp_native / sizeof *wmp_native; i++)
+        fprintf(f, on ? "\"%s\"=\"native\"\n" : "\"%s\"=-\n", wmp_native[i]);
+    if (fclose(f) != 0) return 1;
+    snprintf(winpath, sizeof winpath, "Z:%s", reg);
+    for (char *s = winpath; *s; s++)
+        if (*s == '/') *s = '\\';
+    char *args[] = { "reg", "import", winpath };
+    char **v = runner_argv(r, "runinprefix", args, 3);
+    int rc = run_wait(v);
+    free(v);
+    unsetenv("PROTON_VERB");
+    unlink(reg);
+    if (rc == 0) marker_set(marker, base, on ? "1" : "");
+    return 1;
 }
 
 static int ready(const Runner *r, const char *name)
@@ -560,6 +679,7 @@ static int cmd_run(const char *file, char **extra, int nextra)
     snprintf(what, sizeof what, "%s with %s", exe, r.wine ? "Wine" : name);
     to_log(what);
     if (!ready(&r, name)) return 1;
+    if (!r.wine && !wmp9_setup(&r, exe, c.wmp, name)) return 1;
     apply_winver(&r, exe, c.winver);
 
     /* Started in its own folder, as Explorer starts a program. Proton
