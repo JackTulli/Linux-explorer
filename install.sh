@@ -566,11 +566,19 @@ if [ "$DO_BUILD" = 1 ]; then
             echo "  Install them (libpam0g-dev / pam-devel) and rerun." >&2
             exit 1
         fi
-        # The PAM stack in the words this distribution's stacks use.
-        if [ -f /etc/pam.d/common-auth ]; then pamsrc=l2kdm.pam.debian
-        elif [ -f /etc/pam.d/password-auth ]; then pamsrc=l2kdm.pam.fedora
-        elif [ -f /etc/pam.d/base-auth ]; then pamsrc=l2kdm.pam.alpine
-        else pamsrc=l2kdm.pam.generic; fi
+        # The PAM stack in the words this distribution's stacks use --
+        # looked for in /usr/lib/pam.d as well as /etc/pam.d, since
+        # Linux-PAM 1.5 and later keep a distribution's own stacks there
+        # and Alpine ships its base-* ones nowhere else. Including a file
+        # that is not there refuses every password, which is what a logon
+        # screen saying the system cannot log you on usually means.
+        pamd() { [ -f "/etc/pam.d/$1" ] || [ -f "/usr/lib/pam.d/$1" ]; }
+        if pamd common-auth; then pamsrc=l2kdm.pam.debian
+        elif pamd password-auth; then pamsrc=l2kdm.pam.fedora
+        elif pamd base-auth; then pamsrc=l2kdm.pam.alpine
+        elif pamd system-login; then pamsrc=l2kdm.pam.generic
+        else pamsrc=l2kdm.pam.standalone; fi
+        say "Logon screen: PAM through ${pamsrc#l2kdm.pam.}"
         as_root install -m644 "$HERE/config/$pamsrc" /etc/pam.d/l2kdm
         as_root rm -f /etc/pam.d/w2kdm          # the name before 1.7
         # Inside a virtual machine the X server's hardware cursor is often
