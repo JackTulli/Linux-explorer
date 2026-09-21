@@ -165,6 +165,34 @@ apt_install() {
     as_root apt-get install -y $have
 }
 
+# Alpine keeps most of a desktop -- the X server and its tools, sound,
+# notifications, Wine, NetworkManager, even xterm -- in the community
+# repository, which a fresh install leaves switched off. apk then refuses
+# the whole list at once ("no such package"), so it goes on first.
+alpine_community() {
+    f=/etc/apk/repositories
+    if grep -rqs '^[^#]*/community' "$f" /etc/apk/repositories.d 2>/dev/null; then return 0; fi
+    if [ -f "$f" ] && grep -q '^[[:space:]]*#.*/community' "$f"; then
+        say "Turning on Alpine's community repository"
+        as_root sed -i 's|^[[:space:]]*#[[:space:]]*\(.*/community\)|\1|' "$f"
+    else
+        # No line to uncomment: build one from the mirror main comes from,
+        # or from this machine's own Alpine version.
+        m=$(sed -n 's|^\(https*://[^#[:space:]]*\)/main[[:space:]]*$|\1|p' "$f" 2>/dev/null | head -1)
+        if [ -z "$m" ]; then
+            v=$(sed -n 's|^\([0-9][0-9]*\.[0-9][0-9]*\).*|\1|p' /etc/alpine-release 2>/dev/null | head -1)
+            [ -n "$v" ] && m="https://dl-cdn.alpinelinux.org/alpine/v$v"
+        fi
+        if [ -z "$m" ]; then
+            echo "  (could not work out the community repository; add it to $f by hand)" >&2
+            return 0
+        fi
+        say "Adding Alpine's community repository"
+        as_root sh -c "echo '$m/community' >> '$f'"
+    fi
+    as_root apk update
+}
+
 # ------------------------------------------------------------------
 # 0. What to install
 # ------------------------------------------------------------------
@@ -304,6 +332,7 @@ if [ "$DO_DEPS" = 1 ]; then
         PKG_WIRELESS="NetworkManager bluez"
         PKG_WINDOWS="wine icoutils" ;;
     *alpine*)
+        alpine_community
         # linux-headers: build-base does not bring the kernel headers on
         # musl, and the device list reads udev over a netlink socket.
         as_root apk add build-base linux-headers libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
@@ -553,7 +582,9 @@ EOF
         if command -v usermod >/dev/null 2>&1; then
             as_root sh -c "usermod -aG video $bl_user 2>/dev/null; true"
         elif command -v addgroup >/dev/null 2>&1; then          # BusyBox
-            as_root sh -c "addgroup $bl_user video 2>/dev/null; true"
+            # Alpine has no logind to hand the seat over, so the X server
+            # startx runs wants its user in input as well as video.
+            as_root sh -c "addgroup $bl_user video 2>/dev/null; addgroup $bl_user input 2>/dev/null; true"
         fi
     fi
 fi
