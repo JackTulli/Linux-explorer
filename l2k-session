@@ -20,6 +20,19 @@ for d in "$here/bin" "$here"; do
 done
 export PATH
 
+# A session bus. A systemd machine hands every user one already
+# (dbus-user-session); an OpenRC machine -- Alpine -- hands out none, and
+# without it there are no notifications, no file chooser portal and no
+# D-Bus programs at all. Start one and run the session inside it.
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ ! -S "/run/user/$(id -u)/bus" ]; then
+    if command -v dbus-run-session >/dev/null 2>&1; then
+        exec dbus-run-session -- "$(readlink -f "$0")" "$@"
+    elif command -v dbus-launch >/dev/null 2>&1; then
+        eval "$(dbus-launch --sh-syntax --exit-with-session 2>/dev/null)" || true
+        export DBUS_SESSION_BUS_ADDRESS
+    fi
+fi
+
 LOG="${HOME:-/tmp}/.w2k/session.log"
 mkdir -p "${HOME:-/tmp}/.w2k" 2>/dev/null
 # This session's log and the last one's. Appended to for ever, it had grown
