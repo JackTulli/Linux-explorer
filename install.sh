@@ -456,6 +456,19 @@ if [ "$DO_BUILD" = 1 ]; then
         run make -C "$HERE" -s clean
         run make -C "$HERE" -s
     fi
+    # A link that failed can leave the program behind with nothing in it.
+    # make then counts it as built and never tries again, and the machine
+    # gets a desktop of nought-byte programs that start and stop in
+    # silence. One empty program means the tree cannot be trusted.
+    empty=''
+    for b in bin/l2kwm bin/l2kexplorer bin/l2kdm; do
+        if [ -f "$HERE/$b" ] && [ ! -s "$HERE/$b" ]; then empty="$empty $b"; fi
+    done
+    if [ -n "$empty" ] && [ "$DRY" != 1 ]; then
+        say "An earlier build left empty programs ($empty ); building again from nothing"
+        run make -C "$HERE" -s clean
+        run make -C "$HERE" -s
+    fi
     # Everything builds; what goes in is what this setup asked for, of the
     # programs that did build.
     want=$APPS_BASIC
@@ -467,7 +480,7 @@ if [ "$DO_BUILD" = 1 ]; then
     fi
     bins='' missing=''
     for b in $want; do
-        if [ -f "$HERE/bin/$b" ]; then bins="$bins bin/$b"; else missing="$missing $b"; fi
+        if [ -s "$HERE/bin/$b" ]; then bins="$bins bin/$b"; else missing="$missing $b"; fi
     done
     [ -z "$missing" ] || echo "  (did not build, left out:$missing)"
 
@@ -530,15 +543,17 @@ if [ "$DO_BUILD" = 1 ]; then
         # No PAM in the logon screen is usually an object left over from a
         # build made before the PAM headers were installed, not headers
         # that are missing now: build it again from nothing and look again.
-        if [ "$DRY" != 1 ] && [ "$DO_BUILD" = 1 ] && ! "$PREFIX/bin/l2kdm" --check 2>/dev/null; then
+        if [ "$DRY" != 1 ] && [ "$DO_BUILD" = 1 ] &&
+           { [ ! -s "$PREFIX/bin/l2kdm" ] || ! "$PREFIX/bin/l2kdm" --check 2>/dev/null; }; then
             say "The logon screen came out without PAM; building again from nothing"
             run make -C "$HERE" -s clean
             run make -C "$HERE" -s
             as_root make -C "$HERE" -s install PREFIX="$PREFIX" \
                 INSTALL_BINS="$bins" INSTALL_LOOKS="$WANT_LOOKS" INSTALL_SOUNDS="$sounds"
         fi
-        if [ "$DRY" != 1 ] && ! "$PREFIX/bin/l2kdm" --check 2>/dev/null; then
-            echo "  l2kdm was built without PAM (no PAM development headers); nobody could log on." >&2
+        if [ "$DRY" != 1 ] &&
+           { [ ! -s "$PREFIX/bin/l2kdm" ] || ! "$PREFIX/bin/l2kdm" --check 2>/dev/null; }; then
+            echo "  l2kdm did not build, or has no PAM (no PAM development headers); nobody could log on." >&2
             echo "  Install them (libpam0g-dev / pam-devel) and rerun." >&2
             exit 1
         fi

@@ -66,6 +66,12 @@ INSTALL_BINS   ?= $(BINS)
 INSTALL_LOOKS  ?= 1
 INSTALL_SOUNDS ?= all
 
+# A recipe that fails takes its half-written target with it. Without this
+# a link that fails leaves an empty program behind, make counts it as
+# built and never tries again, and `make install` puts the empty file in:
+# a desktop of nought-byte programs that start and stop in silence.
+.DELETE_ON_ERROR:
+
 all: $(BINS)
 
 swatch: bin/l2kswatch
