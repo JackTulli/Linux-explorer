@@ -134,6 +134,21 @@ summary() {
     fi
     echo "  Run install.sh again with those to add a part, or --setup full for all of it."
 }
+# The window managers that are running, by name. BusyBox has no pgrep
+# (Alpine), so /proc answers instead.
+wm_pids() {
+    if command -v pgrep >/dev/null 2>&1; then
+        pgrep -x l2kwm 2>/dev/null
+        pgrep -x w2kwm 2>/dev/null
+    else
+        for c in /proc/[0-9]*/comm; do
+            read -r n < "$c" 2>/dev/null || continue
+            case "$n" in
+                l2kwm|w2kwm) p=${c#/proc/}; echo "${p%/comm}" ;;
+            esac
+        done
+    fi
+}
 backup() { [ -e "$1" ] && [ ! -e "$1.pre-w2k" ] && run cp -a "$1" "$1.pre-w2k" || true; }
 # apt refuses the whole list over one unknown name, and names come and go
 # between releases (policykit-1 became polkitd); install what the archive
@@ -289,15 +304,22 @@ if [ "$DO_DEPS" = 1 ]; then
         PKG_WIRELESS="NetworkManager bluez"
         PKG_WINDOWS="wine icoutils" ;;
     *alpine*)
-        as_root apk add build-base libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+        # linux-headers: build-base does not bring the kernel headers on
+        # musl, and the device list reads udev over a netlink socket.
+        as_root apk add build-base linux-headers libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
             libxft-dev fontconfig-dev freetype-dev zlib-dev libjpeg-turbo-dev libwebp-dev libxscrnsaver-dev xrandr \
-            xset xsetroot xrdb xmessage xdg-utils zip unzip tar p7zip pulseaudio-utils \
-            xterm python3 git curl font-dejavu dbus-x11 cabextract linux-pam-dev xauth dbus-dev libnotify brightnessctl
+            xset xsetroot xrdb xmessage xdg-utils zip unzip tar p7zip pulseaudio-utils alsa-utils \
+            xterm python3 git curl font-dejavu dbus-x11 cabextract linux-pam-dev xauth dbus-dev libnotify \
+            polkit-gnome brightnessctl \
+            mesa-dev libxtst-dev libxdamage-dev libxfixes-dev libxcomposite-dev libxi-dev
         PM="as_root apk add"
-        PKG_LOOKS=""
+        # Alpine has no qt5ct or qt6ct, so Qt programs keep their own
+        # colours there; Kvantum carries the Windows 7 theme.
+        PKG_LOOKS="kvantum"
         PKG_APPS="udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g-progs"
         PKG_WIRELESS="networkmanager bluez"
-        PKG_WINDOWS="wine icoutils" ;;
+        # gcompat: Proton's own builds are glibc programs.
+        PKG_WINDOWS="wine icoutils gcompat" ;;
     *void*)
         as_root xbps-install -Sy base-devel libX11-devel libXext-devel libXrandr-devel \
             libXcursor-devel libXft-devel fontconfig-devel freetype-devel zlib-devel \
@@ -432,7 +454,7 @@ if [ "$DO_BUILD" = 1 ]; then
     # window manager restarts itself with every window kept (l2kwm
     # --restart), each session found by its l2kwm process.
     if [ "$DRY" != 1 ] && [ "$(id -u)" = 0 ]; then
-        for pid in $(pgrep -x l2kwm 2>/dev/null; pgrep -x w2kwm 2>/dev/null); do
+        for pid in $(wm_pids); do
             u=$(stat -c %U "/proc/$pid" 2>/dev/null) || continue
             disp=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^DISPLAY=//p' | head -1)
             xauth=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^XAUTHORITY=//p' | head -1)
@@ -496,9 +518,18 @@ if [ "$DO_BUILD" = 1 ]; then
             as_root systemctl enable l2kdm
             as_root systemctl set-default graphical.target >/dev/null 2>&1 || true
             echo "  l2kdm takes over the console at the next boot (or now: systemctl start l2kdm)."
+        elif command -v rc-update >/dev/null 2>&1; then
+            # OpenRC (Alpine and friends): the same job in its own words.
+            as_root sh -c "sed 's|@BINDIR@|$PREFIX/bin|' '$HERE/config/l2kdm.openrc' > /etc/init.d/l2kdm"
+            as_root chmod +x /etc/init.d/l2kdm
+            for dm in lightdm gdm sddm xdm lxdm slim greetd; do
+                as_root sh -c "rc-update del $dm default >/dev/null 2>&1; true"
+            done
+            as_root rc-update add l2kdm default
+            echo "  l2kdm takes over the console at the next boot (or now: rc-service l2kdm start)."
         else
-            echo "  No systemd here: start '$PREFIX/bin/l2kdm' as root at boot from your" >&2
-            echo "  init system (it runs in the foreground and restarts the logon screen itself)." >&2
+            echo "  No systemd or OpenRC here: start '$PREFIX/bin/l2kdm' as root at boot from" >&2
+            echo "  your init system (it runs in the foreground and puts the logon screen back)." >&2
         fi
     fi
 fi
@@ -519,7 +550,11 @@ EOF
     as_root sh -c "udevadm control --reload 2>/dev/null; udevadm trigger -s backlight -c add 2>/dev/null; true"
     bl_user=${TARGET_USER:-$USER}
     if [ -n "$bl_user" ] && [ "$bl_user" != root ] && getent group video >/dev/null 2>&1; then
-        as_root usermod -aG video "$bl_user" 2>/dev/null || true
+        if command -v usermod >/dev/null 2>&1; then
+            as_root sh -c "usermod -aG video $bl_user 2>/dev/null; true"
+        elif command -v addgroup >/dev/null 2>&1; then          # BusyBox
+            as_root sh -c "addgroup $bl_user video 2>/dev/null; true"
+        fi
     fi
 fi
 

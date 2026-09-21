@@ -108,6 +108,15 @@ update installs the same set and asks nothing. Running `install.sh
 --windows` later adds a part, and moving to a lighter setup takes the parts
 it drops back out.
 
+**On Alpine (and other musl, OpenRC machines).** It works the same way,
+with three differences the installer handles: `linux-headers` and the
+Xcomposite and GL development packages are installed (musl's `build-base`
+brings no kernel headers), the logon screen is installed as an OpenRC
+service in `/etc/init.d/l2kdm` instead of a systemd unit, and Qt programs
+keep their own colours, since Alpine packages neither `qt5ct` nor `qt6ct`
+-- GTK programs still get Chicago95 and the looks. Wine runs; Proton's own
+builds are glibc programs, so `gcompat` goes in with the Windows part.
+
 **Removing it.** Start > Programs > Accessories > System Tools > Windows
 Update, on the Welcome page, has **Remove Linux 2000**: it runs the same
 thing in a terminal in front of you, asking for your password there. By

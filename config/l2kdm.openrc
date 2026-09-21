@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+# Linux 2000's logon screen on a machine that runs OpenRC (Alpine and
+# friends), where config/l2kdm.service -- the systemd unit -- means
+# nothing. install.sh --full writes this to /etc/init.d/l2kdm with the
+# real path filled in and adds it to the default runlevel.
+#
+# l2kdm starts the X server on a virtual terminal, shows "Log On to
+# Windows" and runs the session; when the session ends it puts the logon
+# screen back up. It stays in the foreground for as long as the machine
+# is up, so it is supervised rather than daemonised, and comes back if it
+# ever dies.
+name="l2kdm"
+description="Log On to Windows: the Linux 2000 logon screen"
+command="@BINDIR@/l2kdm"
+supervisor="supervise-daemon"
+respawn_delay=2
+respawn_max=0
+export XCURSOR_THEME=Windows2000
+export XCURSOR_SIZE=32
+
+depend() {
+	need localmount
+	use dbus elogind
+	after bootmisc consolefont modules
+}

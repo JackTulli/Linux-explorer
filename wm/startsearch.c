@@ -68,7 +68,7 @@ static void search_update(SearchState *s)
     int nr = recent_load();
     for (int i = 0; i < nr && s->n < MAXRES; i++) {
         const char *l = recent_label(i);
-        if (!l || !strcasestr(l, s->query)) continue;
+        if (!l || !w2k_strcasestr(l, s->query)) continue;
         SResult *r = &s->res[s->n++];
         r->kind = SR_RECENT; r->id = i; r->alias = NULL;
         r->icon = w2k_file_icon(l, 0);

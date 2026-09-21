@@ -163,8 +163,8 @@ static int icon_for_class(const char *cls)
     if (!strcasecmp(cls, "l2kdisplay"))  return ICO_SETTINGS;
     if (!strcasecmp(cls, "l2kbluetooth")) return ICO_CP_BLUETOOTH;
     if (!strcasecmp(cls, "l2kproton"))   return ICO_PROTON;
-    if (strcasestr(cls, "term"))         return ICO_TERMINAL;
-    if (strcasestr(cls, "xcalc"))        return ICO_CALC;
+    if (w2k_strcasestr(cls, "term"))     return ICO_TERMINAL;
+    if (w2k_strcasestr(cls, "xcalc"))    return ICO_CALC;
     return ICO_APP;
 }
 

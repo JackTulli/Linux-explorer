@@ -1318,6 +1318,20 @@ void w2k_shell_quote(const char *in, char *out, int n)
     out[o] = 0;
 }
 
+/* strstr that ignores case. strcasestr itself is a GNU extension: glibc
+ * declares it, musl (Alpine) only with _GNU_SOURCE, and an undeclared
+ * function is an error to a current compiler -- so the shell carries its
+ * own, which is the same handful of lines. */
+char *w2k_strcasestr(const char *hay, const char *needle)
+{
+    if (!hay || !needle) return NULL;
+    if (!*needle) return (char *)hay;
+    size_t n = strlen(needle);
+    for (const char *p = hay; *p; p++)
+        if (!strncasecmp(p, needle, n)) return (char *)p;
+    return NULL;
+}
+
 void w2k_splice(const char *tmpl, const char *arg, char *out, int n)
 {
     const char *at = strstr(tmpl, "%s");

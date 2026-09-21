@@ -135,6 +135,18 @@ if [ "$DO_SYSTEM" = 1 ]; then
             done
         fi
     fi
+    # OpenRC (Alpine and friends): the same, in its own words.
+    if command -v rc-update >/dev/null 2>&1; then
+        as_root sh -c "rc-service l2kdm stop >/dev/null 2>&1; rc-update del l2kdm default >/dev/null 2>&1; true"
+        sdel /etc/init.d/l2kdm
+        for dm in lightdm gdm sddm xdm lxdm slim greetd; do
+            if [ -x "/etc/init.d/$dm" ]; then
+                say "Giving the console back to $dm"
+                as_root sh -c "rc-update add $dm default >/dev/null 2>&1; true"
+                break
+            fi
+        done
+    fi
     sdel /etc/pam.d/l2kdm /etc/pam.d/w2kdm
     sdel /etc/X11/xorg.conf.d/20-w2k-vm-cursor.conf
     if [ -e /etc/udev/rules.d/90-linux2000-backlight.rules ]; then
