@@ -429,10 +429,19 @@ if [ "$DO_DEPS" = 1 ] && [ "$FULL" = 1 ]; then
             xdg-user-dirs desktop-file-utils shared-mime-info polkit
         if [ "$WANT_APPS" = all ]; then as_root zypper --non-interactive install MozillaFirefox; fi ;;
     *alpine*)
-        as_root apk add xorg-server xinit xf86-video-vesa xf86-input-libinput \
+        # eudev in the same breath as the X server: the server finds its
+        # keyboard and mouse through udev, and a fresh Alpine runs mdev
+        # and answers with libudev-zero, which knows of no devices at all.
+        as_root apk add eudev xorg-server xinit xf86-video-vesa xf86-input-libinput \
             font-liberation pulseaudio pavucontrol spice-vdagent \
             xdg-user-dirs desktop-file-utils shared-mime-info polkit
-        if [ "$WANT_APPS" = all ]; then as_root apk add firefox; fi ;;
+        if [ "$WANT_APPS" = all ]; then as_root apk add firefox; fi
+        # And the machine has to be on udev, not mdev, or the desktop
+        # comes up with nothing that types.
+        if command -v setup-devd >/dev/null 2>&1 && [ ! -e /run/udev/control ]; then
+            say "Moving this machine to udev, so the X server can find the keyboard and mouse"
+            as_root setup-devd udev
+        fi ;;
     *void*)
         as_root xbps-install -Sy xorg-server xinit xf86-video-vesa \
             liberation-fonts-ttf pulseaudio pavucontrol \

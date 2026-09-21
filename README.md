@@ -109,7 +109,10 @@ update installs the same set and asks nothing. Running `install.sh
 it drops back out.
 
 **On Alpine (and other musl, OpenRC machines).** It works the same way,
-with three differences the installer handles: `linux-headers` and the
+with four differences the installer handles: the machine is moved to udev
+(`eudev`), because the X server finds its keyboard and mouse through udev
+and a fresh Alpine runs mdev and answers with `libudev-zero`, which knows
+of no devices at all -- the desktop comes up and nothing types; `linux-headers` and the
 Xcomposite and GL development packages are installed (musl's `build-base`
 brings no kernel headers), the logon screen is installed as an OpenRC
 service in `/etc/init.d/l2kdm` instead of a systemd unit, and Qt programs
