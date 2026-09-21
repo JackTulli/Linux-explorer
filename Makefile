@@ -97,7 +97,20 @@ build/lib/icon.o: lib/icon_data.inc
 # rebuilt when the commit changes.
 build/wm/wm.o build/lib/sysprops.o build/apps/linver.o: VERSION $(wildcard .git/HEAD .git/refs/heads/*)
 
-build/%.o: %.c
+# What the build found last time: PAM, D-Bus, libwebp, XScreenSaver, GLX,
+# and where it is being installed. Without this an object compiled before
+# a development package was installed keeps the feature it was compiled
+# without -- l2kdm with no PAM, which can log nobody on -- because make
+# sees no reason to build it again. The stamp is only written when the
+# answers change, so nothing is rebuilt for nothing.
+FEATURES := pam=$(if $(wildcard /usr/include/security/pam_appl.h),1,0) dbus=$(if $(shell pkg-config --exists dbus-1 2>/dev/null && echo y),1,0) webp=$(if $(shell pkg-config --exists libwebp 2>/dev/null && echo y),1,0) xss=$(if $(shell pkg-config --exists xscrnsaver 2>/dev/null && echo y),1,0) glx=$(if $(wildcard /usr/include/GL/glx.h),1,0) prefix=$(PREFIX)
+
+build/.features: .FORCE
+	@mkdir -p $(@D)
+	@printf '%s\n' '$(FEATURES)' | cmp -s - $@ || printf '%s\n' '$(FEATURES)' > $@
+.FORCE:
+
+build/%.o: %.c build/.features
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
@@ -171,5 +184,5 @@ install: all
 	        > $(DESTDIR)/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.w2k.service; \
 	else echo "(no file chooser portal: no l2kportal, or /usr/share not writable)"; fi
 
-.PHONY: all clean install uninstall swatch
+.PHONY: all clean install uninstall swatch .FORCE
 .PRECIOUS: build/apps/%.o

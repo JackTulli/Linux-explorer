@@ -527,6 +527,16 @@ if [ "$DO_BUILD" = 1 ]; then
     if [ "$FULL" = 1 ]; then
         # Our own display manager: the machine boots into "Log On to
         # Windows". LightDM and friends, if any, stand down.
+        # No PAM in the logon screen is usually an object left over from a
+        # build made before the PAM headers were installed, not headers
+        # that are missing now: build it again from nothing and look again.
+        if [ "$DRY" != 1 ] && [ "$DO_BUILD" = 1 ] && ! "$PREFIX/bin/l2kdm" --check 2>/dev/null; then
+            say "The logon screen came out without PAM; building again from nothing"
+            run make -C "$HERE" -s clean
+            run make -C "$HERE" -s
+            as_root make -C "$HERE" -s install PREFIX="$PREFIX" \
+                INSTALL_BINS="$bins" INSTALL_LOOKS="$WANT_LOOKS" INSTALL_SOUNDS="$sounds"
+        fi
         if [ "$DRY" != 1 ] && ! "$PREFIX/bin/l2kdm" --check 2>/dev/null; then
             echo "  l2kdm was built without PAM (no PAM development headers); nobody could log on." >&2
             echo "  Install them (libpam0g-dev / pam-devel) and rerun." >&2
