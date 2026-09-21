@@ -54,9 +54,9 @@ typedef struct {
     /* The Compatibility tab, for a Windows program. */
     int       compat, exe, is64;    /* exe: an .exe or .com, which can have a Windows version */
     W2kCompat was_cc;
-    int       use_runner, use_winver, wined3d, nosync, hud, wmp;
+    int       use_runner, use_winver, wined3d, nosync, hud, wmp, wow64;
     W2kCombo *runner, *winver;
-    W2kRect   use_runner_box, use_winver_box, d3d_box, sync_box, hud_box, wmp_box, manager;
+    W2kRect   use_runner_box, use_winver_box, d3d_box, sync_box, hud_box, wmp_box, wow64_box, manager;
     W2kProton pv[32];
     int       npv;
     char      def[128];             /* what runs it without a choice of its own */
@@ -286,6 +286,7 @@ static void compat_state(const Props *p, W2kCompat *c)
     c->nosync = p->nosync;
     c->hud = p->hud;
     c->wmp = p->wmp;
+    c->wow64 = p->wow64;
 }
 
 static int check_w(const char *text)
@@ -327,19 +328,23 @@ static void paint_compat(Props *p, Drawable d, W2kRect c)
 
     /* The switches are Proton's: Wine goes without them. */
     int off = !strcmp(chosen_runner(p), "wine");
-    g = (W2kRect){ x, g.y + g.h + 8, wid, 20 + 4 * (fh + 8) + 4 };
+    g = (W2kRect){ x, g.y + g.h + 8, wid, 20 + 5 * (fh + 8) + 4 };
     w2k_draw_groupbox(d, &g, "Settings");
-    static const char *const label[4] = {
+    static const char *const label[5] = {
         "Use OpenGL (WineD3D) in place of Vulkan (DXVK)",
         "Turn off esync and fsync",
         "Show the frame rate",
         /* Microsoft's decoders where Proton's hang or fail: a game with
          * no sound, or one that freezes playing music or a video. */
         "Use Windows Media Player 9 for sound and video",
+        /* Wine's new WoW64: Linux's side of things moves out of a 32-bit
+         * program's 4 GB. For a big 32-bit game that crashes, often in
+         * d3d9.dll, soon after it starts or as it loads a level. */
+        "Give a 32-bit program its full 4 GB of memory (new WoW64)",
     };
-    int *on[4] = { &p->wined3d, &p->nosync, &p->hud, &p->wmp };
-    W2kRect *box[4] = { &p->d3d_box, &p->sync_box, &p->hud_box, &p->wmp_box };
-    for (int i = 0; i < 4; i++) {
+    int *on[5] = { &p->wined3d, &p->nosync, &p->hud, &p->wmp, &p->wow64 };
+    W2kRect *box[5] = { &p->d3d_box, &p->sync_box, &p->hud_box, &p->wmp_box, &p->wow64_box };
+    for (int i = 0; i < 5; i++) {
         int by = g.y + 20 + i * (fh + 8);
         *box[i] = (W2kRect){ g.x + 12, by, check_w(label[i]), fh + 2 };
         w2k_draw_checkbox(d, g.x + 12, by, label[i], *on[i], 0, off);
@@ -580,7 +585,8 @@ static int apply(Props *p)
         compat_state(p, &now);
         if (strcmp(now.runner, p->was_cc.runner) || strcmp(now.winver, p->was_cc.winver) ||
             now.wined3d != p->was_cc.wined3d || now.nosync != p->was_cc.nosync ||
-            now.hud != p->was_cc.hud || now.wmp != p->was_cc.wmp) {
+            now.hud != p->was_cc.hud || now.wmp != p->was_cc.wmp ||
+            now.wow64 != p->was_cc.wow64) {
             if (w2k_compat_set(full, &now) != 0) {
                 w2k_msgbox(p->w, "Properties", "Unable to save the compatibility settings.",
                            MB_OK | MB_ICONERROR);
@@ -666,6 +672,8 @@ static void compat_press(Props *p, XButtonEvent *b)
         p->hud = !p->hud;
     } else if (proton && w2k_rect_hit(&p->wmp_box, x, y)) {
         p->wmp = !p->wmp;
+    } else if (proton && w2k_rect_hit(&p->wow64_box, x, y)) {
+        p->wow64 = !p->wow64;
     } else if (w2k_rect_hit(&p->manager, x, y)) {
         p->down = 4;
     }
@@ -790,6 +798,7 @@ int w2k_file_properties_page(W2kWin *over, const char *path, int page)
         p.nosync = p.was_cc.nosync;
         p.hud = p.was_cc.hud;
         p.wmp = p.was_cc.wmp;
+        p.wow64 = p.was_cc.wow64;
         p.runner = w2k_combo_new(0);
         p.winver = w2k_combo_new(0);
         fill_runners(&p, p.was_cc.runner);

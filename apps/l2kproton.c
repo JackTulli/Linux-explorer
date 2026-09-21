@@ -278,6 +278,11 @@ static void runner_env(const Runner *r, const W2kCompat *c, const W2kCompatOptio
     if (!o->fsync || (c && c->nosync)) setenv("PROTON_NO_FSYNC", "1", 1);
     if (o->nvapi) setenv("PROTON_ENABLE_NVAPI", "1", 1);
     if (o->hud || (c && c->hud)) setenv("DXVK_HUD", "fps", 1);
+    /* Wine's new WoW64 keeps Linux's own libraries, their heaps and the
+     * sound server's buffers out of a 32-bit program's 4 GB, and lets the
+     * graphics driver map into all of it. A big 32-bit game otherwise runs
+     * out of addresses, and DXVK fails where it next asks for a buffer. */
+    if (c && c->wow64) setenv("PROTON_USE_WOW64", "1", 1);
 }
 
 /* The command for `args` in the runner's Windows, with Proton's `verb`:

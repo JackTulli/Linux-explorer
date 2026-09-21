@@ -523,6 +523,7 @@ typedef struct {
     char winver[16];         /* "": as the prefix has it; "winxp", "win7"... */
     int  wined3d, nosync, hud;
     int  wmp;                /* Windows Media Player 9's codecs in place of Proton's */
+    int  wow64;              /* Wine's new WoW64: a 32-bit program's 4 GB to itself */
 } W2kCompat;
 typedef struct {
     char def[128];           /* "wine", or a build's name */

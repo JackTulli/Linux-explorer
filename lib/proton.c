@@ -298,6 +298,7 @@ static void cf_load(CompatFile *f)
             p->c.nosync = strchr(f3, 's') != NULL;
             p->c.hud = strchr(f3, 'h') != NULL;
             p->c.wmp = strchr(f3, 'm') != NULL;
+            p->c.wow64 = strchr(f3, 'x') != NULL;
         }
     }
     free(line);
@@ -324,9 +325,9 @@ static int cf_save(const CompatFile *f)
             o->dxvk, o->esync, o->fsync, o->nvapi, o->hud);
     for (int i = 0; i < f->n; i++) {
         const struct Prog *p = &f->prog[i];
-        fprintf(fp, "Program=%s\t%s\t%s%s%s%s\t%s\n", p->c.runner, p->c.winver,
+        fprintf(fp, "Program=%s\t%s\t%s%s%s%s%s\t%s\n", p->c.runner, p->c.winver,
                 p->c.wined3d ? "w" : "", p->c.nosync ? "s" : "", p->c.hud ? "h" : "",
-                p->c.wmp ? "m" : "", p->path);
+                p->c.wmp ? "m" : "", p->c.wow64 ? "x" : "", p->path);
     }
     if (ferror(fp) | fclose(fp) || rename(tmp, dest) != 0) {
         unlink(tmp);
@@ -363,7 +364,8 @@ int w2k_compat_set(const char *exe, const W2kCompat *c)
     key_of(exe, key, sizeof key);
     if (key[0] != '/' || strpbrk(key, "\t\n\r")) return -1;
     if (c && (strpbrk(c->runner, "\t\n\r") || strpbrk(c->winver, "\t\n\r"))) return -1;
-    int empty = !c || (!c->runner[0] && !c->winver[0] && !c->wined3d && !c->nosync && !c->hud && !c->wmp);
+    int empty = !c || (!c->runner[0] && !c->winver[0] && !c->wined3d && !c->nosync && !c->hud &&
+                       !c->wmp && !c->wow64);
     CompatFile f;
     cf_load(&f);
     int at = -1;
