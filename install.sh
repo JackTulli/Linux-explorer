@@ -97,6 +97,13 @@ done
 if [ "$(id -u)" = 0 ] && [ -z "$TARGET_USER" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
     TARGET_USER=$SUDO_USER
 fi
+# Run as root with nobody named -- a console login on a fresh machine --
+# the desktop is meant for the person who uses it, not for root: take the
+# first ordinary account, as the one-command install does, and say whose
+# it is. --user root sets root's own up instead.
+if [ "$(id -u)" = 0 ] && [ -z "$TARGET_USER" ] && [ "$USER_ONLY" != 1 ]; then
+    TARGET_USER=$(getent passwd 2>/dev/null | awk -F: '$3 >= 1000 && $3 < 60000 && $7 !~ /nologin|false/ { print $1; exit }')
+fi
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 run() { if [ "$DRY" = 1 ]; then echo "  + $*"; else "$@"; fi; }
@@ -133,6 +140,10 @@ summary() {
         echo "    Windows     none  (--windows adds Wine and Proton Manager)"
     fi
     echo "  Run install.sh again with those to add a part, or --setup full for all of it."
+    if [ "$FULL" != 1 ]; then
+        echo "  The boot was left alone: no logon screen, and your display manager (if any)"
+        echo "  still runs. install.sh --full installs l2kdm and boots into Log On to Windows."
+    fi
 }
 # The window managers that are running, by name. BusyBox has no pgrep
 # (Alpine), so /proc answers instead.
