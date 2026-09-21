@@ -70,8 +70,14 @@ all: $(BINS)
 
 swatch: bin/l2kswatch
 
+# Made fresh every time: `ar r` into an archive that is already there
+# keeps whatever it already held, so a half-written one from an
+# interrupted build -- or from two builds at once -- would be linked
+# against with members missing, which reads as a wall of undefined
+# references to the shell's own functions.
 $(LIB): $(LIB_OBJ)
 	@mkdir -p $(@D)
+	@rm -f $@
 	$(AR) rcs $@ $^
 
 bin/l2kwm: $(WM_OBJ) $(LIB)

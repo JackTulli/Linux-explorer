@@ -435,7 +435,16 @@ fi
 # ------------------------------------------------------------------
 if [ "$DO_BUILD" = 1 ]; then
     say "Building"
-    run make -C "$HERE" -s
+    # A build that fails in a tree with older work in it is usually
+    # something left behind -- a stale object, or a library half written
+    # by a build that was interrupted or run twice at once, which reads as
+    # a wall of undefined references -- rather than a real fault. Clear it
+    # out and try once more before giving up.
+    if ! run make -C "$HERE" -s; then
+        say "That failed; building again from nothing"
+        run make -C "$HERE" -s clean
+        run make -C "$HERE" -s
+    fi
     # Everything builds; what goes in is what this setup asked for, of the
     # programs that did build.
     want=$APPS_BASIC

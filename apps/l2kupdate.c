@@ -299,7 +299,12 @@ static void install_release(void)
         snprintf(body, sizeof body,
                  "cd %s || exit 1\n"
                  "git pull --ff-only || exit 1\n"
-                 "make -j\"$(nproc 2>/dev/null || echo 2)\" || exit 1\n"
+                 /* A stale object or a half-written library from an
+                  * interrupted build reads as a wall of undefined
+                  * references; clear it out and try once more. */
+                 "make -j\"$(nproc 2>/dev/null || echo 2)\" ||\n"
+                 "  { echo '==> That failed; building again from nothing'; make -s clean &&\n"
+                 "    make -j\"$(nproc 2>/dev/null || echo 2)\"; } || exit 1\n"
                  "as_root make install || exit 1\n"
                  "l2kwm --restart 2>/dev/null || true\n", qsrc);
     } else {
