@@ -2528,6 +2528,36 @@ static void open_logon(void)
     w2k_edit_free(ld.wall);
 }
 
+/* An applet whose program this setup did not install is not listed:
+ * install.sh can leave out Bluetooth and Wi-Fi, or every program past the
+ * basic set, and an icon that does nothing is worse than no icon. */
+static int applet_installed(const Applet *a)
+{
+    if (!a->cmd || !strcmp(a->cmd, "@startmenu")) return 1;
+    size_t n = strcspn(a->cmd, " ");
+    char prog[128];
+    if (n >= sizeof prog) return 1;
+    memcpy(prog, a->cmd, n);
+    prog[n] = 0;
+    if (strchr(prog, '/')) return access(prog, X_OK) == 0;
+    const char *path = getenv("PATH");
+    if (!path) path = "/bin:/usr/bin:/usr/local/bin";
+    char buf[512];
+    for (const char *p = path; *p; ) {
+        const char *q = strchr(p, ':');
+        size_t len = q ? (size_t)(q - p) : strlen(p);
+        if (len && len + n + 2 <= sizeof buf) {
+            memcpy(buf, p, len);
+            buf[len] = '/';
+            memcpy(buf + len + 1, prog, n + 1);
+            if (access(buf, X_OK) == 0) return 1;
+        }
+        if (!q) break;
+        p = q + 1;
+    }
+    return 0;
+}
+
 /* Rows of the Control Panel list carry their applet's index: on a desktop
  * machine Power Options is left out, so the row and the index differ. */
 static int applet_of_row(int row)
@@ -2696,6 +2726,7 @@ int main(int argc, char **argv)
     l->on_activate = on_activate;
     l->on_select = on_select;
     for (int i = 0; i < NAPPLETS; i++) {
+        if (!applet_installed(&applets[i])) continue;
         int r = w2k_list_add(l, applets[i].icon, (void *)(intptr_t)i);
         w2k_list_set(l, r, 0, applets[i].name);
     }

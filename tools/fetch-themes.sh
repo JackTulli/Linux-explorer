@@ -15,10 +15,18 @@
 # Display Properties switches to them with the look. install.sh runs this;
 # after a plain `make install`, run it yourself:
 #
-#   sh tools/fetch-themes.sh [--dry-run]
+#   sh tools/fetch-themes.sh [--dry-run] [--classic-only]
+#
+# --classic-only fetches Chicago95 and stops: what a setup with the classic
+# look alone needs.
 set -u
-DRY=0
-[ "${1:-}" = "--dry-run" ] && DRY=1
+DRY=0 CLASSIC=0
+for a in "$@"; do
+    case "$a" in
+        --dry-run) DRY=1 ;;
+        --classic-only) CLASSIC=1 ;;
+    esac
+done
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 run() { if [ "$DRY" = 1 ]; then echo "  + $*"; else "$@"; fi; }
@@ -41,6 +49,11 @@ if [ ! -d "$HOME/.themes/Chicago95" ] || { [ ! -d "$HOME/.icons/Chicago95" ] && 
     rm -rf "$tmp"
 else
     say "Chicago95 is already installed"
+fi
+
+if [ "$CLASSIC" = 1 ]; then
+    echo "  (the classic look only: the XP, Vista and 7 themes are not fetched)"
+    exit 0
 fi
 
 fetch_tgz() {   # url dest [folder]: the archive's top folder, or a folder

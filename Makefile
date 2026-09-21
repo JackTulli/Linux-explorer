@@ -59,6 +59,13 @@ APPS    := $(filter-out bin/l2kportal bin/l2kbluetooth,$(APPS))
 endif
 BINS    := bin/l2kwm $(APPS)
 
+# What `make install` puts in. Everything, unless install.sh was asked for
+# a lighter setup: the programs to install, the chrome pictures of the
+# looks, their icon sets and wallpapers, and which sound packs.
+INSTALL_BINS   ?= $(BINS)
+INSTALL_LOOKS  ?= 1
+INSTALL_SOUNDS ?= all
+
 all: $(BINS)
 
 swatch: bin/l2kswatch
@@ -94,26 +101,35 @@ clean:
 
 install: all
 	install -d $(DESTDIR)$(BINDIR)
-	install -m755 $(BINS) $(DESTDIR)$(BINDIR)
+	install -m755 $(INSTALL_BINS) $(DESTDIR)$(BINDIR)
 	install -m755 l2k-session $(DESTDIR)$(BINDIR)
 	# The programs were called w2k* until 1.7; the old names keep working
 	# (saved associations, scripts, a running w2kwm's --restart).
-	for b in $(notdir $(BINS)) l2k-session; do \
+	for b in $(notdir $(INSTALL_BINS)) l2k-session; do \
 	    ln -sfn $$b $(DESTDIR)$(BINDIR)/w2k$${b#l2k}; done
-	install -d $(DESTDIR)$(PREFIX)/share/w2k/skins
-	install -m644 skins/*.png $(DESTDIR)$(PREFIX)/share/w2k/skins
-	# The sound packs (Sounds and Multimedia in Control Panel).
-	for s in sounds/*/; do n=$$(basename $$s); \
+	# The chrome the XP, Vista and 7 looks are drawn from, their icon sets
+	# and their wallpaper: nothing the classic look alone needs.
+	@if [ "$(INSTALL_LOOKS)" = 1 ]; then set -e; \
+	    install -d $(DESTDIR)$(PREFIX)/share/w2k/skins; \
+	    install -m644 skins/*.png $(DESTDIR)$(PREFIX)/share/w2k/skins; \
+	    install -d "$(DESTDIR)$(PREFIX)/share/w2k/wallpapers"; \
+	    install -m644 wallpapers/* "$(DESTDIR)$(PREFIX)/share/w2k/wallpapers"; \
+	    for s in icons/sets/*/; do n=$$(basename $$s); \
+	        install -d $(DESTDIR)$(PREFIX)/share/w2k/icons/sets/$$n; \
+	        install -m644 $$s*.ico $(DESTDIR)$(PREFIX)/share/w2k/icons/sets/$$n; done; \
+	else echo "(classic look only: no skins, icon sets or wallpapers)"; fi
+	# The sound packs (Sounds and Multimedia in Control Panel): all of
+	# them, or Windows 2000's alone, or none.
+	@set -e; for s in sounds/*/; do n=$$(basename $$s); \
+	    case "$(INSTALL_SOUNDS)" in \
+	        all) ;; \
+	        none) continue ;; \
+	        *) [ "$$n" = "$(INSTALL_SOUNDS)" ] || continue ;; \
+	    esac; \
 	    install -d $(DESTDIR)$(PREFIX)/share/w2k/sounds/$$n; \
 	    install -m644 $$s*.wav $(DESTDIR)$(PREFIX)/share/w2k/sounds/$$n; done
-	install -d "$(DESTDIR)$(PREFIX)/share/w2k/wallpapers"
-	install -m644 wallpapers/* "$(DESTDIR)$(PREFIX)/share/w2k/wallpapers"
 	install -d $(DESTDIR)$(PREFIX)/share/w2k/cursors
 	install -m644 cursors/* $(DESTDIR)$(PREFIX)/share/w2k/cursors
-	# The switchable icon sets (Display Properties > Appearance > Icons).
-	for s in icons/sets/*/; do n=$$(basename $$s); \
-	    install -d $(DESTDIR)$(PREFIX)/share/w2k/icons/sets/$$n; \
-	    install -m644 $$s*.ico $(DESTDIR)$(PREFIX)/share/w2k/icons/sets/$$n; done
 	# A session entry for any other display manager that may be around --
 	# where that directory can be written (a user prefix cannot).
 	@if install -d $(DESTDIR)/usr/share/xsessions 2>/dev/null; then \
@@ -122,9 +138,9 @@ install: all
 	else echo "(no /usr/share/xsessions entry: not writable)"; fi
 	# Disk Management asks for the administrator through pkexec: its polkit
 	# action carries the prompt and lets the display through.
-	@if install -d $(DESTDIR)/usr/share/polkit-1/actions 2>/dev/null; then \
+	@if [ -x $(DESTDIR)$(BINDIR)/l2kdiskmgmt ] && install -d $(DESTDIR)/usr/share/polkit-1/actions 2>/dev/null; then \
 	    sed 's|@BINDIR@|$(BINDIR)|' config/org.linux2000.diskmgmt.policy.in > $(DESTDIR)/usr/share/polkit-1/actions/org.linux2000.diskmgmt.policy; \
-	else echo "(no polkit action: /usr/share/polkit-1/actions not writable)"; fi
+	else echo "(no polkit action: no l2kdiskmgmt, or /usr/share not writable)"; fi
 	# The session target that lets graphical-session.target, and with it
 	# xdg-desktop-portal, run under this desktop.
 	install -d $(DESTDIR)$(PREFIX)/share/systemd/user

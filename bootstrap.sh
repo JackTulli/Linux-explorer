@@ -13,8 +13,17 @@
 # set, Chicago95 for GTK, the Windows 2000 palette for Qt and Tahoma --
 # all of it for the first ordinary user on the machine (or W2K_USER).
 #
+# install.sh asks first what to put in -- everything, everything but Wine
+# and Proton, a light setup of the shell and the basic programs, or one
+# part at a time. W2K_SETUP answers ahead of it, which is what to use when
+# there is nobody at the keyboard:
+#
+#   export W2K_SETUP=light
+#   curl -fsSL https://jacktulli.github.io/w2k | sh
+#
 #   W2K_REPO=https://github.com/JackTulli/Linux-explorer   where to fetch from
 #   W2K_USER=name                                          who to set up
+#   W2K_SETUP=full|standard|light|custom                   what to install
 set -e
 REPO=${W2K_REPO:-https://github.com/JackTulli/Linux-explorer}
 SRC=/usr/local/src/Linux-explorer

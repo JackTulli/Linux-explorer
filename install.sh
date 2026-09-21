@@ -1,7 +1,14 @@
 #!/bin/sh
 # install.sh -- set up Linux 2000, the Windows 2000-like desktop, on any Linux.
 #
-#   ./install.sh                 everything: packages, build, install, theme
+#   ./install.sh                 asks what to install, then does it
+#   ./install.sh --setup NAME    full, standard, light or custom -- no questions
+#                                (or W2K_SETUP=name in the environment)
+#   ./install.sh --looks | --no-looks        the XP, Vista, 7 and Modern looks
+#   ./install.sh --all-apps | --basic-apps   every built-in program, or the few
+#   ./install.sh --wireless | --no-wireless  Bluetooth Devices and Wi-Fi
+#   ./install.sh --windows | --no-windows    Wine and Proton for Windows programs
+#   ./install.sh --yes           take the answers as they stand; ask nothing
 #   ./install.sh --prefix DIR    install under DIR (default /usr/local)
 #   ./install.sh --no-deps       do not touch the package manager
 #   ./install.sh --no-build      do not compile or install the binaries
@@ -27,6 +34,13 @@
 #      file manager as the folder handler; and for the machine: brightnessctl
 #      with the backlight udev rule and the video group, and a PolicyKit
 #      agent for pkexec.
+# Four parts can be left out, and are asked about at a terminal: the looks
+# besides the classic one, the programs beyond the basic ones, Bluetooth
+# and Wi-Fi, and Windows programs. What was chosen is remembered in
+# <prefix>/share/w2k/setup.conf and used again the next time, so an update
+# asks nothing; --setup or the flags above change it. A part left out is
+# also taken away, so a machine moved to the light setup keeps nothing of
+# what it had.
 # It is safe to run again; existing configuration files are backed up
 # with a .pre-w2k suffix the first time they are replaced.
 set -e
@@ -35,6 +49,21 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 PREFIX=/usr/local
 DO_DEPS=1 DO_BUILD=1 DO_THEME=1 DO_XINITRC=0 DO_TAHOMA=0 USER_ONLY=0 DRY=0 FULL=0
 TARGET_USER=''
+# What to install. CHOSE is set by a flag or the environment: then nothing
+# is asked and the last run's choice is not read back.
+SETUP=full WANT_LOOKS=1 WANT_APPS=all WANT_WIRELESS=1 WANT_WINDOWS=1 CHOSE=0 ASK=0 NOASK=0
+
+preset() {
+    case "$1" in
+        full)     WANT_LOOKS=1 WANT_APPS=all   WANT_WIRELESS=1 WANT_WINDOWS=1 ;;
+        standard) WANT_LOOKS=1 WANT_APPS=all   WANT_WIRELESS=1 WANT_WINDOWS=0 ;;
+        light)    WANT_LOOKS=0 WANT_APPS=basic WANT_WIRELESS=0 WANT_WINDOWS=0 ;;
+        custom)   ASK=1 ;;
+        *) echo "install.sh: unknown setup '$1' (full, standard, light, custom)" >&2; exit 2 ;;
+    esac
+    SETUP=$1
+}
+if [ -n "${W2K_SETUP:-}" ]; then preset "$W2K_SETUP"; CHOSE=1; fi
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -46,9 +75,19 @@ while [ $# -gt 0 ]; do
         --xinitrc) DO_XINITRC=1 ;;
         --user-only) USER_ONLY=1; DO_DEPS=0; DO_BUILD=0 ;;
         --full) FULL=1 ;;
+        --setup) preset "$2"; CHOSE=1; shift ;;
+        --looks) WANT_LOOKS=1; SETUP=custom; CHOSE=1 ;;
+        --no-looks) WANT_LOOKS=0; SETUP=custom; CHOSE=1 ;;
+        --all-apps) WANT_APPS=all; SETUP=custom; CHOSE=1 ;;
+        --basic-apps) WANT_APPS=basic; SETUP=custom; CHOSE=1 ;;
+        --wireless) WANT_WIRELESS=1; SETUP=custom; CHOSE=1 ;;
+        --no-wireless) WANT_WIRELESS=0; SETUP=custom; CHOSE=1 ;;
+        --windows) WANT_WINDOWS=1; SETUP=custom; CHOSE=1 ;;
+        --no-windows) WANT_WINDOWS=0; SETUP=custom; CHOSE=1 ;;
+        --yes|-y) NOASK=1 ;;
         --user) TARGET_USER=$2; shift ;;
         --dry-run) DRY=1 ;;
-        -h|--help) sed -n 2,26p "$0"; exit 0 ;;
+        -h|--help) sed -n '2,${/^#/!q;p;}' "$0"; exit 0 ;;
         *) echo "install.sh: unknown option $1" >&2; exit 2 ;;
     esac
     shift
@@ -67,6 +106,34 @@ as_root() {
     elif command -v doas >/dev/null 2>&1; then run doas "$@"
     else echo "install.sh: need root for: $*" >&2; exit 1; fi
 }
+summary() {
+    echo "  This setup: $SETUP"
+    if [ "$WANT_LOOKS" = 1 ]; then
+        echo "    Looks       classic, XP, Vista, Windows 7 (Aero) and Modern"
+    else
+        echo "    Looks       the classic colour schemes only  (--looks adds the rest)"
+    fi
+    if [ "$WANT_APPS" = all ]; then
+        echo "    Programs    all of them"
+    else
+        echo "    Programs    Explorer, Notepad, Calculator, Task Manager, Control"
+        echo "                Panel, Display, Windows Update  (--all-apps adds Paint,"
+        echo "                Imaging, Character Map, Device Manager, Disk Management)."
+        echo "                What is not installed is greyed in the Start menu and"
+        echo "                left out of Control Panel."
+    fi
+    if [ "$WANT_WIRELESS" = 1 ]; then
+        echo "    Wireless    Wi-Fi and Bluetooth Devices"
+    else
+        echo "    Wireless    none  (--wireless adds Wi-Fi and Bluetooth Devices)"
+    fi
+    if [ "$WANT_WINDOWS" = 1 ]; then
+        echo "    Windows     Wine, and Proton Manager for games"
+    else
+        echo "    Windows     none  (--windows adds Wine and Proton Manager)"
+    fi
+    echo "  Run install.sh again with those to add a part, or --setup full for all of it."
+}
 backup() { [ -e "$1" ] && [ ! -e "$1.pre-w2k" ] && run cp -a "$1" "$1.pre-w2k" || true; }
 # apt refuses the whole list over one unknown name, and names come and go
 # between releases (policykit-1 became polkitd); install what the archive
@@ -84,12 +151,90 @@ apt_install() {
 }
 
 # ------------------------------------------------------------------
+# 0. What to install
+# ------------------------------------------------------------------
+SETUP_FILE="$PREFIX/share/w2k/setup.conf"
+
+# The programs. The basic ones are the shell and what a desktop is not a
+# desktop without; the rest are asked about.
+APPS_BASIC="l2kwm l2kexplorer l2knotepad l2kcalc l2ktaskmgr l2kcontrol l2kdisplay l2kupdate l2knotify linver"
+APPS_EXTRA="l2kpaint l2kimage l2ksnip l2kcharmap l2kdevmgmt l2kdiskmgmt l2kpicker l2kportal l2kscaler l2kdm"
+APPS_WIRELESS="l2knetwork l2kbluetooth"
+APPS_WINDOWS="l2kproton"
+
+# A terminal to ask at: /dev/tty is there but cannot be opened when the
+# script runs with no controlling terminal (cloud-init, a container), and
+# then nothing is asked.
+# (in a subshell: a redirection that fails on a special built-in like :
+# would end the script itself, silently.)
+have_tty() { ( : < /dev/tty ) 2>/dev/null && ( : > /dev/tty ) 2>/dev/null; }
+
+ask_yn() {      # question default(y|n): 0 for yes
+    if [ "$2" = y ]; then _p='[Y/n]'; else _p='[y/N]'; fi
+    printf '  %s %s ' "$1" "$_p" > /dev/tty
+    read -r _a < /dev/tty || _a=''
+    [ -n "$_a" ] || _a=$2
+    case "$_a" in [Yy]*) return 0 ;; *) return 1 ;; esac
+}
+
+ask_setup() {
+    cat > /dev/tty <<'MENU'
+
+  What would you like installed?
+
+    1. Everything  every look, every program, Bluetooth and Wi-Fi, and
+                   Windows programs through Wine and Proton
+    2. Standard    every look and program, without Wine and Proton
+    3. Light       the shell and the basic programs -- Explorer, Notepad,
+                   Calculator, Task Manager, Control Panel, Display
+                   Properties, Windows Update -- and the classic look alone
+    4. Choose      answer for each part
+
+MENU
+    printf '  Which one? [1] ' > /dev/tty
+    read -r _n < /dev/tty || _n=''
+    case "$_n" in
+        2) preset standard ;;
+        3) preset light ;;
+        4) SETUP=custom
+           ask_yn "The XP, Vista, Windows 7 (Aero) and Modern looks, with their wallpapers, sounds, icon sets and themes for other programs?" y || WANT_LOOKS=0
+           ask_yn "Every built-in program -- Paint, Imaging, Snipping Tool, Character Map, Device Manager, Disk Management?" y || WANT_APPS=basic
+           ask_yn "Bluetooth Devices and Wi-Fi?" y || WANT_WIRELESS=0
+           ask_yn "Windows programs, through Wine and Proton Manager?" y || WANT_WINDOWS=0 ;;
+        *) preset full ;;
+    esac
+}
+
+# The user's own pass is told what to do by the root pass; otherwise the
+# choice comes from the flags, the last run, or the question.
+if [ "$USER_ONLY" != 1 ]; then
+    if [ "$CHOSE" = 0 ] && [ -r "$SETUP_FILE" ]; then
+        while IFS='=' read -r k v; do
+            case "$k" in
+                SETUP) SETUP=$v ;; LOOKS) WANT_LOOKS=$v ;; APPS) WANT_APPS=$v ;;
+                WIRELESS) WANT_WIRELESS=$v ;; WINDOWS) WANT_WINDOWS=$v ;;
+            esac
+        done < "$SETUP_FILE"
+        say "Keeping the $SETUP setup chosen last time (--setup changes it)"
+    elif [ "$CHOSE" = 0 ] && [ "$NOASK" = 0 ] && have_tty; then
+        ask_setup
+    elif [ "$ASK" = 1 ]; then
+        if have_tty; then ask_setup
+        else echo "install.sh: --setup custom needs a terminal to ask at" >&2; exit 2; fi
+    fi
+fi
+
+# ------------------------------------------------------------------
 # 1. Packages
 # ------------------------------------------------------------------
 if [ "$DO_DEPS" = 1 ]; then
     . /etc/os-release 2>/dev/null || true
     fam="$ID $ID_LIKE"
     say "Installing packages for ${PRETTY_NAME:-this system}"
+    # The first list is what the build needs and what every setup uses. The
+    # four after it belong to the parts that can be left out, and are put in
+    # further down with PM, which is how this system installs a package.
+    PM='' PKG_LOOKS='' PKG_APPS='' PKG_WIRELESS='' PKG_WINDOWS=''
     case "$fam" in
     *debian*|*ubuntu*)
         as_root apt-get update
@@ -97,50 +242,73 @@ if [ "$DO_DEPS" = 1 ]; then
             libxcursor-dev libxft-dev libfontconfig1-dev libfreetype-dev zlib1g-dev \
             libjpeg-dev libwebp-dev libxss-dev x11-xserver-utils x11-utils xdg-utils zip unzip tar p7zip-full \
             pulseaudio-utils alsa-utils xterm python3 git curl fonts-dejavu-core dbus-x11 \
-            cabextract qt5ct qt6ct libpam0g-dev xauth libdbus-1-dev libnotify-bin \
-            qt5-style-plugins qt-style-kvantum lxpolkit brightnessctl \
-            xserver-xephyr xvfb libgl1-mesa-dev libxtst-dev libxdamage-dev libxfixes-dev libxcomposite-dev libxi-dev \
-            wine icoutils udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g bluez ;;
+            cabextract libpam0g-dev xauth libdbus-1-dev libnotify-bin lxpolkit brightnessctl \
+            xserver-xephyr xvfb libgl1-mesa-dev libxtst-dev libxdamage-dev libxfixes-dev libxcomposite-dev libxi-dev
+        PM=apt_install
+        PKG_LOOKS="qt5ct qt6ct qt5-style-plugins qt-style-kvantum"
+        PKG_APPS="udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g"
+        PKG_WIRELESS="network-manager rfkill bluez"
+        PKG_WINDOWS="wine icoutils" ;;
     *fedora*|*rhel*|*centos*|*rocky*|*alma*)
         # strict=0: a name this release no longer has is skipped, not fatal.
         as_root dnf install -y --setopt=strict=0 gcc make libX11-devel libXext-devel libXrandr-devel \
             libXcursor-devel libXft-devel fontconfig-devel freetype-devel zlib-devel \
             libjpeg-turbo-devel libwebp-devel libXScrnSaver-devel xrandr xset xsetroot xrdb xmessage xdg-utils zip unzip \
             tar p7zip p7zip-plugins pulseaudio-utils alsa-utils xterm python3 git curl \
-            dejavu-sans-fonts dbus-x11 cabextract qt5ct qt6ct pam-devel xorg-x11-xauth dbus-devel libnotify \
-            qt5-qtstyleplugins kvantum kvantum-qt5 lxpolkit brightnessctl \
-            xorg-x11-server-Xephyr xorg-x11-server-Xvfb mesa-libGL-devel libXtst-devel libXdamage-devel libXfixes-devel libXcomposite-devel libXi-devel \
-            wine icoutils udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfsprogs bluez ;;
+            dejavu-sans-fonts dbus-x11 cabextract pam-devel xorg-x11-xauth dbus-devel libnotify \
+            lxpolkit brightnessctl \
+            xorg-x11-server-Xephyr xorg-x11-server-Xvfb mesa-libGL-devel libXtst-devel libXdamage-devel libXfixes-devel libXcomposite-devel libXi-devel
+        PM="as_root dnf install -y --setopt=strict=0"
+        PKG_LOOKS="qt5ct qt6ct qt5-qtstyleplugins kvantum kvantum-qt5"
+        PKG_APPS="udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfsprogs"
+        PKG_WIRELESS="NetworkManager bluez"
+        PKG_WINDOWS="wine icoutils" ;;
     *arch*|*manjaro*|*endeavouros*)
         # -Syu, never -Sy: a refreshed database with an unrefreshed system
         # is the partial upgrade Arch warns about.
         as_root pacman -Syu --needed --noconfirm base-devel libx11 libxext libxrandr \
             libxcursor libxft fontconfig freetype2 zlib libjpeg-turbo libwebp libxss xorg-xrandr \
             xorg-xset xorg-xsetroot xorg-xrdb xorg-xmessage xdg-utils zip unzip tar \
-            p7zip libpulse alsa-utils xterm python git curl ttf-dejavu dbus cabextract qt5ct qt6ct pam xorg-xauth libnotify \
-            kvantum kvantum-qt5 polkit-gnome brightnessctl \
-            xorg-server-xephyr xorg-server-xvfb mesa libxtst libxdamage libxfixes libxcomposite libxi \
-            wine icoutils udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g bluez bluez-utils ;;
+            p7zip libpulse alsa-utils xterm python git curl ttf-dejavu dbus cabextract pam xorg-xauth libnotify \
+            polkit-gnome brightnessctl \
+            xorg-server-xephyr xorg-server-xvfb mesa libxtst libxdamage libxfixes libxcomposite libxi
+        PM="as_root pacman -S --needed --noconfirm"
+        PKG_LOOKS="qt5ct qt6ct kvantum kvantum-qt5"
+        PKG_APPS="udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g"
+        PKG_WIRELESS="networkmanager rfkill bluez bluez-utils"
+        PKG_WINDOWS="wine icoutils" ;;
     *suse*)
         as_root zypper --non-interactive install gcc make libX11-devel libXext-devel \
             libXrandr-devel libXcursor-devel libXft-devel fontconfig-devel \
             freetype2-devel zlib-devel libjpeg8-devel libwebp-devel libXss-devel xrandr xset xsetroot xrdb xmessage \
             xdg-utils zip unzip tar p7zip-full pulseaudio-utils alsa-utils xterm python3 git curl \
-            dejavu-fonts dbus-1-x11 cabextract qt5ct qt6ct pam-devel xauth dbus-1-devel libnotify-tools brightnessctl \
-            udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g ntfsprogs ;;
+            dejavu-fonts dbus-1-x11 cabextract pam-devel xauth dbus-1-devel libnotify-tools brightnessctl
+        PM="as_root zypper --non-interactive install"
+        PKG_LOOKS="qt5ct qt6ct"
+        PKG_APPS="udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g ntfsprogs"
+        PKG_WIRELESS="NetworkManager bluez"
+        PKG_WINDOWS="wine icoutils" ;;
     *alpine*)
         as_root apk add build-base libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
             libxft-dev fontconfig-dev freetype-dev zlib-dev libjpeg-turbo-dev libwebp-dev libxscrnsaver-dev xrandr \
             xset xsetroot xrdb xmessage xdg-utils zip unzip tar p7zip pulseaudio-utils \
-            xterm python3 git curl font-dejavu dbus-x11 cabextract linux-pam-dev xauth dbus-dev libnotify brightnessctl \
-            udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g-progs ;;
+            xterm python3 git curl font-dejavu dbus-x11 cabextract linux-pam-dev xauth dbus-dev libnotify brightnessctl
+        PM="as_root apk add"
+        PKG_LOOKS=""
+        PKG_APPS="udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g-progs"
+        PKG_WIRELESS="networkmanager bluez"
+        PKG_WINDOWS="wine icoutils" ;;
     *void*)
         as_root xbps-install -Sy base-devel libX11-devel libXext-devel libXrandr-devel \
             libXcursor-devel libXft-devel fontconfig-devel freetype-devel zlib-devel \
             libjpeg-turbo-devel libwebp-devel libXScrnSaver-devel xrandr xset xsetroot xrdb xmessage xdg-utils zip unzip \
             tar p7zip pulseaudio-utils xterm python3 git curl dejavu-fonts-ttf dbus \
-            cabextract qt5ct qt6ct pam-devel xauth dbus-devel libnotify brightnessctl \
-            udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g ;;
+            cabextract pam-devel xauth dbus-devel libnotify brightnessctl
+        PM="as_root xbps-install -Sy"
+        PKG_LOOKS="qt5ct qt6ct"
+        PKG_APPS="udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g"
+        PKG_WIRELESS="NetworkManager bluez"
+        PKG_WINDOWS="wine icoutils" ;;
     *)
         echo "install.sh: I do not know this distribution's package manager." >&2
         echo "  Install: a C compiler and make; the development packages for X11," >&2
@@ -149,6 +317,24 @@ if [ "$DO_DEPS" = 1 ]; then
         echo "  p7zip, pulseaudio-utils, python3, git, curl. Then rerun with --no-deps." >&2
         exit 1 ;;
     esac
+
+    # The packages behind the parts that were asked for. A name this
+    # distribution does not have is said and passed over, never fatal.
+    opt_pkgs() {
+        _what=$1; shift
+        [ "$#" -gt 0 ] || return 0
+        say "Installing what $_what needs"
+        # shellcheck disable=SC2086
+        $PM "$@" || echo "  (this system does not have all of these, carrying on)"
+    }
+    # shellcheck disable=SC2086
+    if [ "$WANT_LOOKS" = 1 ]; then opt_pkgs "the other looks" $PKG_LOOKS; fi
+    # shellcheck disable=SC2086
+    if [ "$WANT_APPS" = all ]; then opt_pkgs "disks, formatting and the portal dialogs" $PKG_APPS; fi
+    # shellcheck disable=SC2086
+    if [ "$WANT_WIRELESS" = 1 ]; then opt_pkgs "Wi-Fi and Bluetooth" $PKG_WIRELESS; fi
+    # shellcheck disable=SC2086
+    if [ "$WANT_WINDOWS" = 1 ]; then opt_pkgs "Windows programs" $PKG_WINDOWS; fi
 fi
 
 # --full: what a system with no desktop at all still needs -- the X server,
@@ -161,30 +347,35 @@ if [ "$DO_DEPS" = 1 ] && [ "$FULL" = 1 ]; then
         apt_install xserver-xorg xinit xserver-xorg-video-all \
             xserver-xorg-input-all xfonts-base \
             fonts-liberation pulseaudio pavucontrol alsa-utils spice-vdagent \
-            xdg-user-dirs desktop-file-utils shared-mime-info firefox-esr firefox \
-            polkitd pkexec policykit-1 dbus-user-session ;;
+            xdg-user-dirs desktop-file-utils shared-mime-info \
+            polkitd pkexec policykit-1 dbus-user-session
+        if [ "$WANT_APPS" = all ]; then apt_install firefox-esr firefox; fi ;;
     *fedora*|*rhel*|*centos*|*rocky*|*alma*)
         as_root dnf install -y --setopt=strict=0 xorg-x11-server-Xorg xorg-x11-xinit xorg-x11-drivers \
             liberation-fonts pulseaudio-utils pavucontrol \
-            spice-vdagent xdg-user-dirs desktop-file-utils shared-mime-info firefox \
-            polkit ;;
+            spice-vdagent xdg-user-dirs desktop-file-utils shared-mime-info polkit
+        if [ "$WANT_APPS" = all ]; then as_root dnf install -y --setopt=strict=0 firefox; fi ;;
     *arch*|*manjaro*|*endeavouros*)
         as_root pacman -Syu --needed --noconfirm xorg-server xorg-xinit xf86-video-vesa \
             xf86-video-vmware xf86-video-qxl \
             ttf-liberation pipewire pipewire-pulse pavucontrol spice-vdagent \
-            xdg-user-dirs desktop-file-utils shared-mime-info firefox polkit ;;
+            xdg-user-dirs desktop-file-utils shared-mime-info polkit
+        if [ "$WANT_APPS" = all ]; then as_root pacman -S --needed --noconfirm firefox; fi ;;
     *suse*)
         as_root zypper --non-interactive install xorg-x11-server xinit \
             liberation-fonts pulseaudio pavucontrol spice-vdagent \
-            xdg-user-dirs desktop-file-utils shared-mime-info MozillaFirefox polkit ;;
+            xdg-user-dirs desktop-file-utils shared-mime-info polkit
+        if [ "$WANT_APPS" = all ]; then as_root zypper --non-interactive install MozillaFirefox; fi ;;
     *alpine*)
         as_root apk add xorg-server xinit xf86-video-vesa xf86-input-libinput \
             font-liberation pulseaudio pavucontrol spice-vdagent \
-            xdg-user-dirs desktop-file-utils shared-mime-info firefox polkit ;;
+            xdg-user-dirs desktop-file-utils shared-mime-info polkit
+        if [ "$WANT_APPS" = all ]; then as_root apk add firefox; fi ;;
     *void*)
         as_root xbps-install -Sy xorg-server xinit xf86-video-vesa \
             liberation-fonts-ttf pulseaudio pavucontrol \
-            spice-vdagent xdg-user-dirs desktop-file-utils shared-mime-info firefox polkit ;;
+            spice-vdagent xdg-user-dirs desktop-file-utils shared-mime-info polkit
+        if [ "$WANT_APPS" = all ]; then as_root xbps-install -Sy firefox; fi ;;
     esac
 fi
 
@@ -194,10 +385,49 @@ fi
 if [ "$DO_BUILD" = 1 ]; then
     say "Building"
     run make -C "$HERE" -s
+    # Everything builds; what goes in is what this setup asked for, of the
+    # programs that did build.
+    want=$APPS_BASIC
+    if [ "$WANT_APPS" = all ]; then want="$want $APPS_EXTRA"; fi
+    if [ "$WANT_WIRELESS" = 1 ]; then want="$want $APPS_WIRELESS"; fi
+    if [ "$WANT_WINDOWS" = 1 ]; then want="$want $APPS_WINDOWS"; fi
+    if [ "$FULL" = 1 ]; then
+        case " $want " in *" l2kdm "*) ;; *) want="$want l2kdm" ;; esac
+    fi
+    bins='' missing=''
+    for b in $want; do
+        if [ -f "$HERE/bin/$b" ]; then bins="$bins bin/$b"; else missing="$missing $b"; fi
+    done
+    [ -z "$missing" ] || echo "  (did not build, left out:$missing)"
+
+    # A part left out is taken away as well, so a machine moved to a
+    # lighter setup keeps nothing of what it had. Before make install,
+    # which puts the polkit action and the portal files in only for the
+    # programs that are there.
+    for b in $APPS_BASIC $APPS_EXTRA $APPS_WIRELESS $APPS_WINDOWS; do
+        case " $want " in *" $b "*) continue ;; esac
+        if [ -e "$PREFIX/bin/$b" ]; then
+            as_root rm -f "$PREFIX/bin/$b" "$PREFIX/bin/w2k${b#l2k}"
+            case "$b" in
+                l2kdiskmgmt) as_root rm -f /usr/share/polkit-1/actions/org.linux2000.diskmgmt.policy ;;
+                l2kportal) as_root rm -f /usr/share/xdg-desktop-portal/portals/w2k.portal \
+                    /usr/share/xdg-desktop-portal/w2k-portals.conf \
+                    /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.w2k.service ;;
+            esac
+        fi
+    done
+
+    if [ "$WANT_LOOKS" = 1 ]; then sounds=all; else sounds=win2000; fi
     say "Installing under $PREFIX"
-    as_root make -C "$HERE" -s install PREFIX="$PREFIX"
+    as_root make -C "$HERE" -s install PREFIX="$PREFIX" \
+        INSTALL_BINS="$bins" INSTALL_LOOKS="$WANT_LOOKS" INSTALL_SOUNDS="$sounds"
     as_root install -d "$PREFIX/share/w2k/cursors"
     as_root sh -c "install -m644 '$HERE'/cursors/* '$PREFIX/share/w2k/cursors/'"
+    # What was chosen, for the next run and for anyone wondering later.
+    as_root sh -c "printf '%s\n' '# What install.sh put in. Run it again with --setup full,' \
+        '# --setup light or --setup custom to change this.' \
+        'SETUP=$SETUP' 'LOOKS=$WANT_LOOKS' 'APPS=$WANT_APPS' \
+        'WIRELESS=$WANT_WIRELESS' 'WINDOWS=$WANT_WINDOWS' > '$SETUP_FILE'"
     # A desktop that is running picks the new build up in place: the
     # window manager restarts itself with every window kept (l2kwm
     # --restart), each session found by its l2kwm process.
@@ -299,12 +529,14 @@ if [ "$(id -u)" = 0 ] && [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != root ]; th
     say "Configuring for $TARGET_USER"
     opts="--user-only"
     [ "$DO_THEME" = 1 ] || opts="$opts --no-theme"
+    [ "$WANT_LOOKS" = 1 ] || opts="$opts --no-looks"
     [ "$DO_TAHOMA" = 1 ] && opts="$opts --tahoma"
     [ "$DO_XINITRC" = 1 ] && opts="$opts --xinitrc"
     [ "$DRY" = 1 ] && opts="$opts --dry-run"
     run su -s /bin/sh "$TARGET_USER" -c "cd '$HERE' && ./install.sh $opts --prefix '$PREFIX'"
     run su -s /bin/sh "$TARGET_USER" -c "xdg-user-dirs-update >/dev/null 2>&1 || true"
     say "Done. Reboot, or: systemctl start l2kdm"
+    summary
     exit 0
 fi
 
@@ -345,8 +577,11 @@ fi
 # the Windows 7 Kvantum theme -- come from tools/fetch-themes.sh, which
 # fetches nothing twice and can be run on its own after a `make install`.
 if [ "$DO_THEME" = 1 ]; then
-    if [ "$DRY" = 1 ]; then sh "$HERE/tools/fetch-themes.sh" --dry-run
-    else sh "$HERE/tools/fetch-themes.sh"; fi
+    tflags=''
+    [ "$WANT_LOOKS" = 1 ] || tflags="--classic-only"
+    [ "$DRY" != 1 ] || tflags="$tflags --dry-run"
+    # shellcheck disable=SC2086
+    sh "$HERE/tools/fetch-themes.sh" $tflags
 fi
 
 # GTK 2, 3 and 4: the theme, the icons, the cursor, the font.
@@ -383,6 +618,7 @@ if [ "$DO_XINITRC" = 1 ]; then
 fi
 
 say "Done: $("$PREFIX/bin/l2kwm" --version 2>/dev/null || echo "l2kwm installed")"
+if [ "$USER_ONLY" != 1 ]; then summary; fi
 echo "  Start it with:  startx $PREFIX/bin/l2k-session"
 echo "  or pick \"Windows 2000\" in your display manager. Explorer becomes the"
 echo "  folder handler for other programs the first time the shell runs."

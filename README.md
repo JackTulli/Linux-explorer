@@ -19,7 +19,8 @@ openSUSE, Alpine or Void), as root:
 
     curl -fsSL https://jacktulli.github.io/w2k | sh
 
-That is the whole install. It fetches this repository into
+That is the whole install. It asks first what to put in -- everything, or
+a lighter setup (below) -- then fetches this repository into
 `/usr/local/src`, installs the X server, sound, VM guest tools and Firefox,
 builds and installs the shell, and sets up the first ordinary user (or
 `W2K_USER=name`). Reboot and the machine comes up in **Log On to Windows**,
@@ -76,6 +77,36 @@ happen. `--full` adds the X server and l2kdm and *disables your current
 display manager for the next boot*, so the machine then logs on through
 Log On to Windows; leave it out to keep GDM, LightDM or SDDM and just pick
 the session there.
+
+**Choosing what goes in.** Either way it is run, the installer asks before
+it starts:
+
+    1. Everything  every look, every program, Bluetooth and Wi-Fi, and
+                   Windows programs through Wine and Proton
+    2. Standard    every look and program, without Wine and Proton
+    3. Light       the shell and the basic programs -- Explorer, Notepad,
+                   Calculator, Task Manager, Control Panel, Display
+                   Properties, Windows Update -- and the classic look alone
+    4. Choose      answer for each part
+
+The four parts that can be left out are the looks besides the classic
+colour schemes (XP, Vista, Windows 7 Aero and Modern, with their
+wallpapers, icon sets, sound packs and the matching GTK, Qt and Kvantum
+themes), the programs beyond the basic set (Paint, Imaging, Snipping Tool,
+Character Map, Device Manager, Disk Management, the file picker and the
+portal), Wi-Fi and Bluetooth Devices (NetworkManager, bluez), and Windows
+programs (Wine, and Proton Manager for games). Light is about 17 MB
+installed against 49 MB for everything, and asks for none of those
+packages.
+
+Answer ahead of time with `--setup full|standard|light|custom`, or a part
+at a time with `--looks`/`--no-looks`, `--all-apps`/`--basic-apps`,
+`--wireless`/`--no-wireless` and `--windows`/`--no-windows`; before the
+one-command install, `export W2K_SETUP=light` does the same. What was
+chosen is kept in `/usr/local/share/w2k/setup.conf` and used again, so an
+update installs the same set and asks nothing. Running `install.sh
+--windows` later adds a part, and moving to a lighter setup takes the parts
+it drops back out.
 
 **By hand:** the build needs a C compiler, make, and the development
 packages for X11, Xext, Xrandr, Xcursor, Xft, fontconfig, freetype, zlib
