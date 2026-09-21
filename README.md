@@ -108,6 +108,26 @@ update installs the same set and asks nothing. Running `install.sh
 --windows` later adds a part, and moving to a lighter setup takes the parts
 it drops back out.
 
+**Removing it.** Start > Programs > Accessories > System Tools > Windows
+Update, on the Welcome page, has **Remove Linux 2000**: it runs the same
+thing in a terminal in front of you, asking for your password there. By
+hand:
+
+    sh /usr/local/share/w2k/uninstall.sh          # or ./uninstall.sh in the source
+
+It takes off the programs, the logon screen and its service, the session
+entry, the portal and polkit files, the cursor theme, everything under
+`/usr/local/share/w2k`, and for the user running it `~/.w2k`, the GTK and
+Qt settings, Explorer as the folder handler, Tahoma and the themes the
+looks use -- putting back every file it had replaced, and giving the
+console back to whichever display manager the install had stood down.
+`--dry-run` says what would go without touching anything; `--keep-config`
+keeps `~/.w2k`, `--keep-themes` the fetched themes, `--sources` also
+deletes `/usr/local/src/Linux-explorer`, and `--games` also deletes the
+Wine and Proton prefixes (which are kept by default, since a game lives in
+one). The packages your distribution installed stay; remove those with the
+package manager.
+
 **By hand:** the build needs a C compiler, make, and the development
 packages for X11, Xext, Xrandr, Xcursor, Xft, fontconfig, freetype, zlib
 and libjpeg (Debian: `build-essential libx11-dev libxext-dev libxrandr-dev
@@ -462,6 +482,7 @@ turned into the `Windows2000` Xcursor theme by `tools/gencursortheme.py`.
     config/          GTK/Qt settings, the l2kdm service and PAM stacks
     tools/           icon and cursor-theme baking, development helpers
     install.sh       the installer; bootstrap.sh the one-command form
+    uninstall.sh     takes it all off again (Windows Update has a button)
 
 ## Audits
 

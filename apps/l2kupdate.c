@@ -21,15 +21,18 @@
 #ifndef W2K_VERSION
 #define W2K_VERSION "?"
 #endif
+#ifndef W2K_PREFIX
+#define W2K_PREFIX "/usr/local"
+#endif
 
 #define WIN_W    640
-#define WIN_H    480
+#define WIN_H    556
 #define BANNER_H 58
 #define NAV_W    160
 #define MAX_LINES 24
 
 enum { SEC_WELCOME, SEC_PRODUCT, SEC_SUPPORT, N_SEC };
-enum { BTN_NONE, BTN_CHECK, BTN_INSTALL, BTN_SYS_CHECK, BTN_SYS_INSTALL };
+enum { BTN_NONE, BTN_CHECK, BTN_INSTALL, BTN_SYS_CHECK, BTN_SYS_INSTALL, BTN_REMOVE };
 
 typedef struct { char text[160]; int link; W2kRect r; } Line;
 
@@ -39,7 +42,7 @@ static struct {
     int      section;
     int      down;                      /* button pressed, BTN_* */
     W2kRect  nav[N_SEC];
-    W2kRect  check, install, sys_check, sys_install;
+    W2kRect  check, install, sys_check, sys_install, remove;
     /* Facts */
     char     version[64], build[32];
     char     latest[32];                /* "" until checked */
@@ -347,6 +350,60 @@ static void install_system(void)
     run_in_terminal("Installing system updates", body);
 }
 
+/* Where uninstall.sh is: beside the source it was built from, or the copy
+ * make install leaves under the prefix. */
+static int uninstaller(char *out, int n)
+{
+    char p[1200];
+    if (up.source[0]) {
+        snprintf(p, sizeof p, "%.1000s/uninstall.sh", up.source);
+        if (access(p, R_OK) == 0) { snprintf(out, (size_t)n, "%s", p); return 1; }
+    }
+    snprintf(p, sizeof p, "%s/share/w2k/uninstall.sh", W2K_PREFIX);
+    if (access(p, R_OK) == 0) { snprintf(out, (size_t)n, "%s", p); return 1; }
+    return 0;
+}
+
+/* Take the whole thing off the machine: the programs, the logon screen,
+ * this user's settings and the themes that came with the looks. It runs
+ * in a terminal like everything else here, so the password is asked for
+ * in front of you and the list of what went can be read. */
+static void remove_everything(void)
+{
+    char script[1200];
+    if (!uninstaller(script, sizeof script)) {
+        w2k_msgbox(up.win, "Remove Linux 2000",
+                   "uninstall.sh was not found beside the source or under "
+                   W2K_PREFIX "/share/w2k.\n\n"
+                   "It comes with the source: clone the project and run "
+                   "sh uninstall.sh there.", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    /* A message box holds twelve lines; the terminal gives the long list. */
+    if (w2k_msgbox(up.win, "Remove Linux 2000",
+                   "This takes Linux 2000 off this computer: the programs, the logon "
+                   "screen, everything under " W2K_PREFIX "/share/w2k, your settings in "
+                   "~/.w2k and the themes installed for the looks. Files it replaced are "
+                   "put back; your Wine and Proton prefixes and your distribution's "
+                   "packages are kept.\n\n"
+                   "The desktop you are using is one of the programs it removes -- log "
+                   "out when it has finished.\n\n"
+                   "Remove it?", MB_YESNO | MB_ICONWARNING) != ID_YES)
+        return;
+
+    /* Run from a copy: the script deletes the place it lives in. */
+    char qs[2500], body[3000];
+    w2k_shell_quote(script, qs, sizeof qs);
+    snprintf(body, sizeof body,
+             "tmp=$(mktemp) || exit 1\n"
+             "cat %s > \"$tmp\" || exit 1\n"
+             "sh \"$tmp\" --yes --sources --prefix '%s'\n"
+             "rc=$?\n"
+             "rm -f \"$tmp\"\n"
+             "exit $rc\n", qs, W2K_PREFIX);
+    run_in_terminal("Removing Linux 2000", body);
+}
+
 /* ---- The page ---------------------------------------------------------- */
 static void link_add(const char *text, int x, int y)
 {
@@ -482,6 +539,16 @@ static void paint(W2kWin *w, Drawable d)
         }
         y += 12;
         link_add("What's new in each release", x, y);
+        y += 24;
+        w2k_hline(d, x, y, maxw, C_SHADOW); y += 10;
+        y += heading(d, x, y, "Remove Linux 2000");
+        y += para(d, x, y, maxw,
+                  "Takes the desktop off this computer and puts back the files it "
+                  "replaced -- for testing an install from scratch. Your Wine and Proton "
+                  "prefixes stay.") + 8;
+        up.remove = (W2kRect){ x, y, 150, 23 };
+        w2k_draw_pushbutton(d, &up.remove, "&Remove Linux 2000...",
+                            up.down == BTN_REMOVE ? BS_PRESSED : 0);
         break;
 
     case SEC_PRODUCT:
@@ -573,6 +640,7 @@ static int event(W2kWin *w, XEvent *e)
         if (up.section == SEC_WELCOME) {
             if (w2k_rect_hit(&up.check, x, y)) up.down = BTN_CHECK;
             else if (up.newer && w2k_rect_hit(&up.install, x, y)) up.down = BTN_INSTALL;
+            else if (w2k_rect_hit(&up.remove, x, y)) up.down = BTN_REMOVE;
         } else if (up.section == SEC_PRODUCT) {
             if (w2k_rect_hit(&up.sys_check, x, y)) up.down = BTN_SYS_CHECK;
             else if (w2k_rect_hit(&up.sys_install, x, y)) up.down = BTN_SYS_INSTALL;
@@ -588,6 +656,7 @@ static int event(W2kWin *w, XEvent *e)
         else if (b == BTN_INSTALL && w2k_rect_hit(&up.install, x, y)) install_release();
         else if (b == BTN_SYS_CHECK && w2k_rect_hit(&up.sys_check, x, y)) check_system();
         else if (b == BTN_SYS_INSTALL && w2k_rect_hit(&up.sys_install, x, y)) install_system();
+        else if (b == BTN_REMOVE && w2k_rect_hit(&up.remove, x, y)) remove_everything();
         w2k_win_dirty(w);
         return 1;
     }

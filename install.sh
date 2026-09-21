@@ -622,3 +622,5 @@ if [ "$USER_ONLY" != 1 ]; then summary; fi
 echo "  Start it with:  startx $PREFIX/bin/l2k-session"
 echo "  or pick \"Windows 2000\" in your display manager. Explorer becomes the"
 echo "  folder handler for other programs the first time the shell runs."
+echo "  To take it all off again: sh $PREFIX/share/w2k/uninstall.sh"
+echo "  (or Windows Update > Remove Linux 2000)."

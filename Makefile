@@ -99,6 +99,12 @@ clean:
 	rm -rf build bin
 	rm -f $(LIB)
 
+# Take it off the machine: the installed copy does the work, so this
+# works from a checkout of any age. UNINSTALL_FLAGS passes --keep-config,
+# --sources, --games and the rest through.
+uninstall:
+	@sh uninstall.sh --prefix $(PREFIX) $(UNINSTALL_FLAGS)
+
 install: all
 	install -d $(DESTDIR)$(BINDIR)
 	install -m755 $(INSTALL_BINS) $(DESTDIR)$(BINDIR)
@@ -130,6 +136,9 @@ install: all
 	    install -m644 $$s*.wav $(DESTDIR)$(PREFIX)/share/w2k/sounds/$$n; done
 	install -d $(DESTDIR)$(PREFIX)/share/w2k/cursors
 	install -m644 cursors/* $(DESTDIR)$(PREFIX)/share/w2k/cursors
+	# Taking it all off again, from here or from the Remove button in
+	# Windows Update, on a machine that has no source tree.
+	install -m755 uninstall.sh $(DESTDIR)$(PREFIX)/share/w2k/uninstall.sh
 	# A session entry for any other display manager that may be around --
 	# where that directory can be written (a user prefix cannot).
 	@if install -d $(DESTDIR)/usr/share/xsessions 2>/dev/null; then \
@@ -156,5 +165,5 @@ install: all
 	        > $(DESTDIR)/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.w2k.service; \
 	else echo "(no file chooser portal: no l2kportal, or /usr/share not writable)"; fi
 
-.PHONY: all clean install swatch
+.PHONY: all clean install uninstall swatch
 .PRECIOUS: build/apps/%.o
