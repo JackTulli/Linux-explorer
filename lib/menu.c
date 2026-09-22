@@ -143,19 +143,22 @@ static int item_h(W2kMenu *m, Item *it)
     return sz == 32 ? BIG_ITEM_H : sz == 24 ? 26 : ITEM_H;
 }
 
-/* Windows 2000 set its Start menu out wider than Windows 98: a 22-pixel
- * banner, the text 42 in from the item's edge, and 20 for the arrow
- * gutter (measured off a 640x480 capture); the desktop offers both. */
+/* Windows 2000 set its Start menu out wider than Windows 98. Measured
+ * off a capture of the real menu at 1:1: the whole menu is 96 pixels
+ * wider than its longest label -- a 3-pixel border, a 21-pixel banner,
+ * the text 43 in from the item's edge, 26 of gutter after the text, and
+ * the border again; the submenu arrow stands 11 in from the right edge
+ * and the icon 30 from the left. The desktop offers both widths. */
 static int wide(W2kMenu *m) { return m->banner && w2k_start_width; }
 static int icon_col(W2kMenu *m)
 {
     int sz = menu_icon(m);
     if (sz == 16) return ICON_COL;
     if (sz == 24) return wide(m) ? 34 : 30;
-    return wide(m) ? 42 : BIG_ICON_COL;
+    return wide(m) ? 43 : BIG_ICON_COL;
 }
-static int banner_w(W2kMenu *m) { return m->banner ? (w2k_start_width ? 22 : BANNER_W) : 0; }
-static int arrow_col(W2kMenu *m) { return menu_big(m) && wide(m) ? 20 : ARROW_COL; }
+static int banner_w(W2kMenu *m) { return m->banner ? BANNER_W : 0; }
+static int arrow_col(W2kMenu *m) { return menu_big(m) && wide(m) ? 26 : ARROW_COL; }
 
 static void menu_layout(W2kMenu *m)
 {
@@ -419,7 +422,9 @@ static void menu_paint(W2kMenu *m, Window win, int w, int h, int sel)
             w2k_fill(pm, left, iy, w - left, ih, C_HIGHLIGHT);
 
         int isz = menu_icon(m);
-        int ix = left + (icol - isz) / 2, icy = iy + (ih - isz) / 2;
+        /* Rounded up, which is where Windows 2000 puts a 32-pixel icon
+         * in its 43-wide column: 6 in, not 5. */
+        int ix = left + (icol - isz + 1) / 2, icy = iy + (ih - isz) / 2;
         if (it->checked && it->icon < 0) {
             /* A checked item without an icon gets a sunken, dithered well. */
             w2k_dither(pm, left + 1, iy + 1, icol - 2, ih - 2, C_HILIGHT, C_FACE);
@@ -452,7 +457,8 @@ static void menu_paint(W2kMenu *m, Window win, int w, int h, int sel)
             w2k_text(pm, F_UI, w - ARROW_COL / 2 -
                      w2k_text_width(F_UI, it->accel, -1), ty, it->accel, tcol);
         if (it->sub)
-            draw_arrow(pm, w - 9, iy + ih / 2 - 3, tcol);
+            draw_arrow(pm, w - (wide(m) && menu_big(m) ? 8 : 9),
+                       iy + ih / 2 - 3, tcol);
     }
 
     XCopyArea(w2k.dpy, pm, win, w2k.gc, 0, 0, (unsigned)w2k_px(w),
