@@ -40,13 +40,20 @@ void w2k_input_apply(void)
         XSetPointerMapping(w2k.dpy, map, n);
     }
 
-    /* Pointer speed. The slider is 1..10 with 4 as "no acceleration";
-     * above that the numerator rises, below it the threshold does. */
-    int accel = w2k_mouse_speed < 1 ? 1 : w2k_mouse_speed > 10 ? 10
-                                                               : w2k_mouse_speed;
-    XChangePointerControl(w2k.dpy, True, True,
-                          accel <= 4 ? 1 : accel - 3, 1,
-                          accel <= 4 ? 12 - accel * 2 : 4);
+    /* Pointer speed and acceleration, which Windows keeps apart: the
+     * speed scales every movement, the acceleration decides how much
+     * further a fast one goes. X has one mechanism for both -- a
+     * numerator over a denominator, past a threshold -- so the speed
+     * sets the ratio and the acceleration sets the threshold, with
+     * "None" turning the server's acceleration off altogether. */
+    int sp = w2k_mouse_speed < 1 ? 1 : w2k_mouse_speed > 10 ? 10 : w2k_mouse_speed;
+    int ac = w2k_mouse_accel < 0 ? 0 : w2k_mouse_accel > 3 ? 3 : w2k_mouse_accel;
+    if (ac == 0) {
+        XChangePointerControl(w2k.dpy, True, True, sp, 4, 0);
+    } else {
+        static const int thresh[4] = { 0, 8, 4, 2 };   /* sooner is more */
+        XChangePointerControl(w2k.dpy, True, True, sp, 4, thresh[ac]);
+    }
 
     /* Auto-repeat. XKB takes milliseconds for both; the applet thinks in
      * characters per second for the rate, as the Windows dialog does. */

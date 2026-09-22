@@ -278,7 +278,9 @@ void w2k_accel_reset(void)
  * are what the X server is told (see lib/input.c), not just decoration. */
 int w2k_dblclk_ms = 500;        /* double-click speed */
 int w2k_mouse_swap;             /* left-handed button order */
-int w2k_mouse_speed = 4;        /* pointer acceleration, 1..10 */
+int w2k_mouse_speed = 4;        /* pointer speed, 1..10 */
+int w2k_mouse_accel = 1;        /* acceleration: 0 none, 1 low, 2 medium, 3 high */
+int w2k_snap_default;           /* put the pointer on a dialog's default button */
 int w2k_key_delay = 500;        /* auto-repeat delay, ms */
 int w2k_key_rate = 30;          /* auto-repeat rate, characters/second */
 int w2k_caret_blink = 530;      /* caret blink half-period, ms */
@@ -533,6 +535,8 @@ void w2k_scheme_reset(void)
     w2k_dblclk_ms = 500;
     w2k_mouse_swap = 0;
     w2k_mouse_speed = 4;
+    w2k_mouse_accel = 1;
+    w2k_snap_default = 0;
     w2k_key_delay = 500;
     w2k_key_rate = 30;
     w2k_caret_blink = 530;
@@ -849,6 +853,8 @@ int w2k_scheme_load(const char *path)
                 { "DoubleClickTime", &w2k_dblclk_ms,     100, 2000 },
                 { "MouseSwap",       &w2k_mouse_swap,      0,    1 },
                 { "MouseSpeed",      &w2k_mouse_speed,     1,   10 },
+                { "MouseAccel",      &w2k_mouse_accel,     0,    3 },
+                { "SnapToDefault",   &w2k_snap_default,    0,    1 },
                 { "KeyRepeatDelay",  &w2k_key_delay,     100, 2000 },
                 { "KeyRepeatRate",   &w2k_key_rate,        2,   50 },
                 { "CaretBlink",      &w2k_caret_blink,   100, 2000 },
@@ -1094,6 +1100,8 @@ static void write_scheme(FILE *f)
     fprintf(f, "DoubleClickTime=%d\n", w2k_dblclk_ms);
     fprintf(f, "MouseSwap=%d\n", w2k_mouse_swap);
     fprintf(f, "MouseSpeed=%d\n", w2k_mouse_speed);
+    fprintf(f, "MouseAccel=%d\n", w2k_mouse_accel);
+    fprintf(f, "SnapToDefault=%d\n", w2k_snap_default);
     fprintf(f, "KeyRepeatDelay=%d\n", w2k_key_delay);
     fprintf(f, "KeyRepeatRate=%d\n", w2k_key_rate);
     fprintf(f, "CaretBlink=%d\n", w2k_caret_blink);

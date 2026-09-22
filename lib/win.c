@@ -1072,6 +1072,15 @@ int w2k_msgbox(W2kWin *over, const char *title, const char *text, int flags)
                     PropModeReplace, (unsigned char *)&t, 1);
     if (over) XSetTransientForHint(w2k.dpy, w->win, over->win);
 
+    /* "Move pointer to the default button in dialog boxes", from Mouse
+     * Properties: Windows puts the pointer on the button Enter would
+     * press, and so does this. */
+    if (w2k_snap_default && m.nbtn > 0) {
+        XWarpPointer(w2k.dpy, None, w->win, 0, 0, 0, 0,
+                     w2k_px(m.btn[0].x + m.btn[0].w / 2),
+                     w2k_px(m.btn[0].y + m.btn[0].h / 2));
+        XFlush(w2k.dpy);
+    }
     int r = w2k_win_modal(w);
     for (int i = 0; i < m.nlines; i++) free(m.lines[i]);
     return r;

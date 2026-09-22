@@ -623,42 +623,479 @@ static void input_run(InputDlg *id, int height)
     w2k_win_modal(w);
 }
 
-static void mouse_commit(InputDlg *id)
+/* ---- Mouse Properties ----------------------------------------------- *
+ * Windows 2000's four tabs, in its own order: Buttons, Pointers, Motion
+ * and Hardware. What each one sets is real -- the button order and the
+ * pointer speed go into the X server (lib/input.c), the double-click
+ * time and the click-to-open rule into the shell's settings, and the
+ * pointers into the cursor set in ~/.w2k/cursors. */
+enum { MT_BUTTONS, MT_POINTERS, MT_MOTION, MT_HARDWARE };
+enum { MP_NONE, MP_OK, MP_CANCEL, MP_APPLY, MP_SAVEAS, MP_DELETE,
+       MP_USEDEF, MP_BROWSE };
+
+typedef struct {
+    W2kWin   *win;
+    W2kTabs  *tabs;
+    int       down;
+    W2kRect   ok, cancel, apply;
+
+    /* Buttons */
+    int       swap, single;
+    W2kSlider dbl;
+    W2kRect   r_right, r_left, r_single, r_double, test;
+    int       test_open;
+
+    /* Pointers */
+    W2kCombo *scheme;
+    W2kList  *roles;
+    int       shadow;
+    W2kRect   r_shadow, saveas, del, usedef, browse, preview;
+    int       icon_of[16];
+
+    /* Motion */
+    W2kSlider speed;
+    int       accel, snap;
+    W2kRect   r_accel[4], r_snap;
+
+    /* Hardware */
+    W2kList  *devs;
+} MouseDlg;
+
+/* The pointer of one role as a picture the list can draw: the .cur file
+ * is an icon file in all but name, so the icon loader reads it. */
+static int role_icon(int r)
 {
-    w2k_mouse_swap = id->sel_radio == 1;
-    /* The slider counts up as "faster", which is a shorter interval. */
-    w2k_dblclk_ms = 900 - id->sl[0].s.pos * 70;
-    w2k_mouse_speed = id->sl[1].s.pos;
-    w2k_effects[FX_CURSOR_SHADOW] = id->chk[0].on &&
-                                    w2k_effect_supported(FX_CURSOR_SHADOW);
-    w2k_cursors_windows = id->chk[1].on;
+    int id = w2k_cursor_role_icon(r);
+    return id < 0 ? ICO_NONE : id;
+}
+
+static void mouse_fill_roles(MouseDlg *m)
+{
+    w2k_list_clear(m->roles);
+    int n = w2k_cursor_roles();
+    for (int r = 0; r < n && r < 16; r++) {
+        m->icon_of[r] = role_icon(r);
+        int row = w2k_list_add(m->roles, ICO_NONE, (void *)(intptr_t)r);
+        w2k_list_set(m->roles, row, 0, w2k_cursor_role_label(r));
+    }
+}
+
+/* The pointing devices the kernel knows about, for the Hardware tab. */
+static void mouse_fill_devices(MouseDlg *m)
+{
+    w2k_list_clear(m->devs);
+    FILE *f = fopen("/proc/bus/input/devices", "r");
+    if (!f) return;
+    char line[512], name[128] = "";
+    while (fgets(line, sizeof line, f)) {
+        if (!strncmp(line, "N: Name=", 8)) {
+            char *q = strchr(line + 8, '"');
+            if (q) {
+                char *e = strchr(q + 1, '"');
+                if (e) *e = 0;
+                snprintf(name, sizeof name, "%.127s", q + 1);
+            }
+        } else if (!strncmp(line, "H: Handlers=", 12) && name[0]) {
+            if (strstr(line, "mouse") || strstr(line, "event") == NULL) {
+                if (strstr(line, "mouse")) {
+                    int row = w2k_list_add(m->devs, ICO_CP_MOUSE, NULL);
+                    w2k_list_set(m->devs, row, 0, name);
+                    w2k_list_set(m->devs, row, 1, "Mice and other pointing devices");
+                }
+            }
+            name[0] = 0;
+        }
+    }
+    fclose(f);
+    if (!m->devs->n) {
+        int row = w2k_list_add(m->devs, ICO_CP_MOUSE, NULL);
+        w2k_list_set(m->devs, row, 0, "Pointing device");
+        w2k_list_set(m->devs, row, 1, "Mice and other pointing devices");
+    }
+}
+
+/* The mouse on the Buttons tab, with the button that selects picked out:
+ * Windows drew a bitmap; this draws the same shape. */
+static void draw_mouse(Drawable d, int x, int y, int left_handed)
+{
+    /* A mouse seen from above: the body is an oval, the two buttons sit
+     * in its top half with the wheel between them, and the one that
+     * selects is filled in, as the bitmap in Windows 2000 shows it. */
+    const int w = 44, h = 58;
+    int cx = x + w / 2, cy = y + h / 2;
+    for (int row = 0; row < h; row++) {
+        double t = (row - h / 2.0) / (h / 2.0);
+        double k = 1.0 - t * t * (row < h / 2 ? 0.55 : 0.30);  /* narrower at the top */
+        if (k < 0) k = 0;
+        int half = (int)((w / 2.0) * (k > 1 ? 1 : k));
+        if (half <= 0) continue;
+        int fy = y + row;
+        w2k_fill_rgb(d, cx - half, fy, half * 2, 1, 255, 255, 255);
+        w2k_fill_rgb(d, cx - half, fy, 1, 1, 0, 0, 0);          /* outline */
+        w2k_fill_rgb(d, cx + half - 1, fy, 1, 1, 0, 0, 0);
+        if (row == 0 || row == h - 1)
+            w2k_fill_rgb(d, cx - half, fy, half * 2, 1, 0, 0, 0);
+        /* The button half that selects, shaded down to the split. */
+        if (row > 1 && row < 24) {
+            int bx = left_handed ? cx + 1 : cx - half + 1;
+            int bw = half - 2;
+            if (bw > 0) w2k_fill_rgb(d, bx, fy, bw, 1, 0, 0, 128);
+        }
+    }
+    w2k_hline(d, cx - w / 2 + 2, y + 24, w - 4, 0);              /* the split */
+    w2k_vline(d, cx, y + 1, 23, 0);
+    w2k_fill_rgb(d, cx - 3, y + 6, 6, 12, 224, 224, 224);        /* the wheel */
+    w2k_edge(d, cx - 4, y + 5, 8, 14, EDGE_SUNKEN_THIN, BF_RECT);
+    w2k_vline(d, cx, y - 8, 8, 0);                               /* the cable */
+}
+
+/* The Test area's jack-in-the-box: shut, then open on a double-click. */
+static void draw_jack(Drawable d, const W2kRect *r, int open)
+{
+    int bx = r->x + r->w / 2 - 12, by = r->y + r->h - 26;
+    if (open) {
+        w2k_fill_rgb(d, bx + 4, by - 20, 16, 20, 192, 0, 192);   /* the jack */
+        w2k_fill_rgb(d, bx + 8, by - 26, 8, 8, 255, 255, 0);
+    }
+    w2k_fill_rgb(d, bx, by, 24, 22, 214, 170, 0);                 /* the box */
+    w2k_edge(d, bx, by, 24, 22, EDGE_RAISED, BF_RECT);
+    if (!open) w2k_hline(d, bx + 2, by + 4, 20, C_SHADOW);
+}
+
+static void mouse_paint(W2kWin *w, Drawable d)
+{
+    MouseDlg *m = w->user;
+    int fh = w2k_font_height(F_UI);
+    w2k_tabs_draw(d, m->tabs);
+    W2kRect c = w2k_tabs_client(m->tabs);
+    int x = c.x + 10, gw = c.w - 20;
+
+    if (m->tabs->sel == MT_BUTTONS) {
+        W2kRect g = { x, c.y + 10, gw, 136 };
+        w2k_draw_groupbox(d, &g, "Button configuration");
+        m->r_right = (W2kRect){ x + 16, c.y + 30, 110, fh + 4 };
+        m->r_left  = (W2kRect){ x + 140, c.y + 30, 110, fh + 4 };
+        w2k_draw_radio(d, m->r_right.x, m->r_right.y, "&Right-handed", !m->swap, 0, 0);
+        w2k_draw_radio(d, m->r_left.x, m->r_left.y, "&Left-handed", m->swap, 0, 0);
+        draw_mouse(d, c.x + c.w / 2 - 23, c.y + 56, m->swap);
+        int ly = c.y + 62;
+        w2k_text(d, F_UI, x + 16, ly, "Left Button:", C_TEXT);
+        w2k_text(d, F_UI, x + 22, ly + fh + 4,
+                 m->swap ? "- Context Menu" : "- Normal Select", C_TEXT);
+        w2k_text(d, F_UI, x + 22, ly + 2 * fh + 6,
+                 m->swap ? "- Special Drag" : "- Normal Drag", C_TEXT);
+        int rx = x + gw - 120;
+        w2k_text(d, F_UI, rx, ly, "Right Button:", C_TEXT);
+        w2k_text(d, F_UI, rx + 6, ly + fh + 4,
+                 m->swap ? "- Normal Select" : "- Context Menu", C_TEXT);
+        w2k_text(d, F_UI, rx + 6, ly + 2 * fh + 6,
+                 m->swap ? "- Normal Drag" : "- Special Drag", C_TEXT);
+
+        W2kRect g2 = { x, c.y + 156, gw, 74 };
+        w2k_draw_groupbox(d, &g2, "Files and Folders");
+        w2k_bigicon_draw(d, x + 14, c.y + 178, ICO_FOLDER);
+        m->r_single = (W2kRect){ x + 56, c.y + 176, gw - 70, fh + 4 };
+        m->r_double = (W2kRect){ x + 56, c.y + 200, gw - 70, fh + 4 };
+        w2k_draw_radio(d, m->r_single.x, m->r_single.y,
+                       "&Single-click to open an item (point to select)",
+                       m->single, 0, 0);
+        w2k_draw_radio(d, m->r_double.x, m->r_double.y,
+                       "&Double-click to open an item (single-click to select)",
+                       !m->single, 0, 0);
+
+        W2kRect g3 = { x, c.y + 240, gw, 92 };
+        w2k_draw_groupbox(d, &g3, "Double-click speed");
+        w2k_text(d, F_UI, x + 16, c.y + 296, "Slow", C_TEXT);
+        w2k_slider_draw(d, &m->dbl);
+        w2k_text(d, F_UI, m->dbl.r.x + m->dbl.r.w + 8, c.y + 296, "Fast", C_TEXT);
+        w2k_text(d, F_UI, x + gw - 104, c.y + 262, "Test area:", C_TEXT);
+        w2k_draw_well(d, &m->test);
+        draw_jack(d, &m->test, m->test_open);
+
+    } else if (m->tabs->sel == MT_POINTERS) {
+        W2kRect g = { x, c.y + 10, gw, 92 };
+        w2k_draw_groupbox(d, &g, "Scheme");
+        w2k_combo_draw(d, m->scheme);
+        w2k_draw_pushbutton(d, &m->saveas, "Save &As...",
+                            m->down == MP_SAVEAS ? BS_PRESSED : 0);
+        w2k_draw_pushbutton(d, &m->del, "&Delete",
+                            BS_DISABLED | (m->down == MP_DELETE ? BS_PRESSED : 0));
+        w2k_draw_well(d, &m->preview);
+        {   /* the pointer the list is on, at its own size */
+            int row = m->roles->sel >= 0 ? m->roles->sel : 0;
+            int ic = (row >= 0 && row < 16) ? m->icon_of[row] : ICO_NONE;
+            if (ic != ICO_NONE)
+                w2k_bigicon_draw(d, m->preview.x + m->preview.w / 2 - 16,
+                                 m->preview.y + m->preview.h / 2 - 16, ic);
+        }
+        w2k_text(d, F_UI, x, c.y + 112, "Customize:", C_TEXT);
+        w2k_list_draw(d, m->roles);
+        /* Each pointer at the right of its own row, where Windows shows
+         * it; the list itself draws icons on the left. */
+        for (int i = m->roles->top; i < m->roles->n; i++) {
+            int ry = m->roles->r.y + 2 + m->roles->hdr_h +
+                     (i - m->roles->top) * m->roles->row_h;
+            if (ry + m->roles->row_h > m->roles->r.y + m->roles->r.h - 2) break;
+            if (i < 16 && m->icon_of[i] != ICO_NONE)
+                w2k_icon_draw_scaled(d, m->roles->r.x + m->roles->r.w - 44,
+                                     ry + (m->roles->row_h - 24) / 2, m->icon_of[i], 24);
+        }
+        w2k_draw_checkbox(d, m->r_shadow.x, m->r_shadow.y,
+                          "&Enable pointer shadow", m->shadow, 0,
+                          !w2k_effect_supported(FX_CURSOR_SHADOW));
+        w2k_draw_pushbutton(d, &m->usedef, "&Use Default",
+                            m->down == MP_USEDEF ? BS_PRESSED : 0);
+        w2k_draw_pushbutton(d, &m->browse, "&Browse...",
+                            m->down == MP_BROWSE ? BS_PRESSED : 0);
+
+    } else if (m->tabs->sel == MT_MOTION) {
+        W2kRect g = { x, c.y + 10, gw, 92 };
+        w2k_draw_groupbox(d, &g, "Speed");
+        w2k_bigicon_draw(d, x + 14, c.y + 30, ICO_CP_MOUSE);
+        w2k_text(d, F_UI, x + 56, c.y + 38, "Adjust how fast your pointer moves", C_TEXT);
+        w2k_text(d, F_UI, x + 56, c.y + 74, "Slow", C_TEXT);
+        w2k_slider_draw(d, &m->speed);
+        w2k_text(d, F_UI, m->speed.r.x + m->speed.r.w + 8, c.y + 74, "Fast", C_TEXT);
+
+        W2kRect g2 = { x, c.y + 112, gw, 100 };
+        w2k_draw_groupbox(d, &g2, "Acceleration");
+        w2k_bigicon_draw(d, x + 14, c.y + 132, ICO_CP_MOUSE);
+        w2k_text(d, F_UI, x + 56, c.y + 136, "Adjust how much your pointer accelerates as", C_TEXT);
+        w2k_text(d, F_UI, x + 56, c.y + 136 + fh + 2, "you move it faster", C_TEXT);
+        static const char *const an[4] = { "&None", "&Low", "&Medium", "&High" };
+        for (int i = 0; i < 4; i++)
+            w2k_draw_radio(d, m->r_accel[i].x, m->r_accel[i].y, an[i],
+                           m->accel == i, 0, 0);
+
+        W2kRect g3 = { x, c.y + 222, gw, 74 };
+        w2k_draw_groupbox(d, &g3, "Snap to default");
+        W2kRect okb = { x + 16, c.y + 244, 46, 23 };
+        w2k_draw_pushbutton(d, &okb, "OK", BS_DEFAULT);
+        w2k_draw_checkbox(d, m->r_snap.x, m->r_snap.y,
+                          "&Move pointer to the default button in dialog boxes",
+                          m->snap, 0, 0);
+
+    } else {
+        w2k_text(d, F_UI, x, c.y + 12, "Devices:", C_TEXT);
+        w2k_list_draw(d, m->devs);
+        w2k_text_wrapped(d, F_UI, x, c.y + 206, gw,
+                         "The pointer is the X server's; its speed and button order are "
+                         "set on the Motion and Buttons tabs. A device that is not "
+                         "listed here is one the kernel does not call a mouse.", C_TEXT);
+    }
+
+    w2k_draw_pushbutton(d, &m->ok, "OK", BS_DEFAULT | (m->down == MP_OK ? BS_PRESSED : 0));
+    w2k_draw_pushbutton(d, &m->cancel, "Cancel", m->down == MP_CANCEL ? BS_PRESSED : 0);
+    w2k_draw_pushbutton(d, &m->apply, "&Apply", m->down == MP_APPLY ? BS_PRESSED : 0);
+}
+
+static void mouse_commit(MouseDlg *m)
+{
+    w2k_mouse_swap = m->swap;
+    w2k_folder_singleclick = m->single;
+    w2k_dblclk_ms = 900 - m->dbl.pos * 70;
+    w2k_mouse_speed = m->speed.pos;
+    w2k_mouse_accel = m->accel;
+    w2k_snap_default = m->snap;
+    w2k_effects[FX_CURSOR_SHADOW] = m->shadow && w2k_effect_supported(FX_CURSOR_SHADOW);
+    w2k_scheme_save(NULL);
+    w2k_input_apply();
+    w2k_cursors_init();
+    w2k_scheme_broadcast();
+}
+
+static int mouse_event(W2kWin *w, XEvent *e)
+{
+    MouseDlg *m = w->user;
+    if (w2k_tabs_key(m->tabs, &e->xkey) || w2k_tabs_press(m->tabs, &e->xbutton)) {
+        w2k_win_dirty(w);
+        return 1;
+    }
+    switch (e->type) {
+    case ButtonPress: {
+        int x = e->xbutton.x, y = e->xbutton.y;
+        if (m->tabs->sel == MT_BUTTONS) {
+            if (w2k_slider_press(&m->dbl, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+            if (w2k_rect_hit(&m->r_right, x, y)) m->swap = 0;
+            else if (w2k_rect_hit(&m->r_left, x, y)) m->swap = 1;
+            else if (w2k_rect_hit(&m->r_single, x, y)) m->single = 1;
+            else if (w2k_rect_hit(&m->r_double, x, y)) m->single = 0;
+            else if (w2k_rect_hit(&m->test, x, y)) {
+                /* The box opens on the second click of a double-click, as
+                 * it does in Windows, and shuts on the next one. */
+                static Time last;
+                if (e->xbutton.time - last <= (Time)w2k_dblclk_ms) m->test_open = !m->test_open;
+                last = e->xbutton.time;
+            }
+        } else if (m->tabs->sel == MT_POINTERS) {
+            if (w2k_combo_press(m->scheme, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+            if (w2k_list_press(m->roles, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+            if (w2k_rect_hit(&m->r_shadow, x, y) && w2k_effect_supported(FX_CURSOR_SHADOW))
+                m->shadow = !m->shadow;
+            else if (w2k_rect_hit(&m->saveas, x, y)) m->down = MP_SAVEAS;
+            else if (w2k_rect_hit(&m->usedef, x, y)) m->down = MP_USEDEF;
+            else if (w2k_rect_hit(&m->browse, x, y)) m->down = MP_BROWSE;
+        } else if (m->tabs->sel == MT_MOTION) {
+            if (w2k_slider_press(&m->speed, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+            for (int i = 0; i < 4; i++)
+                if (w2k_rect_hit(&m->r_accel[i], x, y)) m->accel = i;
+            if (w2k_rect_hit(&m->r_snap, x, y)) m->snap = !m->snap;
+        } else {
+            if (w2k_list_press(m->devs, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        }
+        if (w2k_rect_hit(&m->ok, x, y)) m->down = MP_OK;
+        else if (w2k_rect_hit(&m->cancel, x, y)) m->down = MP_CANCEL;
+        else if (w2k_rect_hit(&m->apply, x, y)) m->down = MP_APPLY;
+        w2k_win_dirty(w);
+        return 1;
+    }
+    case MotionNotify:
+        if (w2k_slider_motion(&m->dbl, &e->xmotion) ||
+            w2k_slider_motion(&m->speed, &e->xmotion)) { w2k_win_dirty(w); return 1; }
+        return 0;
+    case ButtonRelease: {
+        int b = m->down, x = e->xbutton.x, y = e->xbutton.y;
+        m->down = MP_NONE;
+        w2k_slider_release(&m->dbl);
+        w2k_slider_release(&m->speed);
+        w2k_list_release(m->roles, &e->xbutton);
+        if (b == MP_OK && w2k_rect_hit(&m->ok, x, y)) {
+            mouse_commit(m);
+            w2k_win_close(w, ID_OK);
+            return 1;
+        }
+        if (b == MP_CANCEL && w2k_rect_hit(&m->cancel, x, y)) {
+            w2k_win_close(w, ID_CANCEL);
+            return 1;
+        }
+        if (b == MP_APPLY && w2k_rect_hit(&m->apply, x, y)) mouse_commit(m);
+        if (b == MP_BROWSE && w2k_rect_hit(&m->browse, x, y)) {
+            /* Another pointer for the role the list is on. */
+            int row = m->roles->sel;
+            if (row >= 0) {
+                char path[1024] = "";
+                const char *cur = w2k_cursor_role_file(row);
+                if (cur) snprintf(path, sizeof path, "%s", cur);
+                if (w2k_file_dialog_filter(w, 0, path, sizeof path,
+                                           "Cursors (*.cur;*.ico)|*.cur;*.ico|All Files (*.*)|*")) {
+                    if (w2k_cursor_role_set(row, path)) mouse_fill_roles(m);
+                    else w2k_msgbox(w, "Mouse Properties",
+                                    "That file is not a cursor this desktop can read.",
+                                    MB_OK | MB_ICONERROR);
+                }
+            }
+        }
+        if (b == MP_USEDEF && w2k_rect_hit(&m->usedef, x, y)) {
+            w2k_cursors_windows = 1;
+            w2k_cursors_init();
+            mouse_fill_roles(m);
+        }
+        if (b == MP_SAVEAS && w2k_rect_hit(&m->saveas, x, y))
+            w2k_msgbox(w, "Mouse Properties",
+                       "The pointers in use are already the scheme this desktop "
+                       "keeps, in ~/.w2k/cursors.", MB_OK | MB_ICONINFO);
+        w2k_win_dirty(w);
+        return 1;
+    }
+    case KeyPress: {
+        KeySym ks = XLookupKeysym(&e->xkey, 0);
+        if (ks == XK_Escape) { w2k_win_close(w, ID_CANCEL); return 1; }
+        if (ks == XK_Return) { mouse_commit(m); w2k_win_close(w, ID_OK); return 1; }
+        if (m->tabs->sel == MT_POINTERS && w2k_list_key(m->roles, &e->xkey)) {
+            w2k_win_dirty(w);
+            return 1;
+        }
+        if (m->tabs->sel == MT_MOTION && w2k_slider_key(&m->speed, &e->xkey)) {
+            w2k_win_dirty(w);
+            return 1;
+        }
+        if (m->tabs->sel == MT_BUTTONS && w2k_slider_key(&m->dbl, &e->xkey)) {
+            w2k_win_dirty(w);
+            return 1;
+        }
+        return 1;
+    }
+    }
+    return 0;
 }
 
 static void open_mouse(void)
 {
-    InputDlg id;
-    memset(&id, 0, sizeof id);
-    id.title = "Mouse Properties";
-    id.commit = mouse_commit;
-    id.nradio = 2;
-    id.radio[0].label = "&Right-handed";
-    id.radio[1].label = "&Left-handed";
-    id.sel_radio = w2k_mouse_swap ? 1 : 0;
-    id.nsl = 2;
-    id.sl[0].label = "&Double-click speed:";
-    id.sl[0].lo = "Slow"; id.sl[0].hi = "Fast";
-    id.sl[0].s = (W2kSlider){ .lo = 0, .hi = 10, .ticks = 10,
-                              .pos = (900 - w2k_dblclk_ms) / 70 };
-    id.sl[1].label = "&Pointer speed:";
-    id.sl[1].lo = "Slow"; id.sl[1].hi = "Fast";
-    id.sl[1].s = (W2kSlider){ .lo = 1, .hi = 10, .ticks = 9,
-                              .pos = w2k_mouse_speed };
-    id.ncheck = 2;
-    id.chk[0].label = "Show &shadow under pointer";
-    id.chk[0].on = w2k_effects[FX_CURSOR_SHADOW];
-    id.chk[1].label = "Use the &Windows 2000 pointers (off: the X server's own)";
-    id.chk[1].on = w2k_cursors_windows;
-    input_run(&id, 322);
+    MouseDlg m;
+    memset(&m, 0, sizeof m);
+    const int W = 396, H = 422;
+    W2kWin *w = w2k_win_new("Mouse Properties", "l2kcontrol", W, H, 0);
+    m.win = w;
+    w->user = &m;
+    w->paint = mouse_paint;
+    w->event = mouse_event;
+
+    m.tabs = w2k_tabs_new(NULL, NULL);
+    w2k_tabs_add(m.tabs, "Buttons");
+    w2k_tabs_add(m.tabs, "Pointers");
+    w2k_tabs_add(m.tabs, "Motion");
+    w2k_tabs_add(m.tabs, "Hardware");
+    m.tabs->r = (W2kRect){ 8, 8, W - 16, H - 8 - 44 };
+    W2kRect c = w2k_tabs_client(m.tabs);
+    int x = c.x + 10, gw = c.w - 20, fh = w2k_font_height(F_UI);
+
+    /* Buttons */
+    m.swap = w2k_mouse_swap;
+    m.single = w2k_folder_singleclick;
+    m.dbl = (W2kSlider){ .r = { x + 50, c.y + 288, 150, SLIDER_THICK },
+                         .lo = 0, .hi = 10, .ticks = 10,
+                         .pos = (900 - w2k_dblclk_ms) / 70, .owner = w };
+    m.test = (W2kRect){ x + gw - 76, c.y + 276, 56, 50 };
+
+    /* Pointers */
+    m.scheme = w2k_combo_new(0);
+    w2k_combo_add(m.scheme, w2k_cursors_windows ? "Windows 2000 (system scheme)"
+                                                : "(None) -- the X server's own");
+    m.scheme->r = (W2kRect){ x + 16, c.y + 32, gw - 120, 21 };
+    m.saveas = (W2kRect){ x + 90, c.y + 62, 80, 23 };
+    m.del    = (W2kRect){ x + 178, c.y + 62, 75, 23 };
+    m.preview = (W2kRect){ x + gw - 76, c.y + 24, 56, 56 };
+    m.roles = w2k_list_new(LV_REPORT);
+    w2k_list_add_col(m.roles, "", gw - 60, 0);
+    m.roles->r = (W2kRect){ x, c.y + 128, gw, 150 };
+    m.roles->hdr_h = 0;                 /* the Customize list has no header */
+    mouse_fill_roles(&m);
+    m.shadow = w2k_effects[FX_CURSOR_SHADOW];
+    m.r_shadow = (W2kRect){ x, c.y + 290, 200, fh + 4 };
+    m.usedef = (W2kRect){ x + gw - 166, c.y + 286, 80, 23 };
+    m.browse = (W2kRect){ x + gw - 80, c.y + 286, 80, 23 };
+
+    /* Motion */
+    m.speed = (W2kSlider){ .r = { x + 90, c.y + 66, 160, SLIDER_THICK },
+                           .lo = 1, .hi = 10, .ticks = 9,
+                           .pos = w2k_mouse_speed, .owner = w };
+    m.accel = w2k_mouse_accel;
+    m.snap = w2k_snap_default;
+    for (int i = 0; i < 4; i++)
+        m.r_accel[i] = (W2kRect){ x + 16 + i * 84, c.y + 176, 80, fh + 4 };
+    m.r_snap = (W2kRect){ x + 76, c.y + 248, gw - 90, fh + 4 };
+
+    /* Hardware */
+    m.devs = w2k_list_new(LV_REPORT);
+    w2k_list_add_col(m.devs, "Name", 220, 0);
+    w2k_list_add_col(m.devs, "Type", 150, 0);
+    m.devs->r = (W2kRect){ x, c.y + 30, gw, 160 };
+    mouse_fill_devices(&m);
+
+    int by = H - 12 - 23;
+    m.ok     = (W2kRect){ W - 12 - 75 * 3 - 12, by, 75, 23 };
+    m.cancel = (W2kRect){ W - 12 - 75 * 2 - 6, by, 75, 23 };
+    m.apply  = (W2kRect){ W - 12 - 75, by, 75, 23 };
+
+    w2k_win_center(w, cp.win);
+    Atom t = w2k.a_net_wm_wt_dialog;
+    XChangeProperty(w2k.dpy, w->win, w2k.a_net_wm_window_type, XA_ATOM, 32,
+                    PropModeReplace, (unsigned char *)&t, 1);
+    w2k_win_modal(w);
+    w2k_combo_free(m.scheme);
+    w2k_list_free(m.roles);
+    w2k_list_free(m.devs);
+    w2k_tabs_free(m.tabs);
 }
 
 static void keyboard_commit(InputDlg *id)

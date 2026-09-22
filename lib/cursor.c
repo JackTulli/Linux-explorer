@@ -24,6 +24,8 @@
 #include <string.h>
 #include <strings.h>
 #include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <X11/Xcursor/Xcursor.h>
 
 /* Decoded cursor image: straight ARGB, alpha is 0 or 255 only. */
@@ -319,18 +321,25 @@ static const struct {
     const char *scheme_name;      /* section name in the .crs file    */
     const char *file_name;        /* bare <role>.cur, if there is no scheme */
     unsigned    font_shape;       /* X cursor font fallback           */
+    const char *label;            /* what Mouse Properties calls it   */
 } role_info[N_ROLES] = {
-    [R_ARROW]     = { "Arrow",     "Arrow",     XC_left_ptr           },
-    [R_IBEAM]     = { "IBeam",     "IBeam",     XC_xterm              },
-    [R_WAIT]      = { "Wait",      "Wait",      XC_watch              },
-    [R_HAND]      = { "Hand",      "Hand",      XC_hand2              },
-    [R_SIZEALL]   = { "SizeAll",   "SizeAll",   XC_fleur              },
-    [R_SIZENS]    = { "SizeNS",    "SizeNS",    XC_sb_v_double_arrow  },
-    [R_SIZEWE]    = { "SizeWE",    "SizeWE",    XC_sb_h_double_arrow  },
-    [R_SIZENWSE]  = { "SizeNWSE",  "SizeNWSE",  XC_top_left_corner    },
-    [R_SIZENESW]  = { "SizeNESW",  "SizeNESW",  XC_top_right_corner   },
-    [R_NO]        = { "No",        "No",        XC_circle             },
+    [R_ARROW]     = { "Arrow",     "Arrow",     XC_left_ptr,          "Normal Select" },
+    [R_IBEAM]     = { "IBeam",     "IBeam",     XC_xterm,             "Text Select" },
+    [R_WAIT]      = { "Wait",      "Wait",      XC_watch,             "Busy" },
+    [R_HAND]      = { "Hand",      "Hand",      XC_hand2,             "Link Select" },
+    [R_SIZEALL]   = { "SizeAll",   "SizeAll",   XC_fleur,             "Move" },
+    [R_SIZENS]    = { "SizeNS",    "SizeNS",    XC_sb_v_double_arrow, "Vertical Resize" },
+    [R_SIZEWE]    = { "SizeWE",    "SizeWE",    XC_sb_h_double_arrow, "Horizontal Resize" },
+    [R_SIZENWSE]  = { "SizeNWSE",  "SizeNWSE",  XC_top_left_corner,   "Diagonal Resize 1" },
+    [R_SIZENESW]  = { "SizeNESW",  "SizeNESW",  XC_top_right_corner,  "Diagonal Resize 2" },
+    [R_NO]        = { "No",        "No",        XC_circle,            "Unavailable" },
 };
+
+/* The file each role is playing, so Mouse Properties can show the set and
+ * change one pointer in it. Filled by the loader; empty where the role
+ * fell back to the X cursor font. */
+static char role_file[N_ROLES][512];
+static void role_icons_forget(void);    /* the pictures of the set below */
 
 static Cursor *role_slot(int r)
 {
@@ -427,6 +436,7 @@ static int load_from_dir(const char *dir)
         Cursor *slot = role_slot(r);
         if (*slot) XFreeCursor(w2k.dpy, *slot);
         *slot = c;
+        snprintf(role_file[r], sizeof role_file[r], "%s", paths[r]);
         loaded++;
     }
     return loaded;
@@ -434,6 +444,7 @@ static int load_from_dir(const char *dir)
 
 void w2k_cursors_init(void)
 {
+    role_icons_forget();
     /* Called again when the cursor-shadow setting changes, so release what
      * is there before replacing it. */
     for (int r = 0; r < N_ROLES; r++) {
@@ -483,4 +494,107 @@ void w2k_cursors_init(void)
     fprintf(stderr, "w2k: cursors: no cursor set found (looked in %s%s%s); "
             "using the X server's own\n", home ? home_dir : "", home ? ", " : "",
             W2K_PREFIX "/share/w2k/cursors, /usr/share/w2k/cursors");
+}
+
+/* ------------------------------------------------------------------ *
+ * What Mouse Properties needs: the roles, their names and their files
+ * ------------------------------------------------------------------ */
+
+/* One pointer as a picture the shell can draw, for the Pointers list.
+ * A .cur is an icon file in all but its type byte, but the icon loader
+ * does not read one, and the decoder that does is here. The id is kept,
+ * so a list of ten pointers registers ten icons and no more. */
+static int role_icon_id[N_ROLES];
+
+int w2k_cursor_role_icon(int r)
+{
+    if (r < 0 || r >= N_ROLES) return -1;
+    if (role_icon_id[r] > 0) return role_icon_id[r];
+    const char *path = w2k_cursor_role_file(r);
+    if (!path) return -1;
+    long n = 0;
+    unsigned char *d = slurp(path, &n);
+    if (!d) return -1;
+    CurImage im = { 0 };
+    int idx = best_image(d, n);
+    int ok = idx >= 0 && cur_decode(d, n, idx, &im) == 0;
+    free(d);
+    if (!ok) return -1;
+
+    /* The toolkit takes RGBA at the two icon sizes; the artwork is
+     * usually 32x32, and anything else is sampled into place. */
+    unsigned char *big = calloc(32 * 32, 4), *small = calloc(16 * 16, 4);
+    if (!big || !small) { free(big); free(small); free(im.px); return -1; }
+    for (int y = 0; y < 32; y++)
+        for (int x = 0; x < 32; x++) {
+            int sx = im.w == 32 ? x : x * im.w / 32;
+            int sy = im.h == 32 ? y : y * im.h / 32;
+            unsigned p = (sx < im.w && sy < im.h) ? im.px[sy * im.w + sx] : 0;
+            unsigned char *o = big + (y * 32 + x) * 4;
+            o[0] = (unsigned char)((p >> 16) & 0xff);
+            o[1] = (unsigned char)((p >> 8) & 0xff);
+            o[2] = (unsigned char)(p & 0xff);
+            o[3] = (unsigned char)(p >> 24);
+        }
+    for (int y = 0; y < 16; y++)
+        for (int x = 0; x < 16; x++)
+            memcpy(small + (y * 16 + x) * 4, big + ((y * 2) * 32 + x * 2) * 4, 4);
+    free(im.px);
+    role_icon_id[r] = w2k_icon_register(small, big);
+    return role_icon_id[r];
+}
+
+/* A set that has just been replaced must not keep the old pictures. */
+static void role_icons_forget(void)
+{
+    for (int r = 0; r < N_ROLES; r++) role_icon_id[r] = 0;
+}
+
+int w2k_cursor_roles(void) { return N_ROLES; }
+
+const char *w2k_cursor_role_label(int r)
+{
+    return (r >= 0 && r < N_ROLES) ? role_info[r].label : "";
+}
+
+const char *w2k_cursor_role_scheme_name(int r)
+{
+    return (r >= 0 && r < N_ROLES) ? role_info[r].scheme_name : "";
+}
+
+const char *w2k_cursor_role_file(int r)
+{
+    return (r >= 0 && r < N_ROLES && role_file[r][0]) ? role_file[r] : NULL;
+}
+
+/* Give one role another .cur file: written into the set's own scheme in
+ * ~/.w2k/cursors, which is where the loader looks first, and applied at
+ * once. 1 when it took. */
+int w2k_cursor_role_set(int r, const char *path)
+{
+    if (r < 0 || r >= N_ROLES || !path || !*path) return 0;
+    if (cursor_from_file(path) == None) return 0;      /* not a cursor we read */
+    const char *home = getenv("HOME");
+    if (!home) return 0;
+    char dir[600], crs[700];
+    snprintf(dir, sizeof dir, "%s/.w2k/cursors", home);
+    mkdir(dir, 0755);
+    snprintf(crs, sizeof crs, "%s/user.crs", dir);
+
+    /* The scheme as it stands, with this role's line replaced. */
+    char lines[N_ROLES][600];
+    for (int i = 0; i < N_ROLES; i++) {
+        const char *f = (i == r) ? path : w2k_cursor_role_file(i);
+        if (f) snprintf(lines[i], sizeof lines[i], "%.599s", f);
+        else   lines[i][0] = 0;
+    }
+    FILE *f = fopen(crs, "w");
+    if (!f) return 0;
+    fprintf(f, "; Linux 2000 -- the pointers this desktop uses\n");
+    for (int i = 0; i < N_ROLES; i++)
+        if (lines[i][0])
+            fprintf(f, "[%s]\nPath=%s\n", role_info[i].scheme_name, lines[i]);
+    fclose(f);
+    w2k_cursors_init();
+    return 1;
 }

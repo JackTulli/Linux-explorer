@@ -164,6 +164,17 @@ const W2kMonitor *w2k_monitor_of_pointer(void);
 
 /* Load the cursor set from ~/.w2k/cursors (see lib/cursor.c). */
 void w2k_cursors_init(void);
+/* The pointer roles, for Mouse Properties: how many, what Windows calls
+ * each, which .cur file is playing it (NULL for the X server's own), and
+ * giving one of them another file. */
+int         w2k_cursor_roles(void);
+const char *w2k_cursor_role_label(int r);
+const char *w2k_cursor_role_scheme_name(int r);
+const char *w2k_cursor_role_file(int r);
+int         w2k_cursor_role_set(int r, const char *path);
+/* That pointer as an icon id, for a list or a preview; -1 when the set
+ * has no picture for it. */
+int         w2k_cursor_role_icon(int r);
 
 /* Bring up the display connection, colours, fonts, GCs and atoms.
  * Returns 0 on success, -1 if the display could not be opened. */
@@ -410,7 +421,9 @@ void w2k_theme_colours(int theme);   /* load that theme's colour table */
  * into the X server; the shell reads the rest directly. */
 extern int w2k_dblclk_ms;        /* double-click speed */
 extern int w2k_mouse_swap;       /* left-handed button order */
-extern int w2k_mouse_speed;      /* pointer acceleration, 1..10 */
+extern int w2k_mouse_speed;      /* pointer speed, 1..10 */
+extern int w2k_mouse_accel;      /* 0 none, 1 low, 2 medium, 3 high */
+extern int w2k_snap_default;     /* pointer to a dialog's default button */
 extern int w2k_key_delay;        /* auto-repeat delay, ms */
 extern int w2k_key_rate;         /* auto-repeat rate, characters/second */
 extern int w2k_caret_blink;      /* caret blink half-period, ms */
