@@ -47,6 +47,8 @@ typedef struct {
     mode_t   was_mode;
     char     type[64];
     int      icon;
+    int      shortcut;              /* a .desktop that may be run */
+    W2kRect  chicon;                /* its Change Icon... button */
     long long size, ondisk;
     int      nfiles, nfolders, truncated;
     struct stat st;
@@ -138,6 +140,14 @@ static void measure(Props *p)
     p->mode = p->was_mode = p->st.st_mode & 07777;
     p->icon = w2k_file_icon_stat(full, p->file, p->isdir);
     w2k_file_type(p->file, p->isdir, p->type, sizeof p->type);
+    {   /* A shortcut is what it is called inside, not what the file is
+         * called, and it says "Shortcut" as Windows does. */
+        size_t n = strlen(p->file);
+        p->shortcut = !p->isdir && n > 8 &&
+                      !strcasecmp(p->file + n - 8, ".desktop") &&
+                      access(full, X_OK) == 0;
+        if (p->shortcut) snprintf(p->type, sizeof p->type, "Shortcut");
+    }
 
     if (p->isdir) {
         long budget = 200000;
@@ -359,6 +369,29 @@ static void paint_compat(Props *p, Drawable d, W2kRect c)
                          "(an .exe file), not on an installer, shortcut or batch file.", C_TEXT);
 }
 
+/* Give a shortcut another icon: a picture, or a Windows program to take
+ * one out of. It goes into the shortcut's Icon line, where every desktop
+ * looks for it. */
+static void change_icon(Props *p)
+{
+    char full[2048], pick[1024] = "", exec[1024] = "";
+    snprintf(full, sizeof full, "%s/%s", p->dir, p->file);
+    /* Open where the program it points at lives, as Windows does. */
+    w2k_desktop_entry(full, NULL, 0, exec, sizeof exec, NULL, 0);
+    w2k_desktop_target(exec, pick, sizeof pick);
+    if (!w2k_file_dialog_filter(p->w, 0, pick, sizeof pick,
+                                "Icons (*.ico;*.png;*.bmp;*.exe)|*.ico;*.png;*.bmp;*.exe|"
+                                "All Files (*.*)|*"))
+        return;
+    if (!w2k_desktop_set(full, "Icon", pick)) {
+        w2k_msgbox(p->w, "Properties", "That icon could not be set.",
+                   MB_OK | MB_ICONERROR);
+        return;
+    }
+    p->icon = w2k_shortcut_icon(full);
+    w2k_win_dirty(p->w);
+}
+
 static void paint_general(Props *p, Drawable d, W2kRect c)
 {
     int fh = w2k_font_height(F_UI);
@@ -367,6 +400,11 @@ static void paint_general(Props *p, Drawable d, W2kRect c)
     if (p->islink) w2k_bigicon_draw_link(d, x, c.y + 10, p->icon);
     else           w2k_bigicon_draw(d, x, c.y + 10, p->icon);
     w2k_edit_draw(d, p->name);
+    if (p->shortcut) {
+        p->chicon = (W2kRect){ c.x + c.w - 12 - 96, c.y + 14, 96, 23 };
+        w2k_draw_pushbutton(d, &p->chicon, "Change &Icon...",
+                            p->down == 5 ? BS_PRESSED : 0);
+    }
 
     int y = c.y + 52;
     sep(d, x, y, wid);
@@ -374,7 +412,15 @@ static void paint_general(Props *p, Drawable d, W2kRect c)
 
     char buf[512];
     y = row(d, x, vx, y, "Type of file:", p->type);
-    if (!p->isdir) {
+    if (p->shortcut) {
+        /* What it points at, as the Shortcut tab shows in Windows. */
+        char full[2048], exec[1024] = "", target[1024] = "";
+        snprintf(full, sizeof full, "%s/%s", p->dir, p->file);
+        w2k_desktop_entry(full, NULL, 0, exec, sizeof exec, NULL, 0);
+        if (!w2k_desktop_target(exec, target, sizeof target))
+            snprintf(target, sizeof target, "%.1023s", exec);
+        y = row(d, x, vx, y, "Target:", target);
+    } else if (!p->isdir) {
         char cmd[256];
         char full[2048];
         snprintf(full, sizeof full, "%s/%s", p->dir, p->file);
@@ -528,9 +574,25 @@ static int apply(Props *p)
     char want[256];
     snprintf(want, sizeof want, "%s", typed && *typed ? typed : p->file);
     if (want[0] == '.') memmove(want, want + 1, strlen(want));   /* dot is the flag */
+    /* What a shortcut is called lives inside it: write that first, so the
+     * name on the desktop changes whether or not the file can follow. */
+    char base[256];
+    snprintf(base, sizeof base, "%s", want);
+    if (p->shortcut) {
+        if (strchr(want, '/')) {
+            w2k_msgbox(p->w, "Properties", "A name cannot contain a slash.",
+                       MB_OK | MB_ICONERROR);
+            return 0;
+        }
+        if (!w2k_desktop_set(full, "Name", want)) {
+            fail(p, "rename this shortcut");
+            return 0;
+        }
+        snprintf(base, sizeof base, "%.240s.desktop", want);
+    }
     char target[256];
-    if (p->hidden) snprintf(target, sizeof target, ".%.254s", want);
-    else           snprintf(target, sizeof target, "%.255s", want);
+    if (p->hidden) snprintf(target, sizeof target, ".%.254s", base);
+    else           snprintf(target, sizeof target, "%.255s", base);
 
     if (strcmp(target, p->file)) {
         if (strchr(target, '/')) {
@@ -566,7 +628,7 @@ static int apply(Props *p)
         p->was_hidden = p->hidden;
         w2k_edit_set(p->name, want);
         char title[300];
-        snprintf(title, sizeof title, "%s Properties", p->file);
+        snprintf(title, sizeof title, "%s Properties", want);
         w2k_win_title(p->w, title);
         /* The name may have changed; re-read the item under its new one,
          * so a second Apply works from the right file. */
@@ -690,6 +752,8 @@ static int event(W2kWin *w, XEvent *e)
         if (w2k_rect_hit(&p->ok, x, y)) p->down = 1;
         else if (w2k_rect_hit(&p->cancel, x, y)) p->down = 2;
         else if (w2k_rect_hit(&p->apply, x, y)) p->down = 3;
+        else if (p->shortcut && p->tabs->sel == 0 && w2k_rect_hit(&p->chicon, x, y))
+            p->down = 5;
         else if (general) general_press(p, &e->xbutton);
         else compat_press(p, &e->xbutton);
         w2k_win_dirty(w);
@@ -709,6 +773,7 @@ static int event(W2kWin *w, XEvent *e)
             return 1;
         }
         if (b == 3 && w2k_rect_hit(&p->apply, x, y)) apply(p);
+        if (b == 5 && p->shortcut && w2k_rect_hit(&p->chicon, x, y)) change_icon(p);
         if (b == 4 && w2k_rect_hit(&p->manager, x, y)) launch("l2kproton");
         w2k_win_dirty(w);
         return 1;
@@ -811,11 +876,18 @@ int w2k_file_properties_page(W2kWin *over, const char *path, int page)
 
     p.name = w2k_edit_new(0);
     w2k_edit_bind(p.name, w);
-    {   /* The name without the hidden dot: the dot is the check box. */
+    {   /* The name without the hidden dot: the dot is the check box. A
+         * shortcut shows the name it goes by, which is inside it. */
         const char *shown = p.file[0] == '.' ? p.file + 1 : p.file;
-        w2k_edit_set(p.name, shown);
+        char nm[256] = "";
+        char full[2048];
+        snprintf(full, sizeof full, "%s/%s", p.dir, p.file);
+        if (p.shortcut && w2k_desktop_entry(full, nm, sizeof nm, NULL, 0, NULL, 0) && nm[0])
+            w2k_edit_set(p.name, nm);
+        else w2k_edit_set(p.name, shown);
     }
-    p.name->r = (W2kRect){ c.x + 56, c.y + 16, c.w - 68, 21 };
+    /* Room for Change Icon... beside it, where there is one. */
+    p.name->r = (W2kRect){ c.x + 56, c.y + 16, c.w - 68 - (p.shortcut ? 104 : 0), 21 };
     p.name->focused = 1;
     w2k_edit_select_all(p.name);
 

@@ -164,7 +164,9 @@ static int read_shortcut(const char *path, DeskIcon *out)
 
     snprintf(out->label, sizeof out->label, "%s", name);
     snprintf(out->cmd, sizeof out->cmd, "%s", exec);
-    out->icon = icon[0] ? w2k_icon_by_name(icon) : ICO_APP;
+    /* Its own Icon= where it names one, else the icon of what it opens:
+     * a shortcut to a Windows program wears that program's icon. */
+    out->icon = w2k_shortcut_icon(path);
     return 1;
 }
 
@@ -1079,6 +1081,14 @@ static void delete_icon(int i)
     refresh_now();
 }
 
+/* A shortcut is a .desktop file that may be run; what it is called is
+ * the Name inside it, not the file's own name. */
+static int is_shortcut(const char *path)
+{
+    size_t n = strlen(path);
+    return n > 8 && !strcmp(path + n - 8, ".desktop") && access(path, X_OK) == 0;
+}
+
 static void rename_icon(int i)
 {
     if (i < 0 || i >= nicons || icons[i].system || !icons[i].path[0]) return;
@@ -1086,14 +1096,34 @@ static void rename_icon(int i)
     snprintf(from, sizeof from, "%s", icons[i].path);      /* as delete_icon() */
     const char *base = strrchr(from, '/');
     base = base ? base + 1 : from;
+    int shortcut = is_shortcut(from);
     char name[256];
-    snprintf(name, sizeof name, "%.255s", base);
+    /* A shortcut is renamed by the name it shows, not by its file: typing
+     * over "Halo 2" used to rename Halo2.desktop and leave the label as
+     * it was, so nothing appeared to happen. */
+    snprintf(name, sizeof name, "%.255s", shortcut ? icons[i].label : base);
     if (!w2k_prompt(NULL, "Rename", "&New name:", name, name, sizeof name,
                     ICO_NONE))
         return;
 
     char dir[1024], to[1400];
     desktop_dir(dir, sizeof dir);
+    if (shortcut) {
+        if (!name[0] || strchr(name, '/')) {
+            w2k_msgbox(NULL, "Rename", "That name cannot be used.",
+                       MB_OK | MB_ICONERROR);
+            return;
+        }
+        if (!w2k_desktop_set(from, "Name", name))
+            w2k_msgbox(NULL, "Rename", "That shortcut could not be renamed.",
+                       MB_OK | MB_ICONERROR);
+        /* The file follows the name where it can, as Windows renames the
+         * .lnk -- but the name on screen has already changed either way. */
+        snprintf(to, sizeof to, "%s/%s.desktop", dir, name);
+        if (strcmp(from, to)) w2k_fs_rename_noreplace(from, to);
+        refresh_now();
+        return;
+    }
     snprintf(to, sizeof to, "%s/%s", dir, name);
     /* Never over another file of that name: rename() replaced it without
      * a word. */

@@ -465,6 +465,14 @@ FILE *w2k_fopen_confined(const char *path, const char *home, long maxsize);
  * The logon screen, decoding as root what a user named, sets one. */
 extern long w2k_image_max_pixels;
 
+/* The file a shortcut opens, out of its Exec command; a Windows program
+ * for choice. 1 when one was found. */
+int w2k_desktop_target(const char *exec, char *out, int n);
+/* Set one key of a desktop entry, keeping the rest of the file. */
+int w2k_desktop_set(const char *path, const char *key, const char *value);
+/* The icon for a shortcut: its own Icon= where that names one we have,
+ * else the icon of whatever it opens. */
+int w2k_shortcut_icon(const char *path);
 /* The spec's escapes (\s \n \t \r \\) undone, in place. */
 void w2k_desktop_unescape(char *s);
 /* An Exec value as a command for sh -c: unescaped, field codes out. */

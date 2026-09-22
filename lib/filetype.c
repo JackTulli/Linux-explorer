@@ -12,6 +12,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static const struct { const char *ext, *name; int icon; } types[] = {
     /* Text and configuration */
@@ -173,13 +174,46 @@ int w2k_file_icon(const char *name, int isdir)
 
 /* A file with the execute bit and no extension is a program, whatever its
  * name says -- that is most of /usr/bin. */
+/* A shortcut wears the icon of what it opens, unless it names one of its
+ * own -- so a shortcut to a Windows program shows that program's icon,
+ * and not the blank one every shortcut used to get. */
+int w2k_shortcut_icon(const char *path)
+{
+    char icon[256] = "", exec[1024] = "";
+    if (!w2k_desktop_entry(path, NULL, 0, exec, sizeof exec, icon, sizeof icon))
+        return ICO_APP;
+    if (icon[0]) {
+        /* Change Icon... may have been pointed at a Windows program, as
+         * it can be in Windows: take the icon out of it. */
+        const char *dot = strrchr(icon, '.');
+        if (icon[0] == '/' && dot &&
+            (!strcasecmp(dot, ".exe") || !strcasecmp(dot, ".dll"))) {
+            int id = w2k_wine_exe_icon(icon);
+            if (id != ICO_APP) return id;
+        }
+        int id = w2k_icon_by_name(icon);
+        if (id != ICO_APP) return id;
+    }
+    char target[1024];
+    if (w2k_desktop_target(exec, target, sizeof target)) {
+        const char *dot = strrchr(target, '.');
+        if (dot && !strcasecmp(dot, ".desktop")) return ICO_APP;  /* no chains */
+        const char *base = strrchr(target, '/');
+        return w2k_file_icon_stat(target, base ? base + 1 : target, 0);
+    }
+    return ICO_APP;
+}
+
 int w2k_file_icon_stat(const char *path, const char *name, int isdir)
 {
     int id = w2k_file_icon(name, isdir);
-    /* A Windows program wears its own icon, as it would in Windows. */
+    /* A Windows program wears its own icon, as it would in Windows, and a
+     * shortcut wears the icon of what it opens. */
     if (!isdir) {
         const char *dot = strrchr(name, '.');
         if (dot && !strcasecmp(dot, ".exe")) return w2k_wine_exe_icon(path);
+        if (dot && !strcasecmp(dot, ".desktop") && access(path, X_OK) == 0)
+            return w2k_shortcut_icon(path);
     }
     if (!isdir && id == ICO_FILE_UNKNOWN) {
         struct stat st;

@@ -10,6 +10,9 @@
 #include "w2k.h"
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 /* A string value as the file writes it, unescaped in place: the spec's
  * \s \n \t \r and \\. Nothing did this, so an Exec line written by
@@ -131,4 +134,94 @@ int w2k_desktop_entry(const char *path, char *name, int nn,
 
     if (!have_name || !have_exec) return 0;
     return nodisplay ? -1 : 1;
+}
+
+/* The file a shortcut opens: the first thing in its command that is on
+ * disk, a Windows program for choice -- "l2kproton run '/games/halo2.exe'"
+ * gives the .exe. That is what lets a shortcut wear its program's icon,
+ * the way it does in Windows. 1 when something was found. */
+int w2k_desktop_target(const char *exec, char *out, int n)
+{
+    if (!exec || !out || n <= 0) return 0;
+    out[0] = 0;
+    char tok[1024], first[1024] = "", later[1024] = "";
+    const char *p = exec;
+    int index = 0;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        int o = 0;
+        char q = 0;
+        while (*p && (q || (*p != ' ' && *p != '\t'))) {
+            if (!q && (*p == '\'' || *p == '"')) { q = *p++; continue; }
+            if (q && *p == q) { q = 0; p++; continue; }
+            if (*p == '\\' && p[1] && q != '\'') p++;
+            if (o < (int)sizeof tok - 1) tok[o++] = *p;
+            p++;
+        }
+        tok[o] = 0;
+        if (tok[0] == '/' && access(tok, R_OK) == 0) {
+            const char *dot = strrchr(tok, '.');
+            if (dot && (!strcasecmp(dot, ".exe") || !strcasecmp(dot, ".com") ||
+                        !strcasecmp(dot, ".msi") || !strcasecmp(dot, ".bat") ||
+                        !strcasecmp(dot, ".lnk"))) {
+                snprintf(out, (size_t)n, "%s", tok);   /* the program itself */
+                return 1;
+            }
+            if (index == 0) { if (!first[0]) snprintf(first, sizeof first, "%s", tok); }
+            else if (!later[0]) snprintf(later, sizeof later, "%s", tok);
+        }
+        index++;
+    }
+    /* An argument beats the program that opens it: the icon wanted is the
+     * document's, not the viewer's. */
+    if (later[0]) { snprintf(out, (size_t)n, "%s", later); return 1; }
+    if (first[0]) { snprintf(out, (size_t)n, "%s", first); return 1; }
+    return 0;
+}
+
+/* Set one key of a desktop entry, keeping every other line as it was --
+ * how the shell renames a shortcut (Name) or gives it another icon
+ * (Icon). The file is written beside itself and moved into place, so an
+ * interrupted write cannot leave half a shortcut. 1 when it was written. */
+int w2k_desktop_set(const char *path, const char *key, const char *value)
+{
+    if (!path || !key || !value) return 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char tmp[1200];
+    snprintf(tmp, sizeof tmp, "%.1100s.w2knew", path);
+    FILE *o = fopen(tmp, "w");
+    if (!o) { fclose(f); return 0; }
+
+    char esc[1024];
+    w2k_desktop_escape(value, esc, sizeof esc, 0);
+    size_t klen = strlen(key);
+    char line[2048], flat[2048];
+    int in_entry = 0, seen = 0, written = 0;
+    while (fgets(line, sizeof line, f)) {
+        snprintf(flat, sizeof flat, "%s", line);
+        flat[strcspn(flat, "\r\n")] = 0;
+        if (flat[0] == '[') {
+            if (in_entry && !written) { fprintf(o, "%s=%s\n", key, esc); written = 1; }
+            in_entry = !strcmp(flat, "[Desktop Entry]");
+            if (in_entry) seen = 1;
+            fputs(line, o);
+            continue;
+        }
+        if (in_entry && !strncmp(flat, key, klen) && flat[klen] == '=') {
+            if (!written) { fprintf(o, "%s=%s\n", key, esc); written = 1; }
+            continue;                        /* the line it replaces */
+        }
+        fputs(line, o);
+    }
+    if (in_entry && !written) { fprintf(o, "%s=%s\n", key, esc); written = 1; }
+    fclose(f);
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        if (fchmod(fileno(o), st.st_mode & 07777) != 0) { /* keep it runnable */ }
+    }
+    if (!seen || !written || fclose(o) != 0) { unlink(tmp); return 0; }
+    if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
+    return 1;
 }
