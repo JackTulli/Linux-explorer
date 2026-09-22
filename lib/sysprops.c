@@ -488,6 +488,18 @@ static int lines(Drawable d, int x, int y, int color, const char *const *t)
     return y;
 }
 
+/* A value under one of the headings, wrapped to what is left of the tab.
+ * The processor was wrapped and nothing else was, so a long motherboard
+ * name -- "Micro-Star International Co., Ltd. MS-7C91" -- ran out past
+ * the right edge of the window. Returns the lines it took. */
+static int sp_value(Drawable d, int x, int y, int lh, int w, const char *text)
+{
+    char lines[3][96];
+    int n = wrap(text, w, lines, 3);
+    for (int i = 0; i < n; i++, y += lh) w2k_text(d, F_UI, x, y, lines[i], C_TEXT);
+    return n > 0 ? n : 1;
+}
+
 static void sp_paint(W2kWin *w, Drawable d)
 {
     SysDlg *s = w->user;
@@ -500,27 +512,29 @@ static void sp_paint(W2kWin *w, Drawable d)
     if (page == 0) {
         w2k_skin_draw(d, s->monitor, c.x + 36, c.y + 42, 0, 0, MON_W, MON_H);
         int x = c.x + 190, y = c.y + 30, ix = x + 14;
+        int tw = c.x + c.w - 12 - ix;      /* what is left to the edge */
         w2k_text(d, F_UI, x, y, "System:", C_TEXT);            y += lh;
-        w2k_text(d, F_UI, ix, y, s->distro, C_TEXT);           y += lh;
-        w2k_text(d, F_UI, ix, y, s->version, C_TEXT);          y += lh;
-        w2k_text(d, F_UI, ix, y, s->kernel, C_TEXT);           y += lh * 2;
+        y += sp_value(d, ix, y, lh, tw, s->distro) * lh;
+        y += sp_value(d, ix, y, lh, tw, s->version) * lh;
+        y += sp_value(d, ix, y, lh, tw, s->kernel) * lh + lh;
         w2k_text(d, F_UI, x, y, "Registered to:", C_TEXT);     y += lh;
-        w2k_text(d, F_UI, ix, y, s->owner, C_TEXT);            y += lh;
-        w2k_text(d, F_UI, ix, y, s->host, C_TEXT);             y += lh * 3;
+        y += sp_value(d, ix, y, lh, tw, s->owner) * lh;
+        y += sp_value(d, ix, y, lh, tw, s->host) * lh + lh * 2;
         w2k_text(d, F_UI, x, y, "Computer:", C_TEXT);          y += lh;
         for (int i = 0; i < s->ncpu; i++, y += lh) w2k_text(d, F_UI, ix, y, s->cpu[i], C_TEXT);
-        w2k_text(d, F_UI, ix, y, s->machine, C_TEXT);          y += lh;
-        w2k_text(d, F_UI, ix, y, s->ram, C_TEXT);
+        y += sp_value(d, ix, y, lh, tw, s->machine) * lh;
+        sp_value(d, ix, y, lh, tw, s->ram);
     } else if (page == 1) {
         w2k_bigicon_draw(d, c.x + 14, c.y + 14, ICO_MYCOMPUTER);
         static const char *const intro[] = { "Linux 2000 uses the following information to",
                                              "identify your computer on the network.", NULL };
         lines(d, c.x + 60, c.y + 16, C_TEXT, intro);
         int y = c.y + 66;
+        int vw = c.x + c.w - 12 - (c.x + 130);
         w2k_text(d, F_UI, c.x + 14, y, "Full computer name:", C_TEXT);
-        w2k_text(d, F_UI, c.x + 130, y, s->fqdn, C_TEXT);      y += lh + 8;
+        y += sp_value(d, c.x + 130, y, lh, vw, s->fqdn) * lh + 8;
         w2k_text(d, F_UI, c.x + 14, y, "Workgroup:", C_TEXT);
-        w2k_text(d, F_UI, c.x + 130, y, s->workgroup, C_TEXT);
+        sp_value(d, c.x + 130, y, lh, vw, s->workgroup);
         static const char *const how[] = { "The computer's name is its host name. Renaming it",
             "under a running desktop can lock new windows out of", "the display, so it is not done from here:",
             "use hostnamectl, then log off and on again.", NULL };
