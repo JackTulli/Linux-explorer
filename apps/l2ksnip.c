@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 enum { SNIP_FREEFORM, SNIP_RECT, SNIP_WINDOW, SNIP_FULL };
@@ -72,6 +73,7 @@ static struct {
     Stroke     *strokes;
     int         nstrokes, strokes_cap;
     Stroke     *cur;             /* the stroke being drawn */
+    int         erasing;         /* the eraser is held down in the picture */
     int         saved;           /* nothing to lose */
     W2kScroll   vsb, hsb;
     char        last_dir[1024];
@@ -316,17 +318,40 @@ static unsigned char *cut_out(XImage *shot, int x0, int y0, int w, int h)
     return out;
 }
 
-/* Even-odd test, for the free-form snip's outline. */
-static int inside_path(const Capture *c, int x, int y)
+static int cmp_double(const void *a, const void *b)
 {
-    int in = 0;
-    for (int i = 0, j = c->npts - 1; i < c->npts; j = i++) {
-        int xi = c->px[i], yi = c->py[i], xj = c->px[j], yj = c->py[j];
-        if ((yi > y) != (yj > y) &&
-            x < (xj - xi) * (double)(y - yi) / (double)(yj - yi) + xi)
-            in = !in;
+    double x = *(const double *)a, y = *(const double *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* Outside the free-form outline is white, as in the original. Even-odd,
+ * a row at a time: where the outline crosses the row, sorted, and the
+ * pixels between the first and second crossing, third and fourth, and so
+ * on are inside. Testing every pixel against the whole outline took
+ * seconds on a large snip, with the screen already let go. */
+static void whiten_outside(const Capture *c, unsigned char *rgba, int w, int h)
+{
+    double *xs = malloc(sizeof *xs * (size_t)(c->npts ? c->npts : 1));
+    if (!xs) return;
+    for (int y = 0; y < h; y++) {
+        int ry = c->y0 + y, n = 0;
+        for (int i = 0, j = c->npts - 1; i < c->npts; j = i++) {
+            int xi = c->px[i], yi = c->py[i], xj = c->px[j], yj = c->py[j];
+            if ((yi > ry) != (yj > ry))
+                xs[n++] = (xj - xi) * (double)(ry - yi) / (double)(yj - yi) + xi;
+        }
+        qsort(xs, (size_t)n, sizeof *xs, cmp_double);
+        int k = 0;
+        for (int x = 0; x < w; x++) {
+            int rx = c->x0 + x;
+            while (k < n && xs[k] <= rx) k++;
+            if (!(k & 1)) {                  /* an even number to the left */
+                unsigned char *o = rgba + ((size_t)y * w + x) * 4;
+                o[0] = o[1] = o[2] = 255;
+            }
+        }
     }
-    return in;
+    free(xs);
 }
 
 /* "Show selection ink after snips are captured": the ink outline drawn
@@ -374,6 +399,15 @@ static void pick_window(Capture *c, int rx, int ry)
     if (y + h > c->sh) h = c->sh - y;
     c->x0 = x; c->y0 = y; c->x1 = x + w; c->y1 = y + h;
     c->have_rect = 1;
+}
+
+/* Input for any window but the overlay, for XCheckIfEvent. */
+static Bool stale_input(Display *d, XEvent *e, XPointer ov)
+{
+    (void)d;
+    return (e->type == ButtonPress || e->type == ButtonRelease ||
+            e->type == MotionNotify || e->type == KeyPress ||
+            e->type == KeyRelease) && e->xany.window != *(Window *)ov;
 }
 
 static void capture_paint(Capture *c)
@@ -449,6 +483,13 @@ static int take_snip(void)
     /* Once more after the grabs: a manager that restacks on MapNotify has
      * had its say by now. */
     XRaiseWindow(w2k.dpy, c.ov);
+    /* Clicks and keys still queued for the tool's own window were made
+     * before the overlay was up -- the second click of a double-click on
+     * New, say -- and are not part of the snip: taken for one, they made
+     * an empty selection and the snip was abandoned. */
+    XSync(w2k.dpy, False);
+    XEvent old;
+    while (XCheckIfEvent(w2k.dpy, &old, stale_input, (XPointer)&c.ov)) {}
     c.px = malloc(sizeof *c.px * MAXPTS);
     c.py = malloc(sizeof *c.py * MAXPTS);
 
@@ -470,13 +511,30 @@ static int take_snip(void)
         case Expose:
             if (e.xexpose.window == c.ov && e.xexpose.count == 0) capture_paint(&c);
             break;
+        case SelectionRequest:
+        case SelectionClear:
+            /* A program pasting the last snip is answered, not kept
+             * waiting until the snip is over. */
+            w2k_clipboard_event(&e);
+            break;
         case KeyPress:
             if (XLookupKeysym(&e.xkey, 0) == XK_Escape) done = 1;
             break;
         case MotionNotify: {
-            /* Only the latest position matters; skip the backlog. */
+            /* Only the latest position matters for the painting; skip the
+             * backlog. A free-form outline keeps every point of it, though:
+             * thrown away, they turned a slow outline into long chords. */
             XEvent n;
-            while (XCheckTypedWindowEvent(w2k.dpy, c.ov, MotionNotify, &n)) e = n;
+            while (XCheckTypedWindowEvent(w2k.dpy, c.ov, MotionNotify, &n)) {
+                if (st.type == SNIP_FREEFORM && c.dragging && c.npts < MAXPTS &&
+                    (e.xmotion.x_root != c.px[c.npts - 1] ||
+                     e.xmotion.y_root != c.py[c.npts - 1])) {
+                    c.px[c.npts] = (short)e.xmotion.x_root;
+                    c.py[c.npts] = (short)e.xmotion.y_root;
+                    c.npts++;
+                }
+                e = n;
+            }
             int mx = e.xmotion.x_root, my = e.xmotion.y_root;
             if (st.type == SNIP_WINDOW) {
                 pick_window(&c, mx, my);
@@ -494,6 +552,7 @@ static int take_snip(void)
             break;
         }
         case ButtonPress:
+            if (e.xbutton.window != c.ov) break;
             if (e.xbutton.button != Button1) { done = 1; break; }    /* right-click cancels */
             if (st.type == SNIP_WINDOW) {
                 if (c.have_rect && c.x1 > c.x0 && c.y1 > c.y0) { ok = 1; done = 1; }
@@ -506,6 +565,7 @@ static int take_snip(void)
             c.have_rect = 0;
             break;
         case ButtonRelease:
+            if (e.xbutton.window != c.ov) break;
             if (e.xbutton.button != Button1 || !c.dragging || st.type == SNIP_WINDOW) break;
             c.dragging = 0;
             if (st.type == SNIP_FREEFORM) {
@@ -544,15 +604,9 @@ static int take_snip(void)
         int w = c.x1 - c.x0, h = c.y1 - c.y0;
         unsigned char *rgba = w >= 2 && h >= 2 ? cut_out(c.shot, c.x0, c.y0, w, h) : NULL;
         if (rgba) {
-            if (st.type == SNIP_FREEFORM) {
-                /* Outside the outline is white, as in the original. */
-                for (int y = 0; y < h; y++)
-                    for (int x = 0; x < w; x++)
-                        if (!inside_path(&c, c.x0 + x, c.y0 + y)) {
-                            unsigned char *o = rgba + ((size_t)y * w + x) * 4;
-                            o[0] = o[1] = o[2] = 255;
-                        }
-            } else if (st.opt_show_ink)
+            if (st.type == SNIP_FREEFORM)
+                whiten_outside(&c, rgba, w, h);
+            else if (st.opt_show_ink)
                 ink_border(rgba, w, h);
             free(st.rgba);
             st.rgba = rgba;
@@ -1152,21 +1206,30 @@ static void become_editor(int yes)
         Window child;
         XTranslateCoordinates(w2k.dpy, st.win->win, w2k.root, 0, 0, &rx, &ry, &child);
         const W2kMonitor *m = w2k_monitor_at(rx + 8, ry + 8);
-        int aw = m->w - 8, ah = m->h - 40;                  /* room for the taskbar */
+        /* The monitor and the frame are in screen pixels, the window in
+         * the desktop's scaled ones: at 200% a full-screen snip used to
+         * open an editor twice the monitor's size, off its edges. */
+        int aw = m->w - w2k_px(8), ah = m->h - w2k_px(40);  /* room for the taskbar */
         int w = st.iw + 4 + SCROLL_W + 8, h = VIEW_TOP + st.ih + 4 + SCROLL_W + 8;
-        if (w + l + r > aw) w = aw - l - r;
-        if (h + t + b > ah) h = ah - t - b;
         if (w < 400) w = 400;
         if (h < 300) h = 300;
+        int pw = w2k_px(w), ph = w2k_px(h);
+        if (pw + l + r > aw) pw = aw - l - r;
+        if (ph + t + b > ah) ph = ah - t - b;
+        if (pw < w2k_px(400)) pw = w2k_px(400);
+        if (ph < w2k_px(300)) ph = w2k_px(300);
+        w = w2k_lp(pw); h = w2k_lp(ph);
+        if (w2k_px(w) > pw) w--;
+        if (w2k_px(h) > ph) h--;
         int fx = rx - l, fy = ry - t;
-        if (fx + w + l + r > m->x + aw) fx = m->x + aw - w - l - r;
-        if (fy + h + t + b > m->y + ah) fy = m->y + ah - h - t - b;
+        if (fx + pw + l + r > m->x + aw) fx = m->x + aw - pw - l - r;
+        if (fy + ph + t + b > m->y + ah) fy = m->y + ah - ph - t - b;
         if (fx < m->x) fx = m->x;
         if (fy < m->y) fy = m->y;
         st.win->resizable = 1;
         st.win->min_w = 300; st.win->min_h = 200;
         sh.flags = (sh.flags & ~(long)PMaxSize) | PMinSize | PPosition | USPosition;
-        sh.min_width = 300; sh.min_height = 200;
+        sh.min_width = w2k_px(300); sh.min_height = w2k_px(200);
         sh.x = fx; sh.y = fy;
         XSetWMNormalHints(w2k.dpy, st.win->win, &sh);
         w2k_win_resize(st.win, w, h);
@@ -1174,8 +1237,8 @@ static void become_editor(int yes)
     } else {
         st.win->resizable = 0;
         sh.flags |= PMinSize | PMaxSize;
-        sh.min_width = sh.max_width = STRIP_W;
-        sh.min_height = sh.max_height = STRIP_H;
+        sh.min_width = sh.max_width = w2k_px(STRIP_W);
+        sh.min_height = sh.max_height = w2k_px(STRIP_H);
         XSetWMNormalHints(w2k.dpy, st.win->win, &sh);
         w2k_win_resize(st.win, STRIP_W, STRIP_H);
     }
@@ -1200,26 +1263,48 @@ static void do_save(void)
     if (!st.rgba) return;
     char path[1024];
     snprintf(path, sizeof path, "%.1000s/Capture.png", st.last_dir);
-    if (!w2k_file_dialog_filter(st.win, 1, path, sizeof path,
-                                "Portable Network Graphic file (PNG) (*.png)|*.png|"
-                                "JPEG file (*.jpg)|*.jpg;*.jpeg|Bitmap (*.bmp)|*.bmp"))
+    W2kFileDlgOpts fo = { 0 };
+    if (!w2k_file_dialog_opts(st.win, 1, path, sizeof path,
+                              "Portable Network Graphic file (PNG) (*.png)|*.png|"
+                              "JPEG file (*.jpg)|*.jpg;*.jpeg|Bitmap (*.bmp)|*.bmp", &fo))
         return;
+    const char *base = strrchr(path, '/');
+    const char *dot = strrchr(base ? base : path, '.');
+    int fmt = -1;                            /* the filter's order: PNG, JPEG, BMP */
+    if (dot && !strcasecmp(dot, ".png")) fmt = 0;
+    else if (dot && (!strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".jpeg"))) fmt = 1;
+    else if (dot && !strcasecmp(dot, ".bmp")) fmt = 2;
+    if (fmt < 0) {
+        /* No extension of ours: the one of the chosen "Save as type" is
+         * added, and the file that makes is the one asked about. The
+         * dialog asks only about the name as typed, so "shot" went over
+         * an existing shot.png without a word, and always as a PNG. */
+        static const char *const ext[] = { ".png", ".jpg", ".bmp" };
+        fmt = fo.filter >= 0 && fo.filter < 3 ? fo.filter : 0;
+        if (strlen(path) + strlen(ext[fmt]) >= sizeof path) {
+            w2k_msgbox(st.win, "Snipping Tool", "The snip could not be saved.", MB_OK | MB_ICONERROR);
+            return;
+        }
+        strcat(path, ext[fmt]);
+        struct stat sb;
+        if (stat(path, &sb) == 0) {
+            const char *nm = strrchr(path, '/');
+            char msg[1200];
+            snprintf(msg, sizeof msg, "%s already exists.\nDo you want to replace it?",
+                     nm ? nm + 1 : path);
+            if (w2k_msgbox(st.win, "Save As", msg, MB_YESNO | MB_ICONWARNING) != ID_YES)
+                return;
+        }
+    }
     unsigned char *flat = flattened();
     if (!flat) {
         w2k_msgbox(st.win, "Snipping Tool", "The snip could not be read back for saving.", MB_OK | MB_ICONERROR);
         return;
     }
-    const char *base = strrchr(path, '/');
-    const char *dot = strrchr(base ? base : path, '.');
     int ok;
-    if (dot && (!strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".jpeg")))
-        ok = w2k_jpeg_save(path, flat, st.iw, st.ih);
-    else if (dot && !strcasecmp(dot, ".bmp"))
-        ok = w2k_bmp_save(path, flat, st.iw, st.ih);
-    else {
-        if (!dot) strncat(path, ".png", sizeof path - strlen(path) - 1);
-        ok = w2k_png_save(path, flat, st.iw, st.ih);
-    }
+    if (fmt == 1) ok = w2k_jpeg_save(path, flat, st.iw, st.ih);
+    else if (fmt == 2) ok = w2k_bmp_save(path, flat, st.iw, st.ih);
+    else ok = w2k_png_save(path, flat, st.iw, st.ih);
     free(flat);
     if (!ok) w2k_msgbox(st.win, "Snipping Tool", "The snip could not be saved.", MB_OK | MB_ICONERROR);
     else {
@@ -1242,6 +1327,15 @@ static void do_copy(void)
  * ------------------------------------------------------------------ */
 static void capture_now(void)
 {
+    /* A stroke, eraser or scrollbar drag in progress ends here: its
+     * release is eaten by the snip, and the stroke itself is freed with
+     * the old picture below -- the pen went on inking into freed memory,
+     * or on plain mouse movement if the snip was cancelled. */
+    if (st.cur) { st.cur = NULL; st.pm_dirty = 1; }
+    st.erasing = 0;
+    w2k_scroll_release(&st.vsb);
+    w2k_scroll_release(&st.hsb);
+    st.tb->pressed = -1;
     hide_tool();
     int ok = take_snip();
     /* Development aid: W2K_SNIP_DEBUG reports what was taken. */
@@ -1414,7 +1508,7 @@ static int event(W2kWin *w, XEvent *e)
         }
         int ix, iy;
         if (e->xbutton.button == Button1 && st.rgba && in_view(x, y, &ix, &iy)) {
-            if (st.tool == TOOL_ERASER) erase_at(ix, iy);
+            if (st.tool == TOOL_ERASER) { st.erasing = 1; erase_at(ix, iy); }
             else if (st.tool == TOOL_PEN || st.tool == TOOL_HIGHLIGHT) {
                 st.cur = stroke_new(st.tool);
                 if (!st.cur) break;
@@ -1435,6 +1529,12 @@ static int event(W2kWin *w, XEvent *e)
             stroke_add(st.cur, x - v.x - 2 + st.hsb.pos, y - v.y - 2 + st.vsb.pos);
             w2k_win_dirty(w);
         }
+        /* The eraser rubs out what it is dragged over, not only what it
+         * was first put down on. */
+        int ix, iy;
+        if (st.erasing && st.tool == TOOL_ERASER && (e->xmotion.state & Button1Mask) &&
+            in_view(x, y, &ix, &iy))
+            erase_at(ix, iy);
         return 1;
     }
     case ButtonRelease: {
@@ -1447,6 +1547,7 @@ static int event(W2kWin *w, XEvent *e)
         w2k_scroll_release(&st.vsb);
         w2k_scroll_release(&st.hsb);
         if (st.cur) { st.cur = NULL; st.pm_dirty = 1; st.saved = 0; }
+        st.erasing = 0;
         w2k_win_dirty(w);
         if (hit) command(NULL, hit);
         return 1;

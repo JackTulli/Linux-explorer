@@ -236,9 +236,44 @@ static void append_selected(void)
     if (cm.sel < 0 || cm.sel >= cm.ncp) return;
     char ch[8];
     utf8(cm.cp[cm.sel], ch);
-    char buf[512];
-    snprintf(buf, sizeof buf, "%s%s", w2k_edit_text(cm.pick), ch);
+    /* Sized to what is in the box: a fixed 512 bytes used to cut a long
+     * paste short, mid-character, and drop the one being added. */
+    const char *t = w2k_edit_text(cm.pick);
+    size_t n = strlen(t) + sizeof ch;
+    char *buf = malloc(n);
+    if (!buf) return;
+    snprintf(buf, n, "%s%s", t, ch);
     w2k_edit_set(cm.pick, buf);
+    free(buf);
+}
+
+/* The index of the cell drawn at a window point, or -1. Only whole rows
+ * are drawn, so the strip under the last one is nothing -- a click there
+ * used to select a character that was not on the screen. */
+static int cell_at(int x, int y)
+{
+    if (!w2k_rect_hit(&cm.grid, x, y)) return -1;
+    int dx = x - cm.grid.x - 2, dy = y - cm.grid.y - 2;
+    if (dx < 0 || dy < 0) return -1;
+    int c = dx / CELL, r = dy / CELL;
+    if (c >= COLS || r >= (cm.grid.h - 4) / CELL) return -1;
+    int idx = (cm.sb.pos + r) * COLS + c;
+    return idx < cm.ncp ? idx : -1;
+}
+
+/* Move the grid selection from the keyboard, scrolling it into view. */
+static void select_cell(int idx)
+{
+    if (cm.ncp <= 0) return;
+    if (idx < 0) idx = 0;
+    if (idx >= cm.ncp) idx = cm.ncp - 1;
+    cm.sel = idx;
+    int row = idx / COLS, rows = (cm.grid.h - 4) / CELL;
+    if (rows < 1) rows = 1;
+    if (row < cm.sb.pos) cm.sb.pos = row;
+    if (row >= cm.sb.pos + rows) cm.sb.pos = row - rows + 1;
+    w2k_scroll_clamp(&cm.sb);
+    set_status();
 }
 
 static void on_font(void *u, int i)
@@ -257,21 +292,23 @@ static int event(W2kWin *w, XEvent *e)
     case ButtonPress: {
         int x = e->xbutton.x, y = e->xbutton.y;
         if (w2k_combo_press(cm.font, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        /* The wheel before the edit: the edit claims every wheel turn,
+         * wherever the pointer is, and the grid never scrolled. */
+        if (e->xbutton.button == Button4 || e->xbutton.button == Button5) {
+            w2k_scroll_wheel(&cm.sb, e->xbutton.button == Button4 ? -1 : 1);
+            w2k_win_dirty(w);
+            return 1;
+        }
         if (w2k_edit_press(cm.pick, &e->xbutton)) { w2k_win_dirty(w); return 1; }
         if (w2k_scroll_needed(&cm.sb) && w2k_rect_hit(&cm.sb.r, x, y)) {
             w2k_scroll_press(&cm.sb, x, y);
             w2k_win_dirty(w);
             return 1;
         }
-        if (e->xbutton.button == Button4 || e->xbutton.button == Button5) {
-            w2k_scroll_wheel(&cm.sb, e->xbutton.button == Button4 ? -1 : 1);
-            w2k_win_dirty(w);
-            return 1;
-        }
         if (w2k_rect_hit(&cm.grid, x, y)) {
-            int c = (x - cm.grid.x - 2) / CELL, r = (y - cm.grid.y - 2) / CELL;
-            int idx = (cm.sb.pos + r) * COLS + c;
-            if (c >= 0 && c < COLS && idx >= 0 && idx < cm.ncp) {
+            int idx = cell_at(x, y);
+            cm.pick->focused = 0;            /* the arrows now move the grid */
+            if (idx >= 0) {
                 static Time last;
                 static int lastidx = -1;
                 int dbl = (idx == lastidx &&
@@ -310,10 +347,8 @@ static int event(W2kWin *w, XEvent *e)
         if (w2k_edit_motion(cm.pick, &e->xmotion)) { w2k_win_dirty(w); return 1; }
         if (cm.preview >= 0 && (e->xmotion.state & Button1Mask) &&
             w2k_rect_hit(&cm.grid, e->xmotion.x, e->xmotion.y)) {
-            int c = (e->xmotion.x - cm.grid.x - 2) / CELL;
-            int r = (e->xmotion.y - cm.grid.y - 2) / CELL;
-            int idx = (cm.sb.pos + r) * COLS + c;
-            if (c >= 0 && c < COLS && idx >= 0 && idx < cm.ncp && idx != cm.sel) {
+            int idx = cell_at(e->xmotion.x, e->xmotion.y);
+            if (idx >= 0 && idx != cm.sel) {
                 cm.sel = cm.preview = idx;
                 set_status();
                 w2k_win_dirty(w);
@@ -325,6 +360,50 @@ static int event(W2kWin *w, XEvent *e)
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         if (ks == XK_Escape) { w2k_win_close(w, 0); return 1; }
         if (ks == XK_Return || ks == XK_KP_Enter) { append_selected(); w2k_win_dirty(w); return 1; }
+        /* The underlined letters. They used to fall through to the edit
+         * and type themselves into it: Alt+S added an "s". */
+        if (e->xkey.state & Mod1Mask) {
+            if (ks == XK_s) append_selected();
+            else if (ks == XK_c) w2k_clipboard_set(w2k_edit_text(cm.pick));
+            else if (ks == XK_h) { cm.pick->focused = 1; cm.pick->caret_on = 1; }
+            else if (ks == XK_f) {
+                /* Drop the font list down, as a click on it does. */
+                XButtonEvent b;
+                memset(&b, 0, sizeof b);
+                b.type = ButtonPress;
+                b.display = e->xkey.display;
+                b.window = e->xkey.window;
+                b.time = e->xkey.time;
+                b.button = Button1;
+                b.x = cm.font->r.x + cm.font->r.w - 10;
+                b.y = cm.font->r.y + cm.font->r.h / 2;
+                w2k_combo_press(cm.font, &b);
+            }
+            w2k_win_dirty(w);
+            return 1;
+        }
+        /* Tab goes between the grid and the box; in the grid the arrows
+         * move the selection, as in the Windows Character Map. */
+        if (ks == XK_Tab || ks == XK_ISO_Left_Tab) {
+            cm.pick->focused = !cm.pick->focused;
+            cm.pick->caret_on = cm.pick->focused;
+            w2k_win_dirty(w);
+            return 1;
+        }
+        if (!cm.pick->focused) {
+            int to = -2, rows = (cm.grid.h - 4) / CELL;
+            if (rows < 1) rows = 1;
+            int at = cm.sel >= 0 ? cm.sel : 0;
+            if (ks == XK_Left)       to = cm.sel >= 0 ? at - 1 : 0;
+            else if (ks == XK_Right) to = cm.sel >= 0 ? at + 1 : 0;
+            else if (ks == XK_Up)    to = cm.sel >= 0 && at >= COLS ? at - COLS : at;
+            else if (ks == XK_Down)  to = cm.sel >= 0 && at + COLS < cm.ncp ? at + COLS : at;
+            else if (ks == XK_Home)  to = 0;
+            else if (ks == XK_End)   to = cm.ncp - 1;
+            else if (ks == XK_Prior) to = at >= rows * COLS ? at - rows * COLS : at % COLS;
+            else if (ks == XK_Next)  to = at + rows * COLS < cm.ncp ? at + rows * COLS : cm.ncp - 1;
+            if (to != -2) { select_cell(to); w2k_win_dirty(w); return 1; }
+        }
         if (ks == XK_Prior || ks == XK_Next) {
             cm.sb.pos += (ks == XK_Next ? cm.sb.page : -cm.sb.page);
             w2k_scroll_clamp(&cm.sb);
