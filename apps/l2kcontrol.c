@@ -2268,6 +2268,9 @@ typedef struct {
      * power button, from logind. */
     W2kCombo  *mon_off, *standby, *hibern, *lid, *pbtn;
     char       lid_was[32], pbtn_was[32];
+    /* Where each list started: one left alone keeps the machine's own
+     * value, even one the list does not offer ("lock", 7 minutes). */
+    int        lid_idx, pbtn_idx, mo_idx, sb_idx, hb_idx;
     int        can_suspend, can_hibernate;
     /* Graphics: the processor the desktop's programs draw with; the
      * first is the default one. */
@@ -2333,7 +2336,9 @@ static void pw_on_bright(void *u, int pos)
 {
     PowerDlg *pd = u;
     pd->want_bright = pos * 5;
-    pd->dirty = pd->want_bright != pd->cur_bright;
+    /* Only ever sets it: a slider moved and moved back must not clear
+     * what the other tabs have waiting. */
+    if (pd->want_bright != pd->cur_bright) pd->dirty = 1;
     w2k_win_dirty(pd->win);
 }
 
@@ -2342,9 +2347,12 @@ static void pw_commit(PowerDlg *pd)
     if (!pd->dirty) return;
     int ok = 1;
     /* The scheme's minutes: saved and broadcast, the shell applies them. */
-    int mo = pw_minutes[pd->mon_off->sel < 0 ? 0 : pd->mon_off->sel];
-    int sb = pw_minutes[pd->standby->sel < 0 ? 0 : pd->standby->sel];
-    int hb = pw_minutes[pd->hibern->sel < 0 ? 0 : pd->hibern->sel];
+    int mo = pd->mon_off->sel == pd->mo_idx ? w2k_monitor_off_min
+           : pw_minutes[pd->mon_off->sel < 0 ? 0 : pd->mon_off->sel];
+    int sb = pd->standby->sel == pd->sb_idx ? w2k_standby_min
+           : pw_minutes[pd->standby->sel < 0 ? 0 : pd->standby->sel];
+    int hb = pd->hibern->sel == pd->hb_idx ? w2k_hibernate_min
+           : pw_minutes[pd->hibern->sel < 0 ? 0 : pd->hibern->sel];
     if (mo != w2k_monitor_off_min || sb != w2k_standby_min || hb != w2k_hibernate_min) {
         w2k_monitor_off_min = mo;
         w2k_standby_min = sb;
@@ -2353,6 +2361,9 @@ static void pw_commit(PowerDlg *pd)
         w2k_scheme_save(NULL);
         w2k_scheme_broadcast();
     }
+    pd->mo_idx = pd->mon_off->sel;
+    pd->sb_idx = pd->standby->sel;
+    pd->hb_idx = pd->hibern->sel;
     /* The graphics processor: saved and broadcast, and every shell
      * process hands it on to what it starts next. */
     const char *gpu = pd->gpu_sel > 0 ? pd->gpu[pd->gpu_sel].addr : "";
@@ -2363,12 +2374,20 @@ static void pw_commit(PowerDlg *pd)
     }
     /* The lid and the button belong to logind: one administrator prompt
      * writes both. */
-    const char *lid = pw_actions[pd->lid->sel < 0 ? 0 : pd->lid->sel];
-    const char *btn = pw_actions[pd->pbtn->sel < 0 ? 0 : pd->pbtn->sel];
-    if (strcmp(lid, pd->lid_was) || strcmp(btn, pd->pbtn_was)) {
+    /* Only when one of them was changed here: an untouched list used to
+     * turn a value it does not offer into "Do nothing", and ask for the
+     * administrator's password to write it, on any Apply. */
+    if (pd->lid->sel != pd->lid_idx || pd->pbtn->sel != pd->pbtn_idx) {
+        char lid[32], btn[32];
+        snprintf(lid, sizeof lid, "%s", pd->lid->sel == pd->lid_idx ? pd->lid_was
+                 : pw_actions[pd->lid->sel < 0 ? 0 : pd->lid->sel]);
+        snprintf(btn, sizeof btn, "%s", pd->pbtn->sel == pd->pbtn_idx ? pd->pbtn_was
+                 : pw_actions[pd->pbtn->sel < 0 ? 0 : pd->pbtn->sel]);
         if (w2k_power_lid_set(lid, btn) == 0) {
             snprintf(pd->lid_was, sizeof pd->lid_was, "%s", lid);
             snprintf(pd->pbtn_was, sizeof pd->pbtn_was, "%s", btn);
+            pd->lid_idx = pd->lid->sel;
+            pd->pbtn_idx = pd->pbtn->sel;
         } else {
             ok = 0;
             w2k_msgbox(pd->win, "Power Options",
@@ -2645,6 +2664,9 @@ static void open_power(void)
     pw_fill_minutes(pd.mon_off, w2k_monitor_off_min);
     pw_fill_minutes(pd.standby, w2k_standby_min);
     pw_fill_minutes(pd.hibern, w2k_hibernate_min);
+    pd.mo_idx = pd.mon_off->sel;
+    pd.sb_idx = pd.standby->sel;
+    pd.hb_idx = pd.hibern->sel;
     pd.mon_off->r = (W2kRect){ c.x + 160, c.y + 66 + 22, c.w - 18 - 160, 21 };
     pd.standby->r = (W2kRect){ c.x + 160, c.y + 66 + 52, c.w - 18 - 160, 21 };
     pd.hibern->r  = (W2kRect){ c.x + 160, c.y + 66 + 82, c.w - 18 - 160, 21 };
@@ -2653,6 +2675,8 @@ static void open_power(void)
     pd.pbtn = w2k_combo_new(0); pd.pbtn->user = &pd; pd.pbtn->on_change = pw_on_change;
     pw_fill_actions(pd.lid, pd.lid_was);
     pw_fill_actions(pd.pbtn, pd.pbtn_was);
+    pd.lid_idx = pd.lid->sel;
+    pd.pbtn_idx = pd.pbtn->sel;
     pd.lid->r  = (W2kRect){ c.x + 19, c.y + 10 + 20 + fh0 + 4, c.w - 38, 21 };
     pd.pbtn->r = (W2kRect){ c.x + 19, c.y + 10 + 20 + fh0 + 4 + 21 + 10 + fh0 + 4, c.w - 38, 21 };
 

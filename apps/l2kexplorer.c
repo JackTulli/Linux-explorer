@@ -68,7 +68,7 @@ typedef struct {
     int         split_x, dragging_split;
     int         sort_col, sort_dir;
 
-    char        clip[64][1024];       /* pending file cut/copy */
+    char      (*clip)[1024];          /* pending file cut/copy, nclip of them */
     int         nclip, clip_cut;
     char        home[1024];
     char        search_pat[256];      /* active wildcard filter; empty = none */
@@ -160,6 +160,7 @@ static void display_name(const Node *nd, char *out, int n)
     case K_NETWORK:    snprintf(out, n, "My Network Places"); return;
     case K_RECYCLE:    snprintf(out, n, "Recycle Bin"); return;
     }
+    if (!strcmp(nd->path, w2k_trash_files_dir())) { snprintf(out, n, "Recycle Bin"); return; }
     if (!strcmp(nd->path, "/"))     { snprintf(out, n, "Local Disk (C:)"); return; }
     if (!strcmp(nd->path, ex.home)) { snprintf(out, n, "My Documents"); return; }
     const char *b = strrchr(nd->path, '/');
@@ -572,6 +573,22 @@ static void viewmem_apply(const Node *nd)
 
 static void navigate(const Node *nd, int record)
 {
+    /* The Recycle Bin is the folder its files are kept in, shown under
+     * its own name: as a place of its own it listed nothing, whatever
+     * was in it, and nothing in it could be restored. */
+    Node bin;
+    if (nd->kind == K_RECYCLE) {
+        memset(&bin, 0, sizeof bin);
+        bin.kind = K_FS;
+        set_path(bin.path, sizeof bin.path, w2k_trash_files_dir());
+        char p[1100];
+        snprintf(p, sizeof p, "%s", bin.path);
+        size_t tl = strlen(w2k_trash_dir());   /* the bin's own folders are private */
+        for (char *q = p + 1; *q; q++)
+            if (*q == '/') { *q = 0; mkdir(p, (size_t)(q - p) >= tl ? 0700 : 0755); *q = '/'; }
+        mkdir(p, 0700);
+        nd = &bin;
+    }
     w2k_sound_play(SND_NAVIGATING);
     viewmem_store();                 /* the folder we are leaving */
     ex.cur = *nd;
@@ -671,6 +688,11 @@ static void addr_complete(void)
 static void go_up(void)
 {
     if (ex.cur.kind == K_FS) {
+        if (!strcmp(ex.cur.path, w2k_trash_files_dir())) {   /* the bin is on the Desktop */
+            Node nd = { K_DESKTOP, { 0 } };
+            navigate(&nd, 1);
+            return;
+        }
         if (!strcmp(ex.cur.path, "/")) {
             Node nd = { K_MYCOMPUTER, { 0 } };
             navigate(&nd, 1);
@@ -882,16 +904,28 @@ static void selected_paths(char out[][1024], int max, int *n)
     }
 }
 
+/* Every selected item's path, in a block the caller frees: Delete, Cut,
+ * Copy, Add to Archive and a drag used to take the first 64 of a larger
+ * selection and leave the rest without a word. NULL (n = 0) when nothing
+ * is selected. */
+static char (*selection_paths(int *n))[1024]
+{
+    int count = 0;
+    for (int i = 0; i < ex.list->n; i++)
+        if (ex.list->items[i].selected && entry_at_row(i)) count++;
+    *n = 0;
+    if (!count) return NULL;
+    char (*out)[1024] = calloc((size_t)count, sizeof *out);
+    if (out) selected_paths(out, count, n);
+    return out;
+}
+
 /* Delete moves to the Recycle Bin; holding Shift destroys instead, exactly
  * as in Windows. Deleting something that is already in the bin is always
  * permanent -- there is nowhere further for it to go. */
-static void do_delete_ex(int permanent)
+static void delete_paths(char (*paths)[1024], int n, int permanent)
 {
     if (ex.cur.kind != K_FS) return;
-    char paths[64][1024];
-    int n;
-    selected_paths(paths, 64, &n);
-    if (!n) return;
 
     if (under_dir(ex.cur.path, w2k_trash_dir()))
         permanent = 1;
@@ -944,6 +978,14 @@ static void do_delete_ex(int permanent)
         }
     }
     refill_list();
+}
+
+static void do_delete_ex(int permanent)
+{
+    int n;
+    char (*paths)[1024] = selection_paths(&n);
+    if (n) delete_paths(paths, n, permanent);
+    free(paths);
 }
 
 static void do_delete(void) { do_delete_ex(0); }
@@ -1032,17 +1074,26 @@ static void do_new_shortcut(void)
     path_join(link, sizeof link, ex.cur.path, name);
     size_t l = strlen(link);
     snprintf(link + l, sizeof link - l, ".desktop");
-    FILE *f = fopen(link, "w");
+    /* Never over a file already there, and a shortcut we made is trusted
+     * (runnable) and written escaped, as Create Shortcut's are: it used
+     * to open as a text file, and a % in the command went missing. */
+    int fd = open(link, O_WRONLY | O_CREAT | O_EXCL, 0755);
+    FILE *f = fd >= 0 ? fdopen(fd, "w") : NULL;
     if (!f) {
         char e[1300];
         snprintf(e, sizeof e, "Cannot create the shortcut.\n\n%s",
                  strerror(errno));
+        if (fd >= 0) close(fd);
         w2k_msgbox(ex.win, "Windows Explorer", e, MB_OK | MB_ICONERROR);
         return;
     }
+    char ename[600], ecmd[1100];
+    w2k_desktop_escape(name, ename, sizeof ename, 0);
+    w2k_desktop_escape(cmd, ecmd, sizeof ecmd, 1);
     fprintf(f, "[Desktop Entry]\nType=Application\nName=%s\nExec=%s\n"
-               "Terminal=false\n", name, cmd);
+               "Terminal=false\n", ename, ecmd);
     fclose(f);
+    chmod(link, 0755);                  /* whatever the umask took off */
     undo_push(U_NEW, link, NULL);
     refill_list();
 }
@@ -1111,12 +1162,8 @@ static void spawn(const char *fmt, const char *arg);
 
 /* "Create Shortcut" writes a .desktop beside the file -- this system's
  * .lnk. Send To > Desktop is the same operation aimed at ~/Desktop. */
-static void do_create_shortcut(const char *into)
+static void shortcut_paths(char (*paths)[1024], int n, const char *into)
 {
-    char paths[16][1024];
-    int n;
-    selected_paths(paths, 16, &n);
-    if (!n) return;
 
     for (int i = 0; i < n; i++) {
         const char *base = strrchr(paths[i], '/');
@@ -1157,12 +1204,16 @@ static void do_create_shortcut(const char *into)
     refill_list();
 }
 
-static void do_send_to_mydocs(void)
+static void do_create_shortcut(const char *into)
 {
-    char paths[16][1024];
     int n;
-    selected_paths(paths, 16, &n);
-    if (!n) return;
+    char (*paths)[1024] = selection_paths(&n);
+    if (n) shortcut_paths(paths, n, into);
+    free(paths);
+}
+
+static void mydocs_paths(char (*paths)[1024], int n)
+{
     for (int i = 0; i < n; i++) {
         const char *base = strrchr(paths[i], '/');
         base = base ? base + 1 : paths[i];
@@ -1181,6 +1232,14 @@ static void do_send_to_mydocs(void)
         }
     }
     refill_list();
+}
+
+static void do_send_to_mydocs(void)
+{
+    int n;
+    char (*paths)[1024] = selection_paths(&n);
+    if (n) mydocs_paths(paths, n);
+    free(paths);
 }
 
 /* Open With: the command to run, offered with what this kind of file
@@ -1528,8 +1587,12 @@ static void ex_on_drop(Window w, int x, int y, const char *uris, int move)
     char dir[1024];
     if (!tree_drop_dir(x, y, dir, sizeof dir) && !drop_target_dir(x, y, dir, sizeof dir)) return;
 
-    char paths[64][1024];
-    int n = w2k_uri_list_paths(uris, paths, 64);
+    /* Room for every file dropped, not the first 64. */
+    int cap = 1;
+    for (const char *c = uris; *c; c++) if (*c == '\n') cap++;
+    char (*paths)[1024] = calloc((size_t)cap, sizeof *paths);
+    if (!paths) return;
+    int n = w2k_uri_list_paths(uris, paths, cap);
     /* Moving within one folder is a no-op; across folders, files go where
      * they are dropped. Dragging with Ctrl held copies instead, and Shift
      * moves, as in Windows -- and as in Windows, a drag to another drive
@@ -1549,6 +1612,7 @@ static void ex_on_drop(Window w, int x, int y, const char *uris, int move)
     XDefineCursor(w2k.dpy, ex.win->win, w2k.cur_wait);
     XFlush(w2k.dpy);
     int done = w2k_fs_transfer(paths, n, dir, move, drop_confirm, NULL);
+    free(paths);
     /* A link dragged out of a browser becomes an Internet shortcut. */
     char urls[16][1024];
     int nu = w2k_uri_list_urls(uris, urls, 16);
@@ -2174,13 +2238,9 @@ static int arc_dialog(ArcDlg *a, const char *title, const char *initial)
     return rc == ID_OK;
 }
 
-static void do_zip(void)
+static void zip_paths(char (*paths)[1024], int n)
 {
     if (ex.cur.kind != K_FS) return;
-    char paths[64][1024];
-    int n;
-    selected_paths(paths, 64, &n);
-    if (!n) return;
 
     /* One item: <name>.zip beside it. Several: Archive.zip. */
     const char *base = strrchr(paths[0], '/');
@@ -2251,31 +2311,40 @@ static void do_zip(void)
     files = 0; dirs = 0; bytes = 0;
     for (int i = 0; i < n; i++) count_tree(paths[i], recurse, &files, &dirs, &bytes, 0);
 
-    /* The items, quoted, relative to this folder. */
-    char items[6000] = "", q[1200];
-    int il = 0;
-    for (int i = 0; i < n && il < (int)sizeof items - 1200; i++) {
+    /* The items, quoted, relative to this folder: all of them -- a fixed
+     * buffer used to leave the ones past it out of the archive. */
+    size_t isz = (size_t)n * 1210 + 1;
+    char *items = malloc(isz), q[1200];
+    if (!items) return;
+    items[0] = 0;
+    size_t il = 0;
+    for (int i = 0; i < n; i++) {
         const char *nm = strrchr(paths[i], '/');
         /* As ./name: a name beginning with a dash is a file, not an
          * option to the archiver (or to rm). */
         char rel[1100];
         snprintf(rel, sizeof rel, "./%.1000s", nm ? nm + 1 : paths[i]);
         shell_quote(rel, q, sizeof q);
-        il += snprintf(items + il, sizeof items - il, " %s", q);
+        il += (size_t)snprintf(items + il, isz - il, " %s", q);
     }
-    char cmd[20000], qd[1200], qt[1200];
+    /* sh -c takes the command as one argument, and Linux caps one at
+     * 128 KiB: past that nothing would run at all. */
+    size_t csz = 3 * il + 8192;
+    if (csz > 131000) csz = 131000;
+    char *cmd = malloc(csz), qd[1200], qt[1200];
+    if (!cmd) { free(items); return; }
     int cl = 0;
     shell_quote(ex.cur.path, qd, sizeof qd);
     shell_quote(target, qt, sizeof qt);
     if (fmt == 0) {
         int level = lv == 0 ? 0 : lv == 1 ? 1 : lv == 3 ? 9 : 6;
-        snprintf(cmd, sizeof cmd, "cd %s && zip -v %s%s%s-%d %s%s", qd,
-                 recurse ? "-r " : "", relative ? "" : "-j ", delete ? "-m " : "", level, qt, items);
+        cl = snprintf(cmd, csz, "cd %s && zip -v %s%s%s-%d %s%s", qd,
+                      recurse ? "-r " : "", relative ? "" : "-j ", delete ? "-m " : "", level, qt, items);
     } else if (fmt == 1) {
         int level = lv == 0 ? 0 : lv == 1 ? 1 : lv == 3 ? 9 : 5;
         /* 7z always takes folders whole; -sdel deletes what it took. */
-        snprintf(cmd, sizeof cmd, "cd %s && 7z a -bb1 -mx=%d %s%s %s%s", qd, level,
-                 relative ? "" : "-spf0 ", delete ? "-sdel " : "", qt, items);
+        cl = snprintf(cmd, csz, "cd %s && 7z a -bb1 -mx=%d %s%s %s%s", qd, level,
+                      relative ? "" : "-spf0 ", delete ? "-sdel " : "", qt, items);
         (void)recurse;
     } else {
         /* tar, through the compressor at the chosen level; "Store" leaves
@@ -2284,7 +2353,7 @@ static void do_zip(void)
         int level = lv == 0 ? 1 : lv == 1 ? 1 : lv == 3 ? 9 : 6;
         char filter[80] = "";
         if (comp) snprintf(filter, sizeof filter, "-I '%s -%d' ", comp, level);
-        cl = snprintf(cmd, sizeof cmd, "cd %s && tar %s-cvf %s%s%s", qd, filter, qt,
+        cl = snprintf(cmd, csz, "cd %s && tar %s-cvf %s%s%s", qd, filter, qt,
                       recurse ? "" : " --no-recursion", items);
         /* "Delete files after adding" waits for the whole archive, and for
          * it to read back: tar's own --remove-files deletes each file as
@@ -2292,25 +2361,36 @@ static void do_zip(void)
          * reached the archive. (One inside a chosen folder was refused
          * above.) Without subfolders only what was added goes: the files,
          * and a folder only if it is then empty. */
-        if (delete && cl > 0 && cl < (int)sizeof cmd) {
+        if (delete && cl > 0 && (size_t)cl < csz) {
             if (recurse)
-                cl += snprintf(cmd + cl, sizeof cmd - (size_t)cl,
+                cl += snprintf(cmd + cl, csz - (size_t)cl,
                                " && tar -tf %s >/dev/null && rm -rf --%s", qt, items);
             else
-                cl += snprintf(cmd + cl, sizeof cmd - (size_t)cl,
+                cl += snprintf(cmd + cl, csz - (size_t)cl,
                                " && tar -tf %s >/dev/null && { rm -f --%s 2>/dev/null;"
                                " rmdir --%s 2>/dev/null; true; }", qt, items, items);
         }
-        if (cl < 0 || cl >= (int)sizeof cmd) {
-            w2k_msgbox(ex.win, "Add to Archive", "Too many items are selected to add "
-                       "in one go. Add them in smaller groups.", MB_OK | MB_ICONERROR);
-            return;
-        }
         (void)relative;
+    }
+    free(items);
+    if (cl < 0 || (size_t)cl >= csz) {
+        free(cmd);
+        w2k_msgbox(ex.win, "Add to Archive", "Too many items are selected to add "
+                   "in one go. Add them in smaller groups.", MB_OK | MB_ICONERROR);
+        return;
     }
     const char *tb = strrchr(target, '/');
     run_with_progress("Compressing...", cmd, files + dirs, ex.cur.path, tb ? tb + 1 : target);
+    free(cmd);
     refill_list();
+}
+
+static void do_zip(void)
+{
+    int n;
+    char (*paths)[1024] = selection_paths(&n);
+    if (n) zip_paths(paths, n);
+    free(paths);
 }
 
 /* How many entries an archive holds, from its listing. */
@@ -2392,12 +2472,8 @@ static void do_unzip(void)
 }
 
 /* Put selected items back where they were deleted from. */
-static void do_restore(void)
+static void restore_paths(char (*paths)[1024], int n)
 {
-    char paths[64][1024];
-    int n;
-    selected_paths(paths, 64, &n);
-    if (!n) return;
 
     int failed = 0;
     for (int i = 0; i < n; i++) {
@@ -2410,6 +2486,14 @@ static void do_restore(void)
                                : "Some items could not be restored.",
                    MB_OK | MB_ICONWARNING);
     refill_list();
+}
+
+static void do_restore(void)
+{
+    int n;
+    char (*paths)[1024] = selection_paths(&n);
+    if (n) restore_paths(paths, n);
+    free(paths);
 }
 
 static void do_empty_bin(void)
@@ -2904,7 +2988,8 @@ static void command(void *user, int id)
 
     case ID_CUT:
     case ID_COPY:
-        selected_paths(ex.clip, 64, &ex.nclip);
+        free(ex.clip);
+        ex.clip = selection_paths(&ex.nclip);
         ex.clip_cut = (id == ID_CUT);
         break;
     case ID_PASTE: do_paste(); break;
@@ -3189,9 +3274,8 @@ static int event(W2kWin *w, XEvent *e)
             (abs(e->xmotion.x - drag_from_x) > 4 ||
              abs(e->xmotion.y - drag_from_y) > 4)) {
             drag_armed = 0;
-            char paths[64][1024];
             int n;
-            selected_paths(paths, 64, &n);
+            char (*paths)[1024] = selection_paths(&n);
             if (n) {
                 char *uris = w2k_uri_list_build(paths, n);
                 if (uris) {
@@ -3203,6 +3287,7 @@ static int event(W2kWin *w, XEvent *e)
                                  w2k.cur_arrow, CurrentTime);
                 }
             }
+            free(paths);
         }
         if (w2k_dnd_active()) {
             w2k_dnd_set_time(e->xmotion.time);
