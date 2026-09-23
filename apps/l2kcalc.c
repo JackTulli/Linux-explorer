@@ -148,7 +148,10 @@ static int parse_number(Parser *pr, double *out)
     if (!n) return set_err(pr, "Invalid number");
     char *end = NULL;
     *out = strtod(tmp, &end);
-    if (end == tmp) return set_err(pr, "Invalid number");
+    /* All of it or nothing: "1..5" used to be read as 1 with the rest
+     * dropped, and "5.5.5" as 5.5. */
+    if (end != tmp + n) return set_err(pr, "Invalid number");
+    if (*s && (isdigit((unsigned char)*s) || *s == '.')) return set_err(pr, "Number too long");
     pr->p = s;
     return 1;
 }
@@ -271,7 +274,10 @@ static void format_result(double v, char *buf, int n)
 
     char raw[96];
     snprintf(raw, sizeof raw, "%.15g", v);
-    if (strchr(raw, '.') && !strchr(raw, 'e') && !strchr(raw, 'E')) {
+    /* %g's own exponent form ("5e-05"): no grouping, or a comma went into
+     * the exponent. */
+    if (strchr(raw, 'e') || strchr(raw, 'E')) { snprintf(buf, (size_t)n, "%s", raw); return; }
+    if (strchr(raw, '.')) {
         char *end = raw + strlen(raw) - 1;
         while (end > raw && *end == '0') *end-- = 0;
         if (*end == '.') *end = 0;
@@ -349,8 +355,10 @@ static int trailing_start(void)
     while (i >= 0 && (isdigit((unsigned char)cal.expr[i]) ||
                       cal.expr[i] == '.' || cal.expr[i] == ','))
         i--;
+    /* '^' is stored as itself; is_binop() knows the key code. */
     if (i >= 0 && cal.expr[i] == '-' &&
-        (i == 0 || is_binop((unsigned char)cal.expr[i - 1]) || cal.expr[i - 1] == '('))
+        (i == 0 || is_binop((unsigned char)cal.expr[i - 1]) || cal.expr[i - 1] == '^' ||
+         cal.expr[i - 1] == '('))
         i--;
     return i + 1;
 }
@@ -483,14 +491,23 @@ static void press(int key)
     }
 
     if (key >= '0' && key <= '9') {
+        /* 32 digits to a number, as Windows' own limit: more used to end
+         * in "Unexpected characters" at =. */
+        int t = trailing_start(), digits = 0;
+        for (int j = t; j < cal.len; j++) if (isdigit((unsigned char)cal.expr[j])) digits++;
+        if (digits >= 32) return;
         expr_append_char((char)key);
         return;
     }
 
     switch (key) {
-    case '.':
+    case '.': {
+        /* One decimal point to a number, as Windows allows. */
+        int t = trailing_start();
+        if (memchr(cal.expr + t, '.', (size_t)(cal.len - t))) return;
         expr_append_char('.');
         return;
+    }
 
     case ',':
         /* Thousand separator in the number being typed. */
@@ -586,9 +603,26 @@ static void press(int key)
     }
 
     case K_MC:    cal.memory = 0; return;
-    case K_MR:    show_value(cal.memory); cal.just_eq = 1; return;
-    case K_MS:    cal.memory = current_value(); cal.just_eq = 1; return;
-    case K_MPLUS: cal.memory += current_value(); cal.just_eq = 1; return;
+    /* In the middle of a calculation the memory keys work on the number
+     * being typed, as the display's number in Windows, and what is before
+     * it stays: MR used to replace "5 +" whole, and MS store 5 + 3. */
+    case K_MR:
+        if (!cal.just_eq && trailing_start() > 0) {
+            replace_trailing_number(cal.memory);
+            cal.fresh_tail = 1;
+        } else { show_value(cal.memory); cal.just_eq = 1; }
+        return;
+    case K_MS: case K_MPLUS: {
+        int t = trailing_start();
+        double v;
+        if (cal.just_eq || t == 0) v = current_value();
+        else if (t < cal.len) v = number_at(t);
+        else if (!value_of_prefix(t - 1, &v)) v = 0;   /* "5 +": the 5 */
+        cal.memory = key == K_MS ? v : cal.memory + v;
+        if (cal.just_eq || t == 0) cal.just_eq = 1;
+        else cal.fresh_tail = 1;
+        return;
+    }
     }
 }
 
@@ -716,8 +750,8 @@ static void resize_window(void)
      * manager for the new size and tell it this is still not resizable. */
     XSizeHints sh = { 0 };
     sh.flags = PMinSize | PMaxSize;
-    sh.min_width = sh.max_width = w;
-    sh.min_height = sh.max_height = h;
+    sh.min_width = sh.max_width = w2k_px(w);     /* hints are in screen pixels */
+    sh.min_height = sh.max_height = w2k_px(h);
     XSetWMNormalHints(w2k.dpy, cal.win->win, &sh);
     w2k_win_resize(cal.win, w, h);
     if (cal.win->buf) { w2k_free_pixmap(cal.win->buf); cal.win->buf = 0; }
@@ -784,6 +818,7 @@ static int event(W2kWin *w, XEvent *e)
         return 1;
     }
     case KeyPress: {
+        if (w2k_menubar_key(cal.mb, &e->xkey)) { w2k_win_dirty(w); return 1; }   /* Alt+E, F10 */
         char buf[8];
         KeySym ks;
         int n = XLookupString(&e->xkey, buf, sizeof buf - 1, &ks, NULL);
@@ -856,6 +891,7 @@ int main(void)
     cal.win->event = event;
 
     cal.mb = w2k_menubar_new(NULL, command);
+    cal.mb->win_ref = cal.win->win;     /* where its menus open: at 0,0 without it */
     w2k_menubar_add(cal.mb, "&Edit", build_edit);
     w2k_menubar_add(cal.mb, "&View", build_view);
     w2k_menubar_add(cal.mb, "&Help", build_help);
