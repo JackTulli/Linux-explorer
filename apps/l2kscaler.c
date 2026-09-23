@@ -879,6 +879,11 @@ static void cw_bind(CWin *c)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    /* The damage so far is in the picture just taken. Left in the
+     * server's region it stopped any more being reported: with only the
+     * bounding box sent, drawing inside it again says nothing, and the
+     * window froze on screen after a resize or a minimise mid-draw. */
+    if (c->dmg) XDamageSubtract(hd, c->dmg, None, None);
     c->damaged = 0;
 }
 
@@ -943,10 +948,14 @@ static void compose(int x0, int y0, int x1, int y1)
 {
     for (int i = 0; i < ncws; i++) {
         CWin *c = &cws[i];
-        if (!c->damaged || !c->glx) continue;
+        if (!c->damaged) continue;
+        /* Taken off the server's region even for a window with no picture
+         * now (unmapped, or not yet bound), for the reason in cw_bind. */
+        if (c->dmg) XDamageSubtract(hd, c->dmg, None, None);
+        c->damaged = 0;
+        if (!c->glx) continue;
         /* The pixmap was drawn into: let go and take it again, as the
          * extension asks of a reader. */
-        XDamageSubtract(hd, c->dmg, None, None);
         glBindTexture(GL_TEXTURE_2D, c->tex);
         p_glXReleaseTexImageEXT(hd, c->glx, GLX_FRONT_LEFT_EXT);
         p_glXBindTexImageEXT(hd, c->glx, GLX_FRONT_LEFT_EXT, NULL);
