@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/wait.h>
 #include <strings.h>
 #include <fontconfig/fontconfig.h>
@@ -133,6 +134,15 @@ static void defaults_paint(W2kWin *w, Drawable d)
     w2k_draw_pushbutton(d, &dd->cancel, "Cancel", dd->down == 2 ? BS_PRESSED : 0);
 }
 
+/* OK: every command saved, then the box closes. */
+static void defaults_ok(W2kWin *w, DefDlg *dd)
+{
+    for (int i = 0; i < dd->n; i++)
+        w2k_assoc_set(w2k_assoc_class_at(i), w2k_edit_text(dd->edit[i]));
+    w2k_assoc_apply_folder_default();
+    w2k_win_close(w, ID_OK);
+}
+
 static int defaults_event(W2kWin *w, XEvent *e)
 {
     DefDlg *dd = w->user;
@@ -158,10 +168,7 @@ static int defaults_event(W2kWin *w, XEvent *e)
         dd->down = 0;
         for (int i = 0; i < dd->n; i++) w2k_edit_release(dd->edit[i]);
         if (d == 1 && w2k_rect_hit(&dd->ok, x, y)) {
-            for (int i = 0; i < dd->n; i++)
-                w2k_assoc_set(w2k_assoc_class_at(i), w2k_edit_text(dd->edit[i]));
-            w2k_assoc_apply_folder_default();
-            w2k_win_close(w, ID_OK);
+            defaults_ok(w, dd);
         } else if (d == 2 && w2k_rect_hit(&dd->cancel, x, y)) {
             w2k_win_close(w, ID_CANCEL);
         } else if (d >= 100 && d < 100 + dd->n &&
@@ -183,11 +190,15 @@ static int defaults_event(W2kWin *w, XEvent *e)
     case KeyPress: {
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         if (ks == XK_Escape) { w2k_win_close(w, ID_CANCEL); return 1; }
-        if (ks == XK_Tab) {
-            int f = -1;
+        /* OK is the default button: Enter pressed it in name only, and a
+         * command typed in was saved only by a click on OK. */
+        if (ks == XK_Return || ks == XK_KP_Enter) { defaults_ok(w, dd); return 1; }
+        if ((ks == XK_Tab || ks == XK_ISO_Left_Tab) && dd->n) {
+            int f = -1, back = (e->xkey.state & ShiftMask) || ks == XK_ISO_Left_Tab;
             for (int i = 0; i < dd->n; i++) if (dd->edit[i]->focused) f = i;
             for (int i = 0; i < dd->n; i++) dd->edit[i]->focused = 0;
-            dd->edit[(f + 1) % dd->n]->focused = 1;
+            if (f < 0) f = back ? 0 : dd->n - 1;
+            dd->edit[(f + (back ? dd->n - 1 : 1)) % dd->n]->focused = 1;
             w2k_win_dirty(w);
             return 1;
         }
@@ -574,6 +585,16 @@ static int input_event(W2kWin *w, XEvent *e)
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         if (ks == XK_Escape) { w2k_win_close(w, ID_CANCEL); return 1; }
         if (ks == XK_Return) { input_commit(id); w2k_win_close(w, ID_OK); return 1; }
+        /* Tab walks the sliders: only a click used to give one the focus,
+         * so without a mouse none of them could be moved. */
+        if ((ks == XK_Tab || ks == XK_ISO_Left_Tab) && id->nsl) {
+            int f = 0, back = (e->xkey.state & ShiftMask) || ks == XK_ISO_Left_Tab;
+            for (int i = 0; i < id->nsl; i++) if (id->sl[i].s.focused) f = i;
+            for (int i = 0; i < id->nsl; i++) id->sl[i].s.focused = 0;
+            id->sl[(f + (back ? id->nsl - 1 : 1)) % id->nsl].s.focused = 1;
+            w2k_win_dirty(w);
+            return 1;
+        }
         for (int i = 0; i < id->nsl; i++)
             if (id->sl[i].s.focused && w2k_slider_key(&id->sl[i].s, &e->xkey)) {
                 w2k_win_dirty(w);
@@ -613,6 +634,7 @@ static void input_run(InputDlg *id, int height)
     id->cancel = (W2kRect){ cw - 12 - 75 * 2 - 6, by, 75, 23 };
     id->ok     = (W2kRect){ cw - 12 - 75 * 3 - 12, by, 75, 23 };
 
+    if (id->nsl) id->sl[0].s.focused = 1;   /* the first control, as in Windows */
     w->user = id;
     w->paint = input_paint;
     w->event = input_event;
@@ -655,6 +677,10 @@ typedef struct {
     int       shadow;
     W2kRect   r_shadow, saveas, del, usedef, browse, preview;
     int       icon_of[16];
+    /* The user.crs files Browse... and Use Default have written, as they
+     * were before the first write; Cancel puts them back. */
+    struct { char path[700]; char *was; int existed; } crs[12];
+    int       ncrs;
 
     /* Motion */
     W2kSlider speed;
@@ -904,6 +930,65 @@ static void mouse_unpick(MouseDlg *m)
     w2k_cursors_init();
 }
 
+/* Browse... and Use Default write the set's user.crs at once, so the list
+ * shows the new pointer; Cancel used to leave it there, in use from the
+ * next logon. Each file is kept as it was before its first write here. 0
+ * when it could not be kept: then nothing is written. */
+static int mouse_keep_crs(MouseDlg *m)
+{
+    const char *home = getenv("HOME");
+    if (!home) return 0;
+    char path[700];
+    /* Where w2k_cursor_role_set writes: the chosen set's own folder, or
+     * the cursors folder itself for the Windows 2000 set. */
+    if (w2k_cursor_scheme[0] && strcasecmp(w2k_cursor_scheme, "win2k"))
+        snprintf(path, sizeof path, "%.500s/.w2k/cursors/%.63s/user.crs", home, w2k_cursor_scheme);
+    else
+        snprintf(path, sizeof path, "%.500s/.w2k/cursors/user.crs", home);
+    for (int i = 0; i < m->ncrs; i++) if (!strcmp(m->crs[i].path, path)) return 1;
+    if (m->ncrs >= (int)(sizeof m->crs / sizeof m->crs[0])) return 0;
+    char *was = NULL;
+    int existed = 0;
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        size_t cap = 65536, n;
+        was = malloc(cap + 1);
+        n = was ? fread(was, 1, cap + 1, f) : 0;
+        int bad = !was || ferror(f) || n > cap;
+        fclose(f);
+        if (bad) { free(was); return 0; }
+        was[n] = 0;
+        existed = 1;
+    } else if (errno != ENOENT) return 0;
+    snprintf(m->crs[m->ncrs].path, sizeof m->crs[m->ncrs].path, "%s", path);
+    m->crs[m->ncrs].was = was;
+    m->crs[m->ncrs].existed = existed;
+    m->ncrs++;
+    return 1;
+}
+
+/* OK or Apply: what is in the files now stays. */
+static void mouse_forget_crs(MouseDlg *m)
+{
+    for (int i = 0; i < m->ncrs; i++) free(m->crs[i].was);
+    m->ncrs = 0;
+}
+
+/* Cancel: each file as it was, or gone again when it was not there. */
+static void mouse_restore_crs(MouseDlg *m)
+{
+    if (!m->ncrs) return;
+    for (int i = 0; i < m->ncrs; i++) {
+        if (!m->crs[i].existed) { unlink(m->crs[i].path); continue; }
+        FILE *f = fopen(m->crs[i].path, "w");
+        if (!f) continue;
+        fputs(m->crs[i].was, f);
+        fclose(f);
+    }
+    mouse_forget_crs(m);
+    w2k_cursors_init();
+}
+
 static void mouse_commit(MouseDlg *m)
 {
     w2k_mouse_swap = m->swap;
@@ -924,6 +1009,7 @@ static void mouse_commit(MouseDlg *m)
         m->was_windows = w2k_cursors_windows;
         snprintf(m->was_scheme, sizeof m->was_scheme, "%.63s", w2k_cursor_scheme);
     }
+    mouse_forget_crs(m);
     w2k_scheme_save(NULL);
     w2k_input_apply();
     w2k_cursors_init();
@@ -1019,7 +1105,11 @@ static int mouse_event(W2kWin *w, XEvent *e)
                 if (cur) snprintf(path, sizeof path, "%s", cur);
                 if (w2k_file_dialog_filter(w, 0, path, sizeof path,
                                            "Cursors (*.cur;*.ico)|*.cur;*.ico|All Files (*.*)|*")) {
-                    if (w2k_cursor_role_set(row, path)) mouse_fill_roles(m);
+                    if (!mouse_keep_crs(m))     /* Cancel could not undo it */
+                        w2k_msgbox(w, "Mouse Properties",
+                                   "The pointer scheme in ~/.w2k/cursors could not be read, "
+                                   "so it was left as it is.", MB_OK | MB_ICONERROR);
+                    else if (w2k_cursor_role_set(row, path)) mouse_fill_roles(m);
                     else w2k_msgbox(w, "Mouse Properties",
                                     "That file is not a cursor this desktop can read.",
                                     MB_OK | MB_ICONERROR);
@@ -1032,7 +1122,7 @@ static int mouse_event(W2kWin *w, XEvent *e)
             int row = m->roles->sel;
             char def[1024];
             if (row >= 0 && w2k_cursor_role_default(row, def, sizeof def) &&
-                w2k_cursor_role_set(row, def)) mouse_fill_roles(m);
+                mouse_keep_crs(m) && w2k_cursor_role_set(row, def)) mouse_fill_roles(m);
         }
         if (b == MP_SAVEAS && w2k_rect_hit(&m->saveas, x, y))
             w2k_msgbox(w, "Mouse Properties",
@@ -1152,7 +1242,8 @@ static void open_mouse(void)
     XChangeProperty(w2k.dpy, w->win, w2k.a_net_wm_window_type, XA_ATOM, 32,
                     PropModeReplace, (unsigned char *)&t, 1);
     w2k_win_modal(w);
-    mouse_unpick(&m);                   /* Cancel, Escape or the close box */
+    mouse_restore_crs(&m);              /* Cancel, Escape or the close box */
+    mouse_unpick(&m);
     w2k_combo_free(m.scheme);
     w2k_list_free(m.roles);
     w2k_list_free(m.devs);
@@ -1836,6 +1927,7 @@ typedef struct {
     W2kEdit  *year, *timef;
     struct tm t;                 /* the date and time shown */
     int       live;              /* still following the system clock */
+    int       held;              /* a field clicked into: the clock stops */
     int       focus;             /* 1 the year, 2 the time */
     int       down;              /* 1 OK, 2 Cancel, 3 Apply, 4..7 the spinners */
     int       dst, zone_sel, zone_was;
@@ -1871,7 +1963,7 @@ static void dt_sync_fields(DtDlg *dt)
 static void dt_tick(void *u)
 {
     DtDlg *dt = u;
-    if (!dt->live) return;
+    if (!dt->live || dt->held) return;
     time_t now = time(NULL);
     localtime_r(&now, &dt->t);
     dt_sync_fields(dt);
@@ -2035,8 +2127,8 @@ static void dt_paint(W2kWin *w, Drawable d)
                         (dt->down == 3 ? BS_PRESSED : 0) | (changed ? 0 : BS_DISABLED));
 }
 
-/* Read the fields back, then hand the clock and the zone to timedatectl. */
-static void dt_apply(DtDlg *dt)
+/* What was typed into the year and time fields, into dt->t. */
+static void dt_read_fields(DtDlg *dt)
 {
     int y = atoi(w2k_edit_text(dt->year));
     if (y >= 1970 && y <= 2099 && y != dt->t.tm_year + 1900) {
@@ -2054,6 +2146,12 @@ static void dt_apply(DtDlg *dt)
             dt->live = 0;
         }
     }
+}
+
+/* Read the fields back, then hand the clock and the zone to timedatectl. */
+static void dt_apply(DtDlg *dt)
+{
+    dt_read_fields(dt);
     char out[1024] = "";
     if (dt->zone_sel != dt->zone_was && dt->zone_sel >= 0 && dt->zone_sel < dt->zone->n) {
         char cmd[400];
@@ -2081,6 +2179,7 @@ static void dt_apply(DtDlg *dt)
         w2k_msgbox(dt->win, "Date/Time Properties", msg, MB_OK | MB_ICONWARNING);
     }
     dt->live = 1;                      /* follow the clock again, set or not */
+    dt->held = 0;
     dt_tick(dt);
 }
 
@@ -2093,14 +2192,20 @@ static int dt_event(W2kWin *w, XEvent *e)
         if (w2k_tabs_press(dt->tabs, &e->xbutton)) { w2k_win_dirty(w); return 1; }
         if (dt->tabs->sel == 0) {
             if (w2k_combo_press(dt->month, &e->xbutton)) { w2k_win_dirty(w); return 1; }
-            if (w2k_edit_press(dt->year, &e->xbutton)) { dt->focus = 1; w2k_win_dirty(w); return 1; }
-            if (w2k_edit_press(dt->timef, &e->xbutton)) { dt->focus = 2; w2k_win_dirty(w); return 1; }
+            /* A click into a field stops the clock, as in Windows: the tick
+             * used to write over the field every second while it was being
+             * selected or typed into. Nothing is set until a change. */
+            if (w2k_edit_press(dt->year, &e->xbutton)) { dt->focus = 1; dt->held = 1; w2k_win_dirty(w); return 1; }
+            if (w2k_edit_press(dt->timef, &e->xbutton)) { dt->focus = 2; dt->held = 1; w2k_win_dirty(w); return 1; }
             int bump = 0;
             if (w2k_rect_hit(&dt->yup, x, y)) { dt->down = 4; bump = 1; }
             if (w2k_rect_hit(&dt->ydn, x, y)) { dt->down = 5; bump = 2; }
             if (w2k_rect_hit(&dt->tup, x, y)) { dt->down = 6; bump = 3; }
             if (w2k_rect_hit(&dt->tdn, x, y)) { dt->down = 7; bump = 4; }
             if (bump) {
+                /* Typed and not yet applied: the spinner steps from it,
+                 * where it used to put the old time back. */
+                dt_read_fields(dt);
                 dt->live = 0;
                 if (bump == 1 && dt->t.tm_year < 199) dt->t.tm_year++;
                 if (bump == 2 && dt->t.tm_year > 70) dt->t.tm_year--;
@@ -2857,6 +2962,7 @@ static void open_users(void)
                     PropModeReplace, (unsigned char *)&t, 1);
     w2k_win_modal(w);
     w2k_del_timer(blink, ud.name);
+    w2k_edit_free(ud.name);
 }
 
 /* ------------------------------------------------------------------ *

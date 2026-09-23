@@ -91,6 +91,9 @@ static W2kSkin *fitted(const unsigned char *rgba, int iw, int ih, int bw, int bh
     if (w < 1) w = 1;
     if (h < 1) h = 1;
     unsigned char *sc = w == iw && h == ih ? NULL : w2k_rgba_resample(rgba, iw, ih, w, h, RS_CUBIC);
+    /* No picture rather than the source read as if it were the fitted
+     * size: a small logo enlarged would be read past its end. */
+    if (!sc && (w != iw || h != ih)) return NULL;
     const unsigned char *src = sc ? sc : rgba;
     int r, g, b;
     w2k_color_rgb(bg, &r, &g, &b);

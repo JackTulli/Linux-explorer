@@ -54,6 +54,7 @@ static struct {
     int      have_flatpak, have_snap;
     int      counts_known;
     int      n_pkg, n_flatpak, n_snap;
+    int      pkg_uncounted;             /* a package manager with no count (emerge) */
     char     sys_msg[200];
     /* Links on the page, with their rectangles */
     Line     links[8];
@@ -107,9 +108,13 @@ static void gather(void)
             char git[900];
             snprintf(git, sizeof git, "%s/../.git", exe);
             if (access(git, F_OK) == 0) {
-                char real[512];
+                /* realpath() writes up to PATH_MAX into a buffer it is
+                 * given; one it allocates itself cannot be overrun. */
                 snprintf(git, sizeof git, "%s/..", exe);
-                if (realpath(git, real)) snprintf(up.source, sizeof up.source, "%s", real);
+                char *real = realpath(git, NULL);
+                if (real && strlen(real) < sizeof up.source)
+                    snprintf(up.source, sizeof up.source, "%s", real);
+                free(real);
             }
         }
     }
@@ -158,14 +163,16 @@ static void check_release(void)
     FILE *p = popen("curl -s -m 15 https://api.github.com/repos/JackTulli/Linux-explorer/releases/latest 2>/dev/null", "r");
     if (p) { size_t n = fread(out, 1, sizeof out - 1, p); out[n] = 0; pclose(p); }
     const char *t = strstr(out, "\"tag_name\"");
+    t = t ? strchr(t + 10, '"') : NULL;
     if (!t) {
+        /* What an earlier check found is no longer known: its Install
+         * button stayed, labelled "Install " with no version. */
         up.latest[0] = 0;
+        up.newer = 0;
         snprintf(up.checked_msg, sizeof up.checked_msg,
                  "Could not reach the release list. Check the network connection and try again.");
         return;
     }
-    t = strchr(t + 10, '"');
-    if (!t) return;
     t++;
     if (*t == 'v') t++;
     snprintf(up.latest, sizeof up.latest, "%.*s", (int)strcspn(t, "\""), t);
@@ -191,11 +198,14 @@ static void check_system(void)
     w2k_win_dirty(up.win);
     w2k_win_repaint_now(up.win);
     up.n_pkg = up.n_flatpak = up.n_snap = 0;
+    up.pkg_uncounted = 0;
     const char *m = up.pkgmgr;
     if (!strcmp(m, "apt-get"))
         up.n_pkg = count_cmd("apt list --upgradable 2>/dev/null | grep -c 'upgradable from'");
-    else if (!strcmp(m, "dnf") || !strcmp(m, "yum"))
+    else if (!strcmp(m, "dnf"))
         up.n_pkg = count_cmd("dnf -q check-update 2>/dev/null | grep -c '^[A-Za-z0-9]'");
+    else if (!strcmp(m, "yum"))         /* no dnf, so asking dnf counted none */
+        up.n_pkg = count_cmd("yum -q check-update 2>/dev/null | grep -c '^[A-Za-z0-9]'");
     else if (!strcmp(m, "pacman"))
         up.n_pkg = count_cmd("pacman -Qu 2>/dev/null | wc -l");
     else if (!strcmp(m, "zypper"))
@@ -204,17 +214,35 @@ static void check_system(void)
         up.n_pkg = count_cmd("apk list -u 2>/dev/null | wc -l");
     else if (!strcmp(m, "xbps-install"))
         up.n_pkg = count_cmd("xbps-install -un 2>/dev/null | wc -l");
+    else if (m[0])
+        up.pkg_uncounted = 1;           /* emerge: no count without a sync */
     if (up.have_flatpak)
         up.n_flatpak = count_cmd("flatpak remote-ls --updates 2>/dev/null | wc -l");
     if (up.have_snap)
         up.n_snap = count_cmd("snap refresh --list 2>/dev/null | tail -n +2 | wc -l");
     up.counts_known = 1;
     int total = up.n_pkg + up.n_flatpak + up.n_snap;
+    /* Every kind that has some: three Flatpaks used to read "3 updates
+     * available: 0 packages." */
+    char tail[120] = "", part[40];
+    if (up.n_pkg) {
+        snprintf(part, sizeof part, ", %d package%s", up.n_pkg, up.n_pkg == 1 ? "" : "s");
+        strncat(tail, part, sizeof tail - strlen(tail) - 1);
+    }
+    if (up.n_flatpak) {
+        snprintf(part, sizeof part, ", %d Flatpak app%s", up.n_flatpak, up.n_flatpak == 1 ? "" : "s");
+        strncat(tail, part, sizeof tail - strlen(tail) - 1);
+    }
+    if (up.n_snap) {
+        snprintf(part, sizeof part, ", %d Snap%s", up.n_snap, up.n_snap == 1 ? "" : "s");
+        strncat(tail, part, sizeof tail - strlen(tail) - 1);
+    }
     if (total)
         snprintf(up.sys_msg, sizeof up.sys_msg,
-                 "%d update%s available: %d package%s%s%s.", total, total == 1 ? "" : "s",
-                 up.n_pkg, up.n_pkg == 1 ? "" : "s",
-                 up.have_flatpak ? "" : "", up.have_snap ? "" : "");
+                 "%d update%s available: %s.", total, total == 1 ? "" : "s", tail + 2);
+    else if (up.pkg_uncounted)
+        snprintf(up.sys_msg, sizeof up.sys_msg,
+                 "%s cannot count its updates without a sync; Install updates runs it.", m);
     else
         snprintf(up.sys_msg, sizeof up.sys_msg,
                  "No updates are listed as of the package manager's last refresh.");
@@ -240,16 +268,26 @@ static void spawn(const char *cmd)
  * with sudo, doas or su, asking in the terminal. */
 static void run_in_terminal(const char *title, const char *body)
 {
-    const char *home = getenv("HOME") ? getenv("HOME") : "/tmp";
+    /* A file of its own for every run, gone once sh has it open. One
+     * fixed update-run.sh was written over under a terminal from an
+     * earlier click still waiting at "Press Enter", and sh, which reads a
+     * script as it goes, then ran the new script's tail from where it
+     * was: an install or a removal nobody asked for. */
+    const char *home = getenv("HOME");
     char dir[600], path[700];
-    snprintf(dir, sizeof dir, "%s/.w2k", home);
-    mkdir(dir, 0755);
-    snprintf(path, sizeof path, "%s/update-run.sh", dir);
-    FILE *f = fopen(path, "w");
-    if (!f) return;
+    if (home && *home) {
+        snprintf(dir, sizeof dir, "%.590s/.w2k", home);
+        mkdir(dir, 0755);
+    } else snprintf(dir, sizeof dir, "/tmp");
+    snprintf(path, sizeof path, "%s/update-run-XXXXXX", dir);
+    int fd = mkstemp(path);
+    if (fd < 0) return;
+    FILE *f = fdopen(fd, "w");
+    if (!f) { close(fd); unlink(path); return; }
     fprintf(f,
         "#!/bin/sh\n"
         "# Written by Linux 2000 Update; runs in a terminal.\n"
+        "rm -f \"$0\"\n"
         "as_root() {\n"
         "    if [ \"$(id -u)\" = 0 ]; then \"$@\";\n"
         "    elif command -v sudo >/dev/null 2>&1; then sudo \"$@\";\n"
@@ -264,8 +302,8 @@ static void run_in_terminal(const char *title, const char *body)
         "if [ $rc = 0 ]; then echo '==> Done.'; else echo \"==> Something failed (exit $rc). The messages above say what.\"; fi\n"
         "echo 'Press Enter to close this window.'\n"
         "read x\n", title, body);
-    fclose(f);
-    chmod(path, 0755);
+    if (fclose(f) != 0) { unlink(path); return; }
+    chmod(path, 0700);
 
     const char *env = getenv("TERMINAL");
     const char *term = env && *env && in_path(env) ? env : NULL;
@@ -273,18 +311,27 @@ static void run_in_terminal(const char *title, const char *body)
                             "xfce4-terminal", "alacritty", "kitty", "urxvt", NULL };
     for (int i = 0; !term && cands[i]; i++) if (in_path(cands[i])) term = cands[i];
     if (!term) {
+        unlink(path);
         w2k_msgbox(up.win, "Linux 2000 Update",
                    "No terminal program was found to run the update in.\n"
                    "Install xterm, or set TERMINAL.", MB_OK | MB_ICONWARNING);
         return;
     }
-    char cmd[1200];
-    if (!strcmp(term, "gnome-terminal"))
-        snprintf(cmd, sizeof cmd, "%s --title='%s' -- sh '%s'", term, title, path);
-    else if (!strcmp(term, "xterm") || !strcmp(term, "urxvt"))
-        snprintf(cmd, sizeof cmd, "%s -T '%s' -geometry 100x30 -e sh '%s'", term, title, path);
+    /* The path through w2k_shell_quote: a home with an apostrophe in it
+     * broke the command, and the update never started. */
+    char qp[1500], cmd[2000];
+    w2k_shell_quote(path, qp, sizeof qp);
+    const char *base = strrchr(term, '/') ? strrchr(term, '/') + 1 : term;
+    if (!strcmp(base, "gnome-terminal"))
+        snprintf(cmd, sizeof cmd, "%s --title='%s' -- sh %s", term, title, qp);
+    else if (!strcmp(base, "xterm") || !strcmp(base, "urxvt"))
+        snprintf(cmd, sizeof cmd, "%s -T '%s' -geometry 100x30 -e sh %s", term, title, qp);
+    else if (!strcmp(base, "xfce4-terminal"))
+        /* Its -e takes the whole command as one word and left the path
+         * over as a stray argument; -x takes the rest of the line. */
+        snprintf(cmd, sizeof cmd, "%s -x sh %s", term, qp);
     else
-        snprintf(cmd, sizeof cmd, "%s -e sh '%s'", term, path);
+        snprintf(cmd, sizeof cmd, "%s -e sh %s", term, qp);
     spawn(cmd);
 }
 
@@ -580,7 +627,8 @@ static void paint(W2kWin *w, Drawable d)
         y += 32;
         if (up.sys_msg[0]) y += para(d, x, y, maxw, up.sys_msg) + 4;
         if (up.counts_known) {
-            snprintf(buf, sizeof buf, "Packages: %d", up.n_pkg);
+            if (up.pkg_uncounted) snprintf(buf, sizeof buf, "Packages: not counted");
+            else snprintf(buf, sizeof buf, "Packages: %d", up.n_pkg);
             w2k_text(d, F_UI, x, y, buf, C_WINDOWTEXT); y += 13;
             if (up.have_flatpak) { snprintf(buf, sizeof buf, "Flatpak: %d", up.n_flatpak); w2k_text(d, F_UI, x, y, buf, C_WINDOWTEXT); y += 13; }
             if (up.have_snap) { snprintf(buf, sizeof buf, "Snap: %d", up.n_snap); w2k_text(d, F_UI, x, y, buf, C_WINDOWTEXT); y += 13; }
@@ -633,6 +681,9 @@ static int event(W2kWin *w, XEvent *e)
 {
     switch (e->type) {
     case ButtonPress: {
+        /* The left button only: a wheel notch over a link opened a browser
+         * tab each, and one over Install updates started the upgrade. */
+        if (e->xbutton.button != Button1) return 1;
         int x = e->xbutton.x, y = e->xbutton.y;
         for (int i = 0; i < N_SEC; i++)
             if (w2k_rect_hit(&up.nav[i], x, y)) {
@@ -654,6 +705,7 @@ static int event(W2kWin *w, XEvent *e)
         return 1;
     }
     case ButtonRelease: {
+        if (e->xbutton.button != Button1) return 1;
         int b = up.down, x = e->xbutton.x, y = e->xbutton.y;
         up.down = BTN_NONE;
         w2k_win_dirty(w);
@@ -669,6 +721,27 @@ static int event(W2kWin *w, XEvent *e)
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         if (ks == XK_Escape) { w2k_win_close(w, 0); return 1; }
         if (ks == XK_F5) { if (up.section == SEC_PRODUCT) check_system(); else check_release(); return 1; }
+        /* The buttons' underlined letters and a way between the sections:
+         * only the mouse reached any of them. */
+        if ((e->xkey.state & ControlMask) && (ks == XK_Tab || ks == XK_ISO_Left_Tab)) {
+            int back = (e->xkey.state & ShiftMask) || ks == XK_ISO_Left_Tab;
+            up.section = (up.section + (back ? N_SEC - 1 : 1)) % N_SEC;
+            w2k_win_dirty(w);
+            return 1;
+        }
+        if (e->xkey.state & Mod1Mask) {
+            if (up.section == SEC_WELCOME) {
+                if (ks == XK_c) check_release();
+                else if (ks == XK_i && up.newer) install_release();
+                else if (ks == XK_r) remove_everything();
+                else return 1;
+            } else if (up.section == SEC_PRODUCT) {
+                if (ks == XK_c) check_system();
+                else if (ks == XK_i && (up.pkgmgr[0] || up.have_flatpak || up.have_snap)) install_system();
+                else return 1;
+            } else return 1;
+            w2k_win_dirty(w);
+        }
         return 1;
     }
     }
