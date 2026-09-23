@@ -120,6 +120,12 @@ keep their own colours, since Alpine packages neither `qt5ct` nor `qt6ct`
 -- GTK programs still get Chicago95 and the looks. Wine runs; Proton's own
 builds are glibc programs, so `gcompat` goes in with the Windows part.
 
+**The pointers.** Control Panel > Mouse > Pointers chooses the set: the
+Windows 2000 pointers this desktop ships, **ReactOS**'s own, or the X
+server's. A set is a folder of `.cur` files with a `.crs` naming which
+plays which role, so one dropped into `~/.w2k/cursors` is listed too, and
+Browse... gives a single pointer another file.
+
 **Removing it.** Start > Programs > Accessories > System Tools > Windows
 Update, on the Welcome page, has **Remove Linux 2000**: it runs the same
 thing in a terminal in front of you, asking for your password there. By

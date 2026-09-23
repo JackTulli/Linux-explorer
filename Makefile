@@ -160,7 +160,10 @@ install: all
 	    install -d $(DESTDIR)$(PREFIX)/share/w2k/sounds/$$n; \
 	    install -m644 $$s*.wav $(DESTDIR)$(PREFIX)/share/w2k/sounds/$$n; done
 	install -d $(DESTDIR)$(PREFIX)/share/w2k/cursors
-	install -m644 cursors/* $(DESTDIR)$(PREFIX)/share/w2k/cursors
+	install -m644 cursors/*.cur cursors/*.crs $(DESTDIR)$(PREFIX)/share/w2k/cursors
+	# The other pointer sets -- ReactOS -- each in a folder of its own,
+	# the way the icon sets are laid out.
+	@set -e; for s in cursors/*/; do [ -d "$$s" ] || continue; n=$$(basename $$s); 	    install -d $(DESTDIR)$(PREFIX)/share/w2k/cursors/$$n; 	    for f in $$s*.cur $$s*.crs; do [ -f "$$f" ] || continue; 	        install -m644 $$f $(DESTDIR)$(PREFIX)/share/w2k/cursors/$$n; done; done
 	# Taking it all off again, from here or from the Remove button in
 	# Windows Update, on a machine that has no source tree.
 	install -m755 uninstall.sh $(DESTDIR)$(PREFIX)/share/w2k/uninstall.sh

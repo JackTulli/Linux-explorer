@@ -175,6 +175,11 @@ int         w2k_cursor_role_set(int r, const char *path);
 /* That pointer as an icon id, for a list or a preview; -1 when the set
  * has no picture for it. */
 int         w2k_cursor_role_icon(int r);
+/* The pointer set in use ("" for the one this desktop ships) and the
+ * sets this machine has -- a folder of .cur files inside a cursors
+ * folder, the way the icon sets work. */
+extern char w2k_cursor_scheme[64];
+int         w2k_cursor_schemes(char out[][64], int max);
 
 /* Bring up the display connection, colours, fonts, GCs and atoms.
  * Returns 0 on success, -1 if the display could not be opened. */

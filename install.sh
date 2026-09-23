@@ -678,7 +678,7 @@ run mkdir -p "$HOME/.w2k/cursors" "$HOME/.icons/default" "$HOME/.themes" \
     "$HOME/.config/qt6ct/colors" "$HOME/.local/share/fonts" "$HOME/.local/share/applications"
 
 # The Windows cursor set, and the Xcursor theme every other program uses.
-run sh -c "cp -f '$HERE'/cursors/* '$HOME/.w2k/cursors/'"
+run sh -c "cp -rf '$HERE'/cursors/* '$HOME/.w2k/cursors/'"   # sets are folders
 if command -v python3 >/dev/null 2>&1; then
     run python3 "$HERE/tools/gencursortheme.py" "$HOME/.w2k/cursors" "$HOME/.icons/Windows2000"
     backup "$HOME/.icons/default/index.theme"

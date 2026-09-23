@@ -15,6 +15,12 @@ property of its owners and is not relicensed:
                                                         chrome cut from
                                                         Windows screenshots
   cursors/                                              Windows cursors
+  cursors/reactos/                                      ReactOS's own cursors,
+                                                        from win32ss/user/
+                                                        user32/resources of
+                                                        github.com/reactos/
+                                                        reactos, under its
+                                                        licence
   sounds/                                               Windows sound schemes
 
 Fetched by the installer into the user's home, not carried in the

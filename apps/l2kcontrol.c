@@ -647,6 +647,8 @@ typedef struct {
 
     /* Pointers */
     W2kCombo *scheme;
+    char      set_name[8][64];      /* the pointer sets, by folder name */
+    int       nsets;
     W2kList  *roles;
     int       shadow;
     W2kRect   r_shadow, saveas, del, usedef, browse, preview;
@@ -722,7 +724,7 @@ static void draw_mouse(Drawable d, int x, int y, int left_handed)
      * in its top half with the wheel between them, and the one that
      * selects is filled in, as the bitmap in Windows 2000 shows it. */
     const int w = 44, h = 58;
-    int cx = x + w / 2, cy = y + h / 2;
+    int cx = x + w / 2;
     for (int row = 0; row < h; row++) {
         double t = (row - h / 2.0) / (h / 2.0);
         double k = 1.0 - t * t * (row < h / 2 ? 0.55 : 0.30);  /* narrower at the top */
@@ -898,6 +900,15 @@ static void mouse_commit(MouseDlg *m)
     w2k_mouse_accel = m->accel;
     w2k_snap_default = m->snap;
     w2k_effects[FX_CURSOR_SHADOW] = m->shadow && w2k_effect_supported(FX_CURSOR_SHADOW);
+    {   /* Whichever pointer set the Scheme list is on. */
+        int sel = m->scheme->sel;
+        if (sel == 0) { w2k_cursors_windows = 1; w2k_cursor_scheme[0] = 0; }
+        else if (sel <= m->nsets) {
+            w2k_cursors_windows = 1;
+            snprintf(w2k_cursor_scheme, sizeof w2k_cursor_scheme, "%.63s",
+                     m->set_name[sel - 1]);
+        } else w2k_cursors_windows = 0;
+    }
     w2k_scheme_save(NULL);
     w2k_input_apply();
     w2k_cursors_init();
@@ -928,7 +939,21 @@ static int mouse_event(W2kWin *w, XEvent *e)
                 last = e->xbutton.time;
             }
         } else if (m->tabs->sel == MT_POINTERS) {
-            if (w2k_combo_press(m->scheme, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+            if (w2k_combo_press(m->scheme, &e->xbutton)) {
+                /* The list and the preview follow the scheme at once; the
+                 * desktop itself waits for OK or Apply. */
+                int sel = m->scheme->sel;
+                if (sel == 0) { w2k_cursors_windows = 1; w2k_cursor_scheme[0] = 0; }
+                else if (sel <= m->nsets) {
+                    w2k_cursors_windows = 1;
+                    snprintf(w2k_cursor_scheme, sizeof w2k_cursor_scheme,
+                             "%.63s", m->set_name[sel - 1]);
+                } else w2k_cursors_windows = 0;
+                w2k_cursors_init();
+                mouse_fill_roles(m);
+                w2k_win_dirty(w);
+                return 1;
+            }
             if (w2k_list_press(m->roles, &e->xbutton)) { w2k_win_dirty(w); return 1; }
             if (w2k_rect_hit(&m->r_shadow, x, y) && w2k_effect_supported(FX_CURSOR_SHADOW))
                 m->shadow = !m->shadow;
@@ -987,6 +1012,8 @@ static int mouse_event(W2kWin *w, XEvent *e)
         }
         if (b == MP_USEDEF && w2k_rect_hit(&m->usedef, x, y)) {
             w2k_cursors_windows = 1;
+            w2k_cursor_scheme[0] = 0;
+            m->scheme->sel = 0;
             w2k_cursors_init();
             mouse_fill_roles(m);
         }
@@ -1048,9 +1075,23 @@ static void open_mouse(void)
     m.test = (W2kRect){ x + gw - 76, c.y + 276, 56, 50 };
 
     /* Pointers */
+    /* Scheme: the pointers this desktop ships, every set beside them --
+     * ReactOS is one -- and the X server's own. */
     m.scheme = w2k_combo_new(0);
-    w2k_combo_add(m.scheme, w2k_cursors_windows ? "Windows 2000 (system scheme)"
-                                                : "(None) -- the X server's own");
+    m.nsets = w2k_cursor_schemes(m.set_name, 8);
+    w2k_combo_add(m.scheme, "Windows 2000 (system scheme)");
+    for (int i = 0; i < m.nsets; i++) {
+        char label[80];
+        /* "reactos" reads as "ReactOS", the way its own people write it. */
+        if (!strcasecmp(m.set_name[i], "reactos")) snprintf(label, sizeof label, "ReactOS");
+        else snprintf(label, sizeof label, "%.63s", m.set_name[i]);
+        w2k_combo_add(m.scheme, label);
+    }
+    w2k_combo_add(m.scheme, "(None) -- the X server's own pointers");
+    m.scheme->sel = 0;
+    if (!w2k_cursors_windows) m.scheme->sel = 1 + m.nsets;
+    else for (int i = 0; i < m.nsets; i++)
+        if (!strcasecmp(m.set_name[i], w2k_cursor_scheme)) m.scheme->sel = 1 + i;
     m.scheme->r = (W2kRect){ x + 16, c.y + 32, gw - 120, 21 };
     m.saveas = (W2kRect){ x + 90, c.y + 62, 80, 23 };
     m.del    = (W2kRect){ x + 178, c.y + 62, 75, 23 };

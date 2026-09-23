@@ -1,0 +1,32 @@
+; ReactOS pointers -- the cursors from win32ss/user/user32/resources of
+; github.com/reactos/reactos, which are its own work under its licence.
+[Arrow]
+Path=ocr_normal.cur
+[IBeam]
+Path=ocr_ibeam.cur
+[Wait]
+Path=ocr_wait.cur
+[AppStarting]
+Path=ocr_appstarting.cur
+[Hand]
+Path=ocr_hand.cur
+[Help]
+Path=ocr_help.cur
+[No]
+Path=ocr_no.cur
+[Crosshair]
+Path=ocr_cross.cur
+[UpArrow]
+Path=ocr_up.cur
+[NWPen]
+Path=ocr_pen.cur
+[SizeAll]
+Path=ocr_sizeall.cur
+[SizeNS]
+Path=ocr_sizens.cur
+[SizeWE]
+Path=ocr_sizewe.cur
+[SizeNWSE]
+Path=ocr_sizenwse.cur
+[SizeNESW]
+Path=ocr_sizenesw.cur

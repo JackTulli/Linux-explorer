@@ -480,6 +480,22 @@ void w2k_cursors_init(void)
     dirs[nd++] = W2K_PREFIX "/share/w2k/cursors";
     dirs[nd++] = "/usr/share/w2k/cursors";
 
+    /* A named set -- ReactOS, say -- is a folder inside one of those, as
+     * the icon sets are. Without a name, or where the name is not there,
+     * the set in the folder itself is the one that loads. */
+    if (w2k_cursor_scheme[0]) {
+        for (int i = 0; i < nd; i++) {
+            char sub[640];
+            snprintf(sub, sizeof sub, "%.500s/%.63s", dirs[i], w2k_cursor_scheme);
+            int n = load_from_dir(sub);
+            if (n) {
+                if (getenv("W2K_DEBUG") || !getenv("W2K_QUIET"))
+                    fprintf(stderr, "w2k: cursors: %d/%d roles from %s\n", n, N_ROLES, sub);
+                return;
+            }
+        }
+    }
+
     for (int i = 0; i < nd; i++) {
         int n = load_from_dir(dirs[i]);
         if (n) {
@@ -597,4 +613,53 @@ int w2k_cursor_role_set(int r, const char *path)
     fclose(f);
     w2k_cursors_init();
     return 1;
+}
+
+/* The cursor sets on this machine: the one in the cursors folder itself
+ * (the Windows 2000 pointers this desktop ships) and every folder inside
+ * it -- ReactOS, and anything a user drops in. Names go into `out`; the
+ * count comes back. */
+int w2k_cursor_schemes(char out[][64], int max)
+{
+    int n = 0;
+    const char *home = getenv("HOME");
+    char home_dir[512] = "";
+    const char *dirs[3];
+    int nd = 0;
+    if (home) {
+        snprintf(home_dir, sizeof home_dir, "%s/.w2k/cursors", home);
+        dirs[nd++] = home_dir;
+    }
+    dirs[nd++] = W2K_PREFIX "/share/w2k/cursors";
+    dirs[nd++] = "/usr/share/w2k/cursors";
+
+    for (int i = 0; i < nd && n < max; i++) {
+        DIR *dp = opendir(dirs[i]);
+        if (!dp) continue;
+        struct dirent *de;
+        while ((de = readdir(dp)) && n < max) {
+            if (de->d_name[0] == '.') continue;
+            char sub[700];
+            snprintf(sub, sizeof sub, "%.500s/%.100s", dirs[i], de->d_name);
+            struct stat st;
+            if (stat(sub, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+            /* A folder is a set when it holds cursors. */
+            DIR *sp = opendir(sub);
+            int has = 0;
+            if (sp) {
+                struct dirent *e;
+                while (!has && (e = readdir(sp))) {
+                    size_t l = strlen(e->d_name);
+                    if (l > 4 && !strcasecmp(e->d_name + l - 4, ".cur")) has = 1;
+                }
+                closedir(sp);
+            }
+            if (!has) continue;
+            int seen = 0;
+            for (int k = 0; k < n; k++) if (!strcasecmp(out[k], de->d_name)) seen = 1;
+            if (!seen) snprintf(out[n++], 64, "%.63s", de->d_name);
+        }
+        closedir(dp);
+    }
+    return n;
 }
