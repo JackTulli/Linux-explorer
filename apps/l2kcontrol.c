@@ -649,6 +649,8 @@ typedef struct {
     W2kCombo *scheme;
     char      set_name[8][64];      /* the pointer sets, by folder name */
     int       nsets;
+    int       was_windows;          /* the set in use when the box opened, */
+    char      was_scheme[64];       /* or when Apply last took */
     W2kList  *roles;
     int       shadow;
     W2kRect   r_shadow, saveas, del, usedef, browse, preview;
@@ -891,6 +893,17 @@ static void mouse_paint(W2kWin *w, Drawable d)
     w2k_draw_pushbutton(d, &m->apply, "&Apply", m->down == MP_APPLY ? BS_PRESSED : 0);
 }
 
+/* The Scheme list shows each set as it is picked, which loads it; Cancel
+ * puts back the one the desktop was using. */
+static void mouse_unpick(MouseDlg *m)
+{
+    if (w2k_cursors_windows == m->was_windows &&
+        !strcmp(w2k_cursor_scheme, m->was_scheme)) return;
+    w2k_cursors_windows = m->was_windows;
+    snprintf(w2k_cursor_scheme, sizeof w2k_cursor_scheme, "%.63s", m->was_scheme);
+    w2k_cursors_init();
+}
+
 static void mouse_commit(MouseDlg *m)
 {
     w2k_mouse_swap = m->swap;
@@ -908,6 +921,8 @@ static void mouse_commit(MouseDlg *m)
             snprintf(w2k_cursor_scheme, sizeof w2k_cursor_scheme, "%.63s",
                      m->set_name[sel - 1]);
         } else w2k_cursors_windows = 0;
+        m->was_windows = w2k_cursors_windows;
+        snprintf(m->was_scheme, sizeof m->was_scheme, "%.63s", w2k_cursor_scheme);
     }
     w2k_scheme_save(NULL);
     w2k_input_apply();
@@ -918,7 +933,8 @@ static void mouse_commit(MouseDlg *m)
 static int mouse_event(W2kWin *w, XEvent *e)
 {
     MouseDlg *m = w->user;
-    if (w2k_tabs_key(m->tabs, &e->xkey) || w2k_tabs_press(m->tabs, &e->xbutton)) {
+    if ((e->type == KeyPress && w2k_tabs_key(m->tabs, &e->xkey)) ||
+        (e->type == ButtonPress && w2k_tabs_press(m->tabs, &e->xbutton))) {
         w2k_win_dirty(w);
         return 1;
     }
@@ -1011,11 +1027,12 @@ static int mouse_event(W2kWin *w, XEvent *e)
             }
         }
         if (b == MP_USEDEF && w2k_rect_hit(&m->usedef, x, y)) {
-            w2k_cursors_windows = 1;
-            snprintf(w2k_cursor_scheme, sizeof w2k_cursor_scheme, "win2k");
-            m->scheme->sel = 0;
-            w2k_cursors_init();
-            mouse_fill_roles(m);
+            /* The pointer the list is on goes back to the one its set
+             * came with, as in Windows; the rest stay as they are. */
+            int row = m->roles->sel;
+            char def[1024];
+            if (row >= 0 && w2k_cursor_role_default(row, def, sizeof def) &&
+                w2k_cursor_role_set(row, def)) mouse_fill_roles(m);
         }
         if (b == MP_SAVEAS && w2k_rect_hit(&m->saveas, x, y))
             w2k_msgbox(w, "Mouse Properties",
@@ -1088,6 +1105,8 @@ static void open_mouse(void)
         w2k_combo_add(m.scheme, label);
     }
     w2k_combo_add(m.scheme, "(None) -- the X server's own pointers");
+    m.was_windows = w2k_cursors_windows;
+    snprintf(m.was_scheme, sizeof m.was_scheme, "%.63s", w2k_cursor_scheme);
     m.scheme->sel = 0;                  /* "win2k": the set in the folder itself */
     if (!w2k_cursors_windows) m.scheme->sel = 1 + m.nsets;
     else for (int i = 0; i < m.nsets; i++)
@@ -1133,6 +1152,7 @@ static void open_mouse(void)
     XChangeProperty(w2k.dpy, w->win, w2k.a_net_wm_window_type, XA_ATOM, 32,
                     PropModeReplace, (unsigned char *)&t, 1);
     w2k_win_modal(w);
+    mouse_unpick(&m);                   /* Cancel, Escape or the close box */
     w2k_combo_free(m.scheme);
     w2k_list_free(m.roles);
     w2k_list_free(m.devs);

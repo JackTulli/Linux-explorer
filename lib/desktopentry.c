@@ -198,8 +198,9 @@ int w2k_desktop_set(const char *path, const char *key, const char *value)
     w2k_desktop_escape(value, esc, sizeof esc, 0);
     size_t klen = strlen(key);
     char line[2048], flat[2048];
-    int in_entry = 0, seen = 0, written = 0;
+    int in_entry = 0, seen = 0, written = 0, nl = 1;
     while (fgets(line, sizeof line, f)) {
+        nl = line[0] && line[strlen(line) - 1] == '\n';
         snprintf(flat, sizeof flat, "%s", line);
         flat[strcspn(flat, "\r\n")] = 0;
         if (flat[0] == '[') {
@@ -215,7 +216,11 @@ int w2k_desktop_set(const char *path, const char *key, const char *value)
         }
         fputs(line, o);
     }
-    if (in_entry && !written) { fprintf(o, "%s=%s\n", key, esc); written = 1; }
+    if (in_entry && !written) {
+        if (!nl) fputc('\n', o);            /* a last line with no newline */
+        fprintf(o, "%s=%s\n", key, esc);
+        written = 1;
+    }
     fclose(f);
     struct stat st;
     if (stat(path, &st) == 0) {

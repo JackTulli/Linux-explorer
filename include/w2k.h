@@ -172,6 +172,7 @@ const char *w2k_cursor_role_label(int r);
 const char *w2k_cursor_role_scheme_name(int r);
 const char *w2k_cursor_role_file(int r);
 int         w2k_cursor_role_set(int r, const char *path);
+int         w2k_cursor_role_default(int r, char *out, int n);
 /* That pointer as an icon id, for a list or a preview; -1 when the set
  * has no picture for it. */
 int         w2k_cursor_role_icon(int r);

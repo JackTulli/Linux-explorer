@@ -584,11 +584,18 @@ static int apply(Props *p)
                        MB_OK | MB_ICONERROR);
             return 0;
         }
-        if (!w2k_desktop_set(full, "Name", want)) {
-            fail(p, "rename this shortcut");
-            return 0;
-        }
-        snprintf(base, sizeof base, "%.240s.desktop", want);
+        /* Only a name that was changed: OK on an untouched box used to
+         * rename firefox.desktop after what it is called on screen. */
+        char now[256] = "";
+        const char *plain = p->file + (p->file[0] == '.');
+        w2k_desktop_entry(full, now, sizeof now, NULL, 0, NULL, 0);
+        if (strcmp(now[0] ? now : plain, want)) {
+            if (!w2k_desktop_set(full, "Name", want)) {
+                fail(p, "rename this shortcut");
+                return 0;
+            }
+            snprintf(base, sizeof base, "%.240s.desktop", want);
+        } else snprintf(base, sizeof base, "%s", plain);
     }
     char target[256];
     if (p->hidden) snprintf(target, sizeof target, ".%.254s", base);

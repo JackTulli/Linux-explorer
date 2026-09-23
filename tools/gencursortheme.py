@@ -59,7 +59,10 @@ NAMES = {
 def read_scheme(directory):
     """Role -> filename, from the .crs file cursor packs ship with."""
     out = {}
-    for entry in sorted(os.listdir(directory)):
+    # user.crs -- the one Mouse Properties' Browse... writes -- first.
+    entries = sorted(os.listdir(directory),
+                     key=lambda e: (e.lower() != "user.crs", e))
+    for entry in entries:
         if not entry.lower().endswith(".crs"):
             continue
         role = None

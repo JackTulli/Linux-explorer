@@ -388,7 +388,10 @@ static int read_scheme(const char *crs, const char *dir, char paths[][512])
             for (int r = 0; r < N_ROLES; r++) {
                 if (strcasecmp(role, role_info[r].scheme_name)) continue;
                 if (paths[r][0]) break;          /* first wins */
-                snprintf(paths[r], 512, "%s/%s", dir, p + 5);
+                /* A pack names its files relative to itself; the scheme
+                 * Browse... writes names them by full path. */
+                if (p[5] == '/') snprintf(paths[r], 512, "%.511s", p + 5);
+                else snprintf(paths[r], 512, "%s/%s", dir, p + 5);
                 filled++;
                 break;
             }
@@ -399,9 +402,16 @@ static int read_scheme(const char *crs, const char *dir, char paths[][512])
     return filled;
 }
 
-/* Find the .crs scheme in `dir`, if there is one. */
-static int find_scheme(const char *dir, char *out, int n)
+/* Find the .crs scheme in `dir`, if there is one. user.crs -- the one
+ * Browse... writes -- wins over the set's own when `user` is set, and is
+ * passed over when it is not. */
+static int find_scheme(const char *dir, char *out, int n, int user)
 {
+    if (user) {
+        struct stat st;
+        if (snprintf(out, (size_t)n, "%s/user.crs", dir) < n &&
+            stat(out, &st) == 0 && S_ISREG(st.st_mode)) return 1;
+    }
     DIR *dp = opendir(dir);
     if (!dp) return 0;
     struct dirent *de;
@@ -409,25 +419,30 @@ static int find_scheme(const char *dir, char *out, int n)
     while (!found && (de = readdir(dp))) {
         size_t len = strlen(de->d_name);
         if (len < 5 || strcasecmp(de->d_name + len - 4, ".crs")) continue;
+        if (!strcasecmp(de->d_name, "user.crs")) continue;
         if (snprintf(out, (size_t)n, "%s/%s", dir, de->d_name) < n) found = 1;
     }
     closedir(dp);
     return found;
 }
 
-static int load_from_dir(const char *dir)
+/* The file for every role of the set in `dir`. */
+static void scheme_paths(const char *dir, char paths[][512], int user)
 {
-    char paths[N_ROLES][512];
-    memset(paths, 0, sizeof paths);
-
+    memset(paths, 0, sizeof(char[512]) * N_ROLES);
     char crs[512];
-    if (find_scheme(dir, crs, sizeof crs)) read_scheme(crs, dir, paths);
+    if (find_scheme(dir, crs, sizeof crs, user)) read_scheme(crs, dir, paths);
 
     /* A set without a scheme file can still name its files by role. */
     for (int r = 0; r < N_ROLES; r++)
         if (!paths[r][0])
-            snprintf(paths[r], sizeof paths[r], "%s/%s.cur", dir,
-                     role_info[r].file_name);
+            snprintf(paths[r], 512, "%s/%s.cur", dir, role_info[r].file_name);
+}
+
+static int load_from_dir(const char *dir)
+{
+    char paths[N_ROLES][512];
+    scheme_paths(dir, paths, 1);
 
     int loaded = 0;
     for (int r = 0; r < N_ROLES; r++) {
@@ -442,9 +457,32 @@ static int load_from_dir(const char *dir)
     return loaded;
 }
 
+/* Where cursor sets live: the user's own folder first, then the shared
+ * ones. */
+static int cursor_dirs(const char *dirs[3], char home_dir[512])
+{
+    int nd = 0;
+    const char *home = getenv("HOME");
+    if (home) {
+        snprintf(home_dir, 512, "%.490s/.w2k/cursors", home);
+        dirs[nd++] = home_dir;
+    }
+    dirs[nd++] = W2K_PREFIX "/share/w2k/cursors";
+    dirs[nd++] = "/usr/share/w2k/cursors";
+    return nd;
+}
+
+/* A named set -- ReactOS, say -- is a folder inside one of those; "win2k",
+ * or no name, is the set in the folder itself. */
+static int named_scheme(void)
+{
+    return w2k_cursor_scheme[0] && strcasecmp(w2k_cursor_scheme, "win2k") != 0;
+}
+
 void w2k_cursors_init(void)
 {
     role_icons_forget();
+    memset(role_file, 0, sizeof role_file);     /* refilled by whatever loads */
     /* Called again when the cursor-shadow setting changes, so release what
      * is there before replacing it. */
     for (int r = 0; r < N_ROLES; r++) {
@@ -471,19 +509,13 @@ void w2k_cursors_init(void)
 
     const char *dirs[3];
     char home_dir[512];
-    int nd = 0;
-    const char *home = getenv("HOME");
-    if (home) {
-        snprintf(home_dir, sizeof home_dir, "%s/.w2k/cursors", home);
-        dirs[nd++] = home_dir;
-    }
-    dirs[nd++] = W2K_PREFIX "/share/w2k/cursors";
-    dirs[nd++] = "/usr/share/w2k/cursors";
+    int nd = cursor_dirs(dirs, home_dir);
+    const char *home = nd == 3 ? home_dir : NULL;
 
-    /* A named set -- ReactOS, say -- is a folder inside one of those, as
-     * the icon sets are. Without a name, or where the name is not there,
-     * the set in the folder itself is the one that loads. */
-    if (w2k_cursor_scheme[0] && strcasecmp(w2k_cursor_scheme, "win2k") != 0) {
+    /* A named set is a folder inside one of those, as the icon sets are.
+     * Without a name, or where the name is not there, the set in the
+     * folder itself is the one that loads. */
+    if (named_scheme()) {
         for (int i = 0; i < nd; i++) {
             char sub[640];
             snprintf(sub, sizeof sub, "%.500s/%.63s", dirs[i], w2k_cursor_scheme);
@@ -583,24 +615,73 @@ const char *w2k_cursor_role_file(int r)
     return (r >= 0 && r < N_ROLES && role_file[r][0]) ? role_file[r] : NULL;
 }
 
-/* Give one role another .cur file: written into the set's own scheme in
- * ~/.w2k/cursors, which is where the loader looks first, and applied at
- * once. 1 when it took. */
+/* Can we read `path` as a pointer? Decoded and dropped: nothing is made
+ * on the server for a file that is only being looked at. */
+static int cursor_readable(const char *path)
+{
+    long n = 0;
+    unsigned char *d = slurp(path, &n);
+    if (!d) return 0;
+    CurImage im = { 0 };
+    int idx = best_image(d, n);
+    int ok = idx >= 0 && cur_decode(d, n, idx, &im) == 0;
+    free(d);
+    if (ok) free(im.px);
+    return ok;
+}
+
+/* The pointer the chosen set itself gives role `r`, whatever Browse...
+ * has put in its place. 1 when there is one. */
+int w2k_cursor_role_default(int r, char *out, int n)
+{
+    if (r < 0 || r >= N_ROLES || !out || n <= 0) return 0;
+    const char *dirs[3];
+    char home_dir[512];
+    int nd = cursor_dirs(dirs, home_dir);
+    for (int pass = named_scheme() ? 0 : 1; pass < 2; pass++)
+        for (int i = 0; i < nd; i++) {
+            char sub[640], paths[N_ROLES][512];
+            if (pass == 0) snprintf(sub, sizeof sub, "%.500s/%.63s", dirs[i], w2k_cursor_scheme);
+            else snprintf(sub, sizeof sub, "%.500s", dirs[i]);
+            scheme_paths(sub, paths, 0);
+            if (access(paths[r], R_OK) == 0 && snprintf(out, (size_t)n, "%s", paths[r]) < n)
+                return 1;
+        }
+    return 0;
+}
+
+/* Give one role another .cur file: written as user.crs into the chosen
+ * set's own folder in ~/.w2k/cursors, which is where the loader looks
+ * first, and applied at once. 1 when it took. */
 int w2k_cursor_role_set(int r, const char *path)
 {
     if (r < 0 || r >= N_ROLES || !path || !*path) return 0;
-    if (cursor_from_file(path) == None) return 0;      /* not a cursor we read */
+    char full[512];
+    if (path[0] == '/') snprintf(full, sizeof full, "%.511s", path);
+    else {
+        char *rp = realpath(path, NULL);
+        if (!rp) return 0;
+        snprintf(full, sizeof full, "%.511s", rp);
+        free(rp);
+    }
+    if (!cursor_readable(full)) return 0;              /* not a cursor we read */
     const char *home = getenv("HOME");
     if (!home) return 0;
     char dir[600], crs[700];
-    snprintf(dir, sizeof dir, "%s/.w2k/cursors", home);
+    snprintf(dir, sizeof dir, "%.500s/.w2k", home);
     mkdir(dir, 0755);
+    snprintf(dir, sizeof dir, "%.500s/.w2k/cursors", home);
+    mkdir(dir, 0755);
+    if (named_scheme()) {
+        snprintf(dir, sizeof dir, "%.500s/.w2k/cursors/%.63s", home, w2k_cursor_scheme);
+        mkdir(dir, 0755);
+    }
     snprintf(crs, sizeof crs, "%s/user.crs", dir);
 
     /* The scheme as it stands, with this role's line replaced. */
     char lines[N_ROLES][600];
     for (int i = 0; i < N_ROLES; i++) {
-        const char *f = (i == r) ? path : w2k_cursor_role_file(i);
+        const char *f = (i == r) ? full : w2k_cursor_role_file(i);
         if (f) snprintf(lines[i], sizeof lines[i], "%.599s", f);
         else   lines[i][0] = 0;
     }
@@ -610,7 +691,7 @@ int w2k_cursor_role_set(int r, const char *path)
     for (int i = 0; i < N_ROLES; i++)
         if (lines[i][0])
             fprintf(f, "[%s]\nPath=%s\n", role_info[i].scheme_name, lines[i]);
-    fclose(f);
+    if (fclose(f) != 0) return 0;
     w2k_cursors_init();
     return 1;
 }
