@@ -641,11 +641,15 @@ if [ "$DO_BUILD" = 1 ]; then
             done
             as_root rc-update add l2kdm default
             echo "  l2kdm takes over the console at the next boot (or now: rc-service l2kdm start)."
-        elif [ -f /etc/inittab ] && grep -q '^[^#]*:initdefault:' /etc/inittab; then
+        elif [ -f /etc/inittab ] && grep -q '^[^#]*:initdefault:' /etc/inittab &&
+             case $(cat /proc/1/comm 2>/dev/null) in ''|init) true ;; *) false ;; esac; then
             # sysvinit (Devuan, antiX, MX): a respawn line in inittab keeps
             # l2kdm running, as systemd's Restart=always does -- it ends to
             # be started again. Taken in at the next boot: telinit q would
             # start a second X server beside the one this may be run from.
+            # Only while init is the one that reads it: switched to runit,
+            # Devuan keeps the old inittab, and a line there started nothing
+            # while this said the next boot would.
             runner="$PREFIX/share/w2k/l2kdm-run"
             as_root sh -c "sed 's|@BINDIR@|$PREFIX/bin|' '$HERE/config/l2kdm.run' > '$runner'"
             as_root chmod 755 "$runner"
