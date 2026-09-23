@@ -1,0 +1,15 @@
+#!/bin/sh
+# Linux 2000's logon screen on a machine that runs sysvinit (Devuan,
+# antiX, MX), where config/l2kdm.service -- the systemd unit -- and
+# config/l2kdm.openrc mean nothing. install.sh --full writes this to
+# share/w2k/l2kdm-run with the real path filled in, and a respawn line in
+# /etc/inittab runs it.
+#
+# l2kdm starts the X server on a virtual terminal, shows "Log On to
+# Windows" and runs the session; when the session ends it puts the logon
+# screen back up. It stays in the foreground for as long as the machine
+# is up, and init starts it again if it ever ends, as systemd's
+# Restart=always does. What it says goes to /var/log/l2kdm.log.
+export XCURSOR_THEME=Windows2000
+export XCURSOR_SIZE=32
+exec @BINDIR@/l2kdm >>/var/log/l2kdm.log 2>&1

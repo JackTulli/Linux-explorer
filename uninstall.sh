@@ -159,6 +159,23 @@ if [ "$DO_SYSTEM" = 1 ]; then
             fi
         done
     fi
+    # sysvinit (Devuan): the respawn line comes out of inittab for the next
+    # boot. init is not told now -- it would end the logon screen, and the
+    # session this may be running in -- and Debian's display manager
+    # switch names the one there was before, or none.
+    if [ -f /etc/inittab ] && grep -q '^l2k:' /etc/inittab 2>/dev/null; then
+        say "Taking the logon screen out of /etc/inittab"
+        as_root sh -c "sed -i '/^l2k:/d; /^# Linux 2000 logon screen/d' /etc/inittab"
+    fi
+    if [ -f /etc/X11/default-display-manager.l2k-was ]; then
+        if [ "$(cat /etc/X11/default-display-manager.l2k-was)" = none ]; then
+            sdel /etc/X11/default-display-manager
+        else
+            say "Giving the console back to $(cat /etc/X11/default-display-manager.l2k-was)"
+            as_root cp /etc/X11/default-display-manager.l2k-was /etc/X11/default-display-manager
+        fi
+        sdel /etc/X11/default-display-manager.l2k-was
+    fi
     sdel /etc/pam.d/l2kdm /etc/pam.d/w2kdm
     sdel /etc/X11/xorg.conf.d/20-w2k-vm-cursor.conf
     if [ -e /etc/udev/rules.d/90-linux2000-backlight.rules ]; then

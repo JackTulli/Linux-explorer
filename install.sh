@@ -489,7 +489,8 @@ if [ "$DO_BUILD" = 1 ]; then
     # The logon screen stays while a boot service starts it, --full or
     # not: a later run without --full took l2kdm away and left the machine
     # booting into a service with nothing to start.
-    if [ "$FULL" = 1 ] || [ -e /etc/systemd/system/l2kdm.service ] || [ -e /etc/init.d/l2kdm ]; then
+    if [ "$FULL" = 1 ] || [ -e /etc/systemd/system/l2kdm.service ] || [ -e /etc/init.d/l2kdm ] ||
+       grep -q '^l2k:' /etc/inittab 2>/dev/null; then
         case " $want " in *" l2kdm "*) ;; *) want="$want l2kdm" ;; esac
     fi
     bins='' missing=''
@@ -628,9 +629,33 @@ if [ "$DO_BUILD" = 1 ]; then
             done
             as_root rc-update add l2kdm default
             echo "  l2kdm takes over the console at the next boot (or now: rc-service l2kdm start)."
+        elif [ -f /etc/inittab ] && grep -q '^[^#]*:initdefault:' /etc/inittab; then
+            # sysvinit (Devuan, antiX, MX): a respawn line in inittab keeps
+            # l2kdm running, as systemd's Restart=always does -- it ends to
+            # be started again. Taken in at the next boot: telinit q would
+            # start a second X server beside the one this may be run from.
+            runner="$PREFIX/share/w2k/l2kdm-run"
+            as_root sh -c "sed 's|@BINDIR@|$PREFIX/bin|' '$HERE/config/l2kdm.run' > '$runner'"
+            as_root chmod 755 "$runner"
+            as_root sh -c "sed -i '/^l2k:/d; /^# Linux 2000 logon screen/d' /etc/inittab"
+            as_root sh -c "printf '%s\n' '# Linux 2000 logon screen (install.sh put this here; uninstall.sh takes it out)' 'l2k:2345:respawn:$runner' >> /etc/inittab"
+            # Debian's display managers start only when they are the one
+            # named here (dpkg-reconfigure's own switch): LightDM, GDM, SDDM
+            # and XDM stand down. The one named before is kept for
+            # uninstall.sh; "none" when there was none.
+            if [ ! -f /etc/X11/default-display-manager.l2k-was ]; then
+                if [ -f /etc/X11/default-display-manager ]; then
+                    as_root cp /etc/X11/default-display-manager /etc/X11/default-display-manager.l2k-was
+                else
+                    as_root sh -c "mkdir -p /etc/X11 && echo none > /etc/X11/default-display-manager.l2k-was"
+                fi
+            fi
+            as_root sh -c "echo '$PREFIX/bin/l2kdm' > /etc/X11/default-display-manager"
+            echo "  l2kdm takes over the console at the next boot (from /etc/inittab; it logs to"
+            echo "  /var/log/l2kdm.log)."
         else
-            echo "  No systemd or OpenRC here: start '$PREFIX/bin/l2kdm' as root at boot from" >&2
-            echo "  your init system (it runs in the foreground and puts the logon screen back)." >&2
+            echo "  No systemd, OpenRC or sysvinit here: start '$PREFIX/bin/l2kdm' as root at boot" >&2
+            echo "  from your init system (it runs in the foreground and puts the logon screen back)." >&2
         fi
     fi
 fi
@@ -673,7 +698,9 @@ if [ "$(id -u)" = 0 ] && [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != root ]; th
     [ "$DRY" = 1 ] && opts="$opts --dry-run"
     run su -s /bin/sh "$TARGET_USER" -c "cd '$HERE' && ./install.sh $opts --prefix '$PREFIX'"
     run su -s /bin/sh "$TARGET_USER" -c "xdg-user-dirs-update >/dev/null 2>&1 || true"
-    say "Done. Reboot, or: systemctl start l2kdm"
+    # Whatever the init system: the lines above said how it starts.
+    if [ "$FULL" = 1 ]; then say "Done. Reboot to start at Log On to Windows."
+    else say "Done."; fi
     summary
     exit 0
 fi
