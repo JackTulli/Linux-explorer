@@ -70,10 +70,23 @@ export XCURSOR_THEME=Windows2000
 export XCURSOR_SIZE=32
 # Rebuild the theme when the cursor set has changed since it was made, so
 # applications show the same pointers the shell does.
-if [ -d "$HOME/.w2k/cursors" ] && [ -f "$here/tools/gencursortheme.py" ]; then
-    _set=$(ls -t "$HOME/.w2k/cursors" 2>/dev/null | head -1)
-    if [ -n "$_set" ] && [ "$HOME/.w2k/cursors/$_set" -nt "$HOME/.icons/Windows2000/cursors/left_ptr" ]; then
-        python3 "$here/tools/gencursortheme.py" "$HOME/.w2k/cursors" "$HOME/.icons/Windows2000" 2>/dev/null
+# The set is the one Mouse Properties chose (CursorScheme= in the scheme
+# file; a folder inside ~/.w2k/cursors, or the folder itself for win2k),
+# and the theme is remade when that choice or the files are newer than it.
+_gen=""
+for _g in "$here/tools/gencursortheme.py" "$here/../share/w2k/gencursortheme.py" \
+          /usr/local/share/w2k/gencursortheme.py /usr/share/w2k/gencursortheme.py; do
+    [ -f "$_g" ] && { _gen=$_g; break; }
+done
+if [ -d "$HOME/.w2k/cursors" ] && [ -n "$_gen" ]; then
+    _scheme=$(sed -n 's/^CursorScheme=//p' "$HOME/.w2k/scheme" 2>/dev/null | head -1)
+    [ -n "$_scheme" ] || _scheme=reactos
+    _dir="$HOME/.w2k/cursors"
+    [ "$_scheme" = win2k ] || [ ! -d "$_dir/$_scheme" ] || _dir="$_dir/$_scheme"
+    _made="$HOME/.icons/Windows2000/cursors/left_ptr"
+    _newer=$(find "$_dir" -maxdepth 1 -newer "$_made" 2>/dev/null | head -1)
+    if [ ! -e "$_made" ] || [ -n "$_newer" ] || [ "$HOME/.w2k/scheme" -nt "$_made" ]; then
+        python3 "$_gen" "$_dir" "$HOME/.icons/Windows2000" 2>/dev/null
     fi
 fi
 xrdb -merge 2>/dev/null <<'XRDB'

@@ -541,7 +541,9 @@ if [ "$DO_BUILD" = 1 ]; then
     # looks in /usr/share/icons but not under an arbitrary prefix), and as
     # the system default when no other default is set.
     if command -v python3 >/dev/null 2>&1; then
-        as_root python3 "$HERE/tools/gencursortheme.py" "$HERE/cursors" /usr/share/icons/Windows2000
+        # From the default set -- ReactOS's, where it is there.
+        curset="$HERE/cursors"; [ -d "$HERE/cursors/reactos" ] && curset="$HERE/cursors/reactos"
+        as_root python3 "$HERE/tools/gencursortheme.py" "$curset" /usr/share/icons/Windows2000
         if [ ! -e /usr/share/icons/default/index.theme ] || [ "$DRY" = 1 ]; then
             as_root install -d /usr/share/icons/default
             as_root sh -c "printf '[Icon Theme]\nName=Default\nInherits=Windows2000\n' > /usr/share/icons/default/index.theme"
@@ -683,7 +685,8 @@ run mkdir -p "$HOME/.w2k/cursors" "$HOME/.icons/default" "$HOME/.themes" \
 # The Windows cursor set, and the Xcursor theme every other program uses.
 run sh -c "cp -rf '$HERE'/cursors/* '$HOME/.w2k/cursors/'"   # sets are folders
 if command -v python3 >/dev/null 2>&1; then
-    run python3 "$HERE/tools/gencursortheme.py" "$HOME/.w2k/cursors" "$HOME/.icons/Windows2000"
+    curset="$HOME/.w2k/cursors"; [ -d "$curset/reactos" ] && curset="$curset/reactos"
+    run python3 "$HERE/tools/gencursortheme.py" "$curset" "$HOME/.icons/Windows2000"
     backup "$HOME/.icons/default/index.theme"
     run sh -c "printf '[Icon Theme]\nName=Default\nInherits=Windows2000\n' > '$HOME/.icons/default/index.theme'"
     # ~/.local/share/icons comes first on Xcursor's path; a theme there of

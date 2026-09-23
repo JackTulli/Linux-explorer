@@ -281,7 +281,7 @@ int w2k_mouse_swap;             /* left-handed button order */
 int w2k_mouse_speed = 4;        /* pointer speed, 1..10 */
 int w2k_mouse_accel = 1;        /* acceleration: 0 none, 1 low, 2 medium, 3 high */
 int w2k_snap_default;           /* put the pointer on a dialog's default button */
-char w2k_cursor_scheme[64];     /* a named pointer set, "" for the shipped one */
+char w2k_cursor_scheme[64] = "reactos";   /* the pointer set; "win2k" is the one in the folder itself */
 int w2k_key_delay = 500;        /* auto-repeat delay, ms */
 int w2k_key_rate = 30;          /* auto-repeat rate, characters/second */
 int w2k_caret_blink = 530;      /* caret blink half-period, ms */
@@ -538,7 +538,7 @@ void w2k_scheme_reset(void)
     w2k_mouse_speed = 4;
     w2k_mouse_accel = 1;
     w2k_snap_default = 0;
-    w2k_cursor_scheme[0] = 0;
+    snprintf(w2k_cursor_scheme, sizeof w2k_cursor_scheme, "reactos");
     w2k_key_delay = 500;
     w2k_key_rate = 30;
     w2k_caret_blink = 530;
@@ -996,7 +996,12 @@ int w2k_scheme_load(const char *path)
             continue;
         }
         if (!strcasecmp(line, "GtkTheme"))  { snprintf(w2k_gtk_theme, sizeof w2k_gtk_theme, "%.63s", val); continue; }
-        if (!strcasecmp(line, "CursorScheme")) { snprintf(w2k_cursor_scheme, sizeof w2k_cursor_scheme, "%.63s", val); continue; }
+        if (!strcasecmp(line, "CursorScheme")) {
+            /* Empty is what 1.45 wrote for the shipped set; the set has a
+             * name now, and nothing named means the default. */
+            snprintf(w2k_cursor_scheme, sizeof w2k_cursor_scheme, "%.63s", *val ? val : "reactos");
+            continue;
+        }
         if (!strcasecmp(line, "IconTheme")) { snprintf(w2k_icon_theme, sizeof w2k_icon_theme, "%.63s", val); continue; }
         if (!strcasecmp(line, "QtStyle"))   { snprintf(w2k_qt_style, sizeof w2k_qt_style, "%.63s", val); continue; }
         if (!strcasecmp(line, "KvantumTheme")) { snprintf(w2k_kvantum_theme, sizeof w2k_kvantum_theme, "%.63s", val); continue; }

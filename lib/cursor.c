@@ -483,7 +483,7 @@ void w2k_cursors_init(void)
     /* A named set -- ReactOS, say -- is a folder inside one of those, as
      * the icon sets are. Without a name, or where the name is not there,
      * the set in the folder itself is the one that loads. */
-    if (w2k_cursor_scheme[0]) {
+    if (w2k_cursor_scheme[0] && strcasecmp(w2k_cursor_scheme, "win2k") != 0) {
         for (int i = 0; i < nd; i++) {
             char sub[640];
             snprintf(sub, sizeof sub, "%.500s/%.63s", dirs[i], w2k_cursor_scheme);

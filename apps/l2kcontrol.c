@@ -902,7 +902,7 @@ static void mouse_commit(MouseDlg *m)
     w2k_effects[FX_CURSOR_SHADOW] = m->shadow && w2k_effect_supported(FX_CURSOR_SHADOW);
     {   /* Whichever pointer set the Scheme list is on. */
         int sel = m->scheme->sel;
-        if (sel == 0) { w2k_cursors_windows = 1; w2k_cursor_scheme[0] = 0; }
+        if (sel == 0) { w2k_cursors_windows = 1; snprintf(w2k_cursor_scheme, sizeof w2k_cursor_scheme, "win2k"); }
         else if (sel <= m->nsets) {
             w2k_cursors_windows = 1;
             snprintf(w2k_cursor_scheme, sizeof w2k_cursor_scheme, "%.63s",
@@ -943,7 +943,7 @@ static int mouse_event(W2kWin *w, XEvent *e)
                 /* The list and the preview follow the scheme at once; the
                  * desktop itself waits for OK or Apply. */
                 int sel = m->scheme->sel;
-                if (sel == 0) { w2k_cursors_windows = 1; w2k_cursor_scheme[0] = 0; }
+                if (sel == 0) { w2k_cursors_windows = 1; snprintf(w2k_cursor_scheme, sizeof w2k_cursor_scheme, "win2k"); }
                 else if (sel <= m->nsets) {
                     w2k_cursors_windows = 1;
                     snprintf(w2k_cursor_scheme, sizeof w2k_cursor_scheme,
@@ -1012,7 +1012,7 @@ static int mouse_event(W2kWin *w, XEvent *e)
         }
         if (b == MP_USEDEF && w2k_rect_hit(&m->usedef, x, y)) {
             w2k_cursors_windows = 1;
-            w2k_cursor_scheme[0] = 0;
+            snprintf(w2k_cursor_scheme, sizeof w2k_cursor_scheme, "win2k");
             m->scheme->sel = 0;
             w2k_cursors_init();
             mouse_fill_roles(m);
@@ -1088,7 +1088,7 @@ static void open_mouse(void)
         w2k_combo_add(m.scheme, label);
     }
     w2k_combo_add(m.scheme, "(None) -- the X server's own pointers");
-    m.scheme->sel = 0;
+    m.scheme->sel = 0;                  /* "win2k": the set in the folder itself */
     if (!w2k_cursors_windows) m.scheme->sel = 1 + m.nsets;
     else for (int i = 0; i < m.nsets; i++)
         if (!strcasecmp(m.set_name[i], w2k_cursor_scheme)) m.scheme->sel = 1 + i;

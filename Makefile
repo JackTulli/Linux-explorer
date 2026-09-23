@@ -167,6 +167,8 @@ install: all
 	# Taking it all off again, from here or from the Remove button in
 	# Windows Update, on a machine that has no source tree.
 	install -m755 uninstall.sh $(DESTDIR)$(PREFIX)/share/w2k/uninstall.sh
+	# The session remakes the Xcursor theme from the chosen pointer set.
+	install -m644 tools/gencursortheme.py $(DESTDIR)$(PREFIX)/share/w2k/gencursortheme.py
 	# A session entry for any other display manager that may be around --
 	# where that directory can be written (a user prefix cannot).
 	@if install -d $(DESTDIR)/usr/share/xsessions 2>/dev/null; then \

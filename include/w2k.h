@@ -175,9 +175,9 @@ int         w2k_cursor_role_set(int r, const char *path);
 /* That pointer as an icon id, for a list or a preview; -1 when the set
  * has no picture for it. */
 int         w2k_cursor_role_icon(int r);
-/* The pointer set in use ("" for the one this desktop ships) and the
- * sets this machine has -- a folder of .cur files inside a cursors
- * folder, the way the icon sets work. */
+/* The pointer set in use -- a folder of .cur files inside a cursors
+ * folder, the way the icon sets work, "win2k" for the set in the folder
+ * itself -- and the sets this machine has. ReactOS's is the default. */
 extern char w2k_cursor_scheme[64];
 int         w2k_cursor_schemes(char out[][64], int max);
 
@@ -475,6 +475,15 @@ void w2k_slide_in(Window win, Pixmap picture, int x, int y, int pw, int ph,
                   int upward, int ms);
 /* A name from data as a label: its "&"s doubled, so none is a mnemonic. */
 void w2k_menu_escape(const char *in, char *out, size_t n);
+/* A menu bar's drop-downs hand over to each other: the bar sets the hit
+ * test (which title is under a root point, -1 for none) around
+ * w2k_menu_popup and reads back which menu was asked for instead --
+ * a title's index, or the one to the left or right of this one. */
+#define W2K_MENU_SWITCH_NONE  (-1)
+#define W2K_MENU_SWITCH_LEFT  (-2)
+#define W2K_MENU_SWITCH_RIGHT (-3)
+extern int (*w2k_menu_bar_hit)(int root_x, int root_y);
+extern int   w2k_menu_bar_switch;
 
 /* A settings file out of `home`, opened as the logon screen must (no
  * symlink, no FIFO, owned by the home's owner, at most maxsize bytes). */
