@@ -247,9 +247,11 @@ static Entry *entry_at_row(int row)
 static Entry *entry_push(void)
 {
     if (nentries == capentries) {
-        capentries = capentries ? capentries * 2 : 128;
-        entries = realloc(entries, capentries * sizeof *entries);
-        if (!entries) abort();
+        int want = capentries ? capentries * 2 : 128;
+        Entry *grown = realloc(entries, want * sizeof *entries);
+        if (!grown) abort();                    /* out of memory: nothing to do */
+        entries = grown;
+        capentries = want;
     }
     Entry *e = &entries[nentries++];
     memset(e, 0, sizeof *e);
@@ -401,7 +403,7 @@ static void refill_list(void)
             closedir(dp);
         }
     }
-    qsort(entries, nentries, sizeof *entries, cmp_entries);
+    if (nentries) qsort(entries, nentries, sizeof *entries, cmp_entries);
 
     for (int i = 0; i < nentries; i++) {
         Entry *e = &entries[i];

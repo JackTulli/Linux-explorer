@@ -183,6 +183,7 @@ static void dev_remove(const char *path)
 
 static Adapter *ad_find(const char *path)
 {
+    if (!path) return NULL;                     /* a message with no object path */
     for (int i = 0; i < nads; i++)
         if (!strcmp(ads[i].path, path)) return &ads[i];
     return NULL;

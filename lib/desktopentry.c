@@ -221,7 +221,8 @@ int w2k_desktop_set(const char *path, const char *key, const char *value)
     if (stat(path, &st) == 0) {
         if (fchmod(fileno(o), st.st_mode & 07777) != 0) { /* keep it runnable */ }
     }
-    if (!seen || !written || fclose(o) != 0) { unlink(tmp); return 0; }
+    int closed = fclose(o) == 0;          /* closed either way: no leak */
+    if (!seen || !written || !closed) { unlink(tmp); return 0; }
     if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
     return 1;
 }
