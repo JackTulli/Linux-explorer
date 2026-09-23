@@ -186,17 +186,22 @@ void volume_set(int pct)
 
 /* Play, pause and stop for whatever is playing: playerctl if it is
  * installed, otherwise the first MPRIS player on the session bus, asked
- * directly. Runs in the background; a key must not wait on D-Bus. */
+ * directly -- as a method call: dbus-send sends a signal unless told,
+ * which no player answers, so without playerctl the keys did nothing.
+ * Runs in the background; a key must not wait on D-Bus. */
 void media_control(const char *method)
 {
     if (!method || (strcmp(method, "PlayPause") != 0 && strcmp(method, "Pause") != 0 &&
                     strcmp(method, "Stop") != 0)) return;
-    char cmd[512];
+    /* The players are found with dbus-send too: busctl is systemd's, and
+     * not there on Alpine. */
+    char cmd[1024];
     snprintf(cmd, sizeof cmd,
              "if command -v playerctl >/dev/null 2>&1; then playerctl %s; else "
-             "p=$(busctl --user list --acquired --no-legend 2>/dev/null | "
-             "awk '/^org\\.mpris\\.MediaPlayer2\\./{print $1; exit}'); "
-             "[ -n \"$p\" ] && dbus-send --session --dest=\"$p\" /org/mpris/MediaPlayer2 "
+             "p=$(dbus-send --session --print-reply --dest=org.freedesktop.DBus "
+             "/org/freedesktop/DBus org.freedesktop.DBus.ListNames 2>/dev/null | "
+             "grep -o 'org\\.mpris\\.MediaPlayer2\\.[^\"]*' | head -n 1); "
+             "[ -n \"$p\" ] && dbus-send --session --type=method_call --dest=\"$p\" /org/mpris/MediaPlayer2 "
              "org.mpris.MediaPlayer2.Player.%s; fi >/dev/null 2>&1",
              strcmp(method, "Stop") == 0 ? "stop" :
              strcmp(method, "Pause") == 0 ? "pause" : "play-pause", method);
