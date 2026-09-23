@@ -3120,10 +3120,10 @@ static void command(void *u, int id)
         spawn("xdg-open https://discord.gg/KPQBnSqcK");
         break;
     case FW_OPEN:
-        open_applet(cp.fw->list->sel);
+        open_applet(applet_of_row(cp.fw->list->sel));
         break;
     case FW_REFRESH:
-        pane_fill(cp.fw->list->sel);
+        pane_fill(applet_of_row(cp.fw->list->sel));
         break;
     }
 }
@@ -3149,7 +3149,7 @@ static int event(W2kWin *w, XEvent *e)
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         if (ks == XK_Escape) { w2k_win_close(w, 0); return 1; }
         if (ks == XK_Return || ks == XK_KP_Enter) {
-            open_applet(cp.fw->list->sel);
+            open_applet(applet_of_row(cp.fw->list->sel));
             return 1;
         }
     }

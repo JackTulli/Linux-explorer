@@ -1030,11 +1030,13 @@ static void taskbar_trigger_place(void)
         tb_trigger = XCreateWindow(w2k.dpy, w2k.root, x, y, w, h, 0,
                                    CopyFromParent, InputOnly, CopyFromParent,
                                    CWOverrideRedirect | CWEventMask, &a);
-        XMapWindow(w2k.dpy, tb_trigger);
     } else {
         XMoveResizeWindow(w2k.dpy, tb_trigger, x, y, w, h);
     }
-    XRaiseWindow(w2k.dpy, tb_trigger);
+    /* There only while the bar is away: over a bar that is showing, it
+     * took the bottom row -- the Start button's corner -- for itself. */
+    if (tb_shown) XUnmapWindow(w2k.dpy, tb_trigger);
+    else XMapRaised(w2k.dpy, tb_trigger);
 }
 
 /* Where the bar sits when hidden: just off its own edge, with a sliver
@@ -1163,7 +1165,15 @@ void taskbar_reveal(int show)
     if (tb_shown == show) return;
     tb_shown = show;
     taskbar_place();
-    if (show) { XRaiseWindow(w2k.dpy, tb); orb_place(); }
+    if (show) {
+        XRaiseWindow(w2k.dpy, tb);
+        orb_place();
+        if (tb_trigger) XUnmapWindow(w2k.dpy, tb_trigger);
+    } else if (tb_trigger) {
+        /* Over the sliver of bar left showing: raised with the bar, the
+         * bar had covered it, and the edge never brought it back again. */
+        XMapRaised(w2k.dpy, tb_trigger);
+    }
 }
 
 void taskbar_relayout(void)
@@ -1561,7 +1571,8 @@ int taskbar_event(XEvent *e)
     if (e->type == ButtonPress) hover_clear();
 
     if (w2k_taskbar_autohide) {
-        if (e->type == EnterNotify && e->xcrossing.window == tb_trigger) {
+        if (e->type == EnterNotify && (e->xcrossing.window == tb_trigger ||
+                                       (e->xcrossing.window == tb && !tb_shown))) {
             taskbar_reveal(1);
             return 1;
         }

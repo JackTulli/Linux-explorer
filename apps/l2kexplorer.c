@@ -2263,7 +2263,8 @@ static void do_zip(void)
         shell_quote(rel, q, sizeof q);
         il += snprintf(items + il, sizeof items - il, " %s", q);
     }
-    char cmd[8192], qd[1200], qt[1200];
+    char cmd[20000], qd[1200], qt[1200];
+    int cl = 0;
     shell_quote(ex.cur.path, qd, sizeof qd);
     shell_quote(target, qt, sizeof qt);
     if (fmt == 0) {
@@ -2283,11 +2284,28 @@ static void do_zip(void)
         int level = lv == 0 ? 1 : lv == 1 ? 1 : lv == 3 ? 9 : 6;
         char filter[80] = "";
         if (comp) snprintf(filter, sizeof filter, "-I '%s -%d' ", comp, level);
-        /* "Delete files after adding" is tar's own --remove-files: it
-         * leaves the archive it is writing alone, where an "&& rm -rf"
-         * after it deleted an archive written inside a chosen folder. */
-        snprintf(cmd, sizeof cmd, "cd %s && tar %s-cvf %s%s%s%s", qd, filter, qt,
-                 recurse ? "" : " --no-recursion", delete ? " --remove-files" : "", items);
+        cl = snprintf(cmd, sizeof cmd, "cd %s && tar %s-cvf %s%s%s", qd, filter, qt,
+                      recurse ? "" : " --no-recursion", items);
+        /* "Delete files after adding" waits for the whole archive, and for
+         * it to read back: tar's own --remove-files deletes each file as
+         * it goes, so Cancel -- or a full disk -- lost files that never
+         * reached the archive. (One inside a chosen folder was refused
+         * above.) Without subfolders only what was added goes: the files,
+         * and a folder only if it is then empty. */
+        if (delete && cl > 0 && cl < (int)sizeof cmd) {
+            if (recurse)
+                cl += snprintf(cmd + cl, sizeof cmd - (size_t)cl,
+                               " && tar -tf %s >/dev/null && rm -rf --%s", qt, items);
+            else
+                cl += snprintf(cmd + cl, sizeof cmd - (size_t)cl,
+                               " && tar -tf %s >/dev/null && { rm -f --%s 2>/dev/null;"
+                               " rmdir --%s 2>/dev/null; true; }", qt, items, items);
+        }
+        if (cl < 0 || cl >= (int)sizeof cmd) {
+            w2k_msgbox(ex.win, "Add to Archive", "Too many items are selected to add "
+                       "in one go. Add them in smaller groups.", MB_OK | MB_ICONERROR);
+            return;
+        }
         (void)relative;
     }
     const char *tb = strrchr(target, '/');

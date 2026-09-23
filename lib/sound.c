@@ -262,7 +262,7 @@ void w2k_sound_play_file(const char *path)
     const char *p = player();
     if (!p) return;
     char vol[40];
-    char *argv[8];
+    char *argv[12];                     /* ffplay's is the longest: 8 and the NULL */
     int n = 0;
     argv[n++] = (char *)p;
     if (!strcmp(p, "paplay")) {
