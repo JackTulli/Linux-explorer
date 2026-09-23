@@ -588,7 +588,10 @@ int w2k_text_mnemonic_rgb(Drawable d, int font, int x, int y, const char *s,
 void w2k_ellipsis(int font, const char *s, int maxw, char *buf, int bufsz)
 {
     int n = s ? (int)strlen(s) : 0;
-    if (n > bufsz - 1) n = bufsz - 1;
+    if (n > bufsz - 1) {
+        n = bufsz - 1;
+        while (n > 0 && (s[n] & 0xc0) == 0x80) n--;
+    }
     memcpy(buf, s ? s : "", n);
     buf[n] = '\0';
     if (w2k_text_width(font, buf, n) <= maxw) return;
@@ -602,6 +605,9 @@ void w2k_ellipsis(int font, const char *s, int maxw, char *buf, int bufsz)
         if (w2k_text_width(font, buf, mid) + dots <= maxw) lo = mid; else hi = mid - 1;
     }
     n = lo;
+    /* Back to the start of a character: cut inside one, the text stopped
+     * drawing there and the dots never showed. */
+    while (n > 0 && (buf[n] & 0xc0) == 0x80) n--;
     if (n + 3 < bufsz) { memcpy(buf + n, "...", 4); }
     else buf[n > 0 ? n : 0] = '\0';
 }

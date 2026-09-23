@@ -188,7 +188,9 @@ void w2k_win_center(W2kWin *w, W2kWin *over)
         int rx, ry;
         XTranslateCoordinates(w2k.dpy, over->win, w2k.root, 0, 0, &rx, &ry,
                               &child);
-        px = rx; py = ry; pw = over->w; ph = over->h;
+        /* The parent's size in screen pixels, as everything else here is:
+         * its logical size put a dialog up and to the left at 200%. */
+        px = rx; py = ry; pw = w2k_px(over->w); ph = w2k_px(over->h);
     }
     /* Centre the frame, not the client area: the window manager adds a
      * border and a caption above, so centring the client alone leaves the
@@ -410,6 +412,13 @@ static void dispatch(XEvent *e)
      * brings the dialog forward instead, as Windows does. */
     if (modal_floor && w->serial < modal_floor) {
         switch (e->type) {
+        case ClientMessage:
+            /* Its close box or the taskbar's Close, too: the owner used to
+             * run its closing under the dialog -- a "Save changes?" over
+             * an Open box -- and the program ended once the dialog did. */
+            if (e->xclient.message_type != w2k.a_wm_protocols ||
+                (Atom)e->xclient.data.l[0] != w2k.a_wm_delete) break;
+            /* fall through */
         case ButtonPress: case KeyPress: {
             XEvent m = { 0 };
             m.xclient.type = ClientMessage;
@@ -417,8 +426,9 @@ static void dispatch(XEvent *e)
             m.xclient.message_type = XInternAtom(w2k.dpy, "_NET_ACTIVE_WINDOW", False);
             m.xclient.format = 32;
             m.xclient.data.l[0] = 1;             /* from an application */
-            m.xclient.data.l[1] = e->type == ButtonPress ? (long)e->xbutton.time
-                                                         : (long)e->xkey.time;
+            m.xclient.data.l[1] = e->type == ButtonPress ? (long)e->xbutton.time :
+                                  e->type == KeyPress ? (long)e->xkey.time :
+                                                        e->xclient.data.l[1];
             XSendEvent(w2k.dpy, w2k.root, False,
                        SubstructureNotifyMask | SubstructureRedirectMask, &m);
             return;
@@ -918,10 +928,15 @@ static int wrap_text(const char *text, int maxw, char **out, int maxlines,
                 else break;
             }
             if (cut == p) {              /* one very long word: hard break */
+                /* Whole characters at a time: a break inside one left
+                 * half of it on each line, and the next line drew blank. */
                 cut = p;
-                while (cut < end &&
-                       w2k_text_width(F_UI, p, (int)(cut - p + 1)) <= maxw)
-                    cut++;
+                while (cut < end) {
+                    const char *nx = cut + 1;
+                    while (nx < end && (*nx & 0xc0) == 0x80) nx++;
+                    if (w2k_text_width(F_UI, p, (int)(nx - p)) > maxw) break;
+                    cut = nx;
+                }
             }
         }
         int len = (int)(cut - p);
@@ -1015,6 +1030,17 @@ static int msgbox_event(W2kWin *w, XEvent *e)
             m->focus = (m->focus + dir + m->nbtn) % m->nbtn;
             w2k_win_dirty(w);
             return 1;
+        }
+        /* The letters the buttons underline answer, with or without Alt:
+         * N is No, as in Windows. Only Tab and Enter used to. */
+        if (ks >= XK_a && ks <= XK_z && !(e->xkey.state & ControlMask)) {
+            for (int i = 0; i < m->nbtn; i++) {
+                const char *amp = strchr(m->label[i], '&');
+                if (amp && (amp[1] | 0x20) == (int)ks) {
+                    w2k_win_close(w, m->ids[i]);
+                    return 1;
+                }
+            }
         }
     }
     return 0;

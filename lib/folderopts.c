@@ -123,6 +123,13 @@ static void do_change(FO *f)
         return;
     w2k_assoc_set(cls, out);
     fill_types(f);
+    /* The row just edited stays chosen: the refill let it go, and Change
+     * went grey until it was clicked again. */
+    if (i < f->types->n) {
+        f->types->sel = i;
+        f->types->items[i].selected = 1;
+        w2k_list_ensure_visible(f->types, i);
+    }
     w2k_win_dirty(f->w);
 }
 

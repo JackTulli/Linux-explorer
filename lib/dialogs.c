@@ -202,11 +202,13 @@ int w2k_color_popup(int rx, int ry, int *r, int *g, int *b)
             KeySym ks = XLookupKeysym(&e.xkey, 0);
             if (ks == XK_Escape) done = 1;
             else if ((ks == XK_Return || ks == XK_KP_Enter) && hot >= 0) { picked = 1; done = 1; }
+            /* Nothing lit yet: the first arrow lights the first cell. Down
+             * used to be taken as a row down from -1, the end of row one. */
+            else if (hot < 0 && (ks == XK_Right || ks == XK_Down)) { hot = 0; repaint = 1; }
             else if (ks == XK_Right && hot < 47) { hot++; repaint = 1; }
             else if (ks == XK_Left && hot > 0) { hot--; repaint = 1; }
             else if (ks == XK_Down && hot + cols < 48) { hot += cols; repaint = 1; }
             else if (ks == XK_Up && hot - cols >= 0) { hot -= cols; repaint = 1; }
-            else if (hot < 0 && (ks == XK_Right || ks == XK_Down)) { hot = 0; repaint = 1; }
         } else if (e.type == Expose && e.xexpose.window == win) repaint = 1;
     }
     XUngrabKeyboard(w2k.dpy, CurrentTime);
@@ -562,14 +564,19 @@ static int cp_event(W2kWin *w, XEvent *e)
                 if (focused == p->ed_hex) cp_apply_hex_edit(p);
                 else cp_apply_rgb_edits(p);
                 cp_sync_edits(p);
-                if (ks == XK_Tab) {
-                    cp_unfocus_edits(p);
-                    if (focused == p->ed_r) p->ed_g->focused = 1;
-                    else if (focused == p->ed_g) p->ed_b->focused = 1;
-                    else if (focused == p->ed_b) p->ed_a->focused = 1;
-                    else if (focused == p->ed_a) p->ed_hex->focused = 1;
-                    else if (focused == p->ed_hex) p->ed_r->focused = 1;
+                /* Enter is OK, as in Windows, box focused or not: with a
+                 * value box focused it only applied the value, and the
+                 * dialog stayed open however often it was pressed. */
+                if (ks != XK_Tab) {
+                    w2k_win_close(w, ID_OK);
+                    return 1;
                 }
+                cp_unfocus_edits(p);
+                if (focused == p->ed_r) p->ed_g->focused = 1;
+                else if (focused == p->ed_g) p->ed_b->focused = 1;
+                else if (focused == p->ed_b) p->ed_a->focused = 1;
+                else if (focused == p->ed_a) p->ed_hex->focused = 1;
+                else if (focused == p->ed_hex) p->ed_r->focused = 1;
                 w2k_win_dirty(w);
                 return 1;
             }
@@ -836,7 +843,9 @@ static void prompt_paint(W2kWin *w, Drawable d)
     Prompt *p = w->user;
     int x = 12;
     if (p->icon >= 0) { w2k_bigicon_draw(d, 12, 14, p->icon); x = 12 + 32 + 12; }
-    w2k_text(d, F_UI, x, 16, p->label, C_TEXT);
+    /* Callers mark the label's access key ("&New name:"), which was drawn
+     * with its ampersand showing. */
+    w2k_text_mnemonic(d, F_UI, x, 16, p->label, C_TEXT, 1);
     w2k_edit_draw(d, p->edit);
     w2k_draw_pushbutton(d, &p->ok, "OK",
                         BS_DEFAULT | (p->focus == 1 ? BS_FOCUS : 0) |
@@ -851,7 +860,13 @@ static int prompt_event(W2kWin *w, XEvent *e)
     Prompt *p = w->user;
     switch (e->type) {
     case ButtonPress:
-        if (w2k_edit_press(p->edit, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        if (w2k_edit_press(p->edit, &e->xbutton)) {
+            /* A click in the box after Tab: the caret came back, but the
+             * keys still went to the button Tab had reached. */
+            if (p->edit->focused) p->focus = 0;
+            w2k_win_dirty(w);
+            return 1;
+        }
         if (w2k_rect_hit(&p->ok, e->xbutton.x, e->xbutton.y))     p->down = 1;
         else if (w2k_rect_hit(&p->cancel, e->xbutton.x, e->xbutton.y)) p->down = 2;
         w2k_win_dirty(w);
@@ -1030,16 +1045,31 @@ static int name_cmp(const void *a, const void *b)
     return strcmp(*(const char **)a, *(const char **)b);
 }
 
+/* One more name on a growing list. A folder of more than 2048 files lost
+ * the rest -- whichever the file system happened to hand out last. */
+static void fd_push(char ***v, int *n, int *cap, const char *name)
+{
+    if (*n == *cap) {
+        *cap = *cap ? *cap * 2 : 256;
+        *v = realloc(*v, (size_t)*cap * sizeof **v);
+        if (!*v) abort();
+    }
+    (*v)[(*n)++] = w2k_strdup(name);
+}
+
 static void fd_fill(FileDlg *f)
 {
     w2k_list_clear(f->list);
     DIR *dp = opendir(f->dir);
     if (!dp) return;
 
-    char *dirs[2048], *files[2048];
-    int nd = 0, nf = 0;
+    char **dirs = NULL, **files = NULL;
+    int nd = 0, nf = 0, capd = 0, capf = 0;
     struct dirent *de;
     while ((de = readdir(dp))) {
+        /* "." is never listed: with hidden files shown it came up as a
+         * folder, and opening it added "/." to Look in. */
+        if (!strcmp(de->d_name, ".")) continue;
         if (de->d_name[0] == '.' && strcmp(de->d_name, "..") &&
             !w2k_folder_hidden) continue;
         if (!strcmp(de->d_name, "..") && !strcmp(f->dir, "/")) continue;
@@ -1047,14 +1077,13 @@ static void fd_fill(FileDlg *f)
         snprintf(full, sizeof full, "%s/%s", f->dir, de->d_name);
         struct stat st;
         if (stat(full, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) { if (nd < 2048) dirs[nd++] = w2k_strdup(de->d_name); }
-        else if (!f->folder && fd_matches(f, de->d_name)) {
-            if (nf < 2048) files[nf++] = w2k_strdup(de->d_name);
-        }
+        if (S_ISDIR(st.st_mode)) fd_push(&dirs, &nd, &capd, de->d_name);
+        else if (!f->folder && fd_matches(f, de->d_name))
+            fd_push(&files, &nf, &capf, de->d_name);
     }
     closedir(dp);
-    qsort(dirs, nd, sizeof *dirs, name_cmp);
-    qsort(files, nf, sizeof *files, name_cmp);
+    if (nd) qsort(dirs, nd, sizeof *dirs, name_cmp);
+    if (nf) qsort(files, nf, sizeof *files, name_cmp);
 
     for (int i = 0; i < nd; i++) {
         int r = w2k_list_add(f->list, ICO_FOLDER, (void *)(long)1);
@@ -1066,10 +1095,40 @@ static void fd_fill(FileDlg *f)
         w2k_list_set(f->list, r, 0, files[i]);
         free(files[i]);
     }
+    free(dirs);
+    free(files);
     w2k_combo_clear(f->look);
     w2k_combo_add(f->look, f->dir);
     if (f->look->editable)
         w2k_combo_set_text(f->look, f->dir);
+}
+
+/* "a/./b", "a//b", "a/b/.." and a trailing slash taken out of an absolute
+ * path. Typing "." or ".." as the file name used to pile them up in Look
+ * in, and Up then took one press per piece. */
+static void fd_tidy(char *path)
+{
+    if (path[0] != '/') return;
+    char out[2048];
+    size_t o = 0;
+    for (const char *s = path; *s; ) {
+        while (*s == '/') s++;
+        const char *e = s;
+        while (*e && *e != '/') e++;
+        size_t len = (size_t)(e - s);
+        if (len == 2 && s[0] == '.' && s[1] == '.') {
+            while (o > 0 && out[o - 1] != '/') o--;
+            if (o > 0) o--;
+        } else if (len && !(len == 1 && s[0] == '.') && o + 1 + len < sizeof out) {
+            out[o++] = '/';
+            memcpy(out + o, s, len);
+            o += len;
+        }
+        s = e;
+    }
+    if (!o) out[o++] = '/';
+    out[o] = 0;
+    memcpy(path, out, o + 1);
 }
 
 /* 1 when the dialog went there. A folder that cannot be read is said
@@ -1089,6 +1148,7 @@ static int fd_chdir(FileDlg *f, const char *sub)
         snprintf(next, sizeof next, "%s%s%s", f->dir,
                  strcmp(f->dir, "/") ? "/" : "", sub);
     }
+    fd_tidy(next);
     DIR *dp = opendir(next);
     if (!dp) {
         char msg[2300];
@@ -1129,7 +1189,10 @@ static int fd_replace_ok(FileDlg *f)
 static void fd_try_accept(FileDlg *f)
 {
     const char *nm = w2k_edit_text(f->name);
-    if (!f->folder && nm && *nm) {
+    /* No name, no file: nothing happens, as in Windows. The dialog used
+     * to close as if cancelled. */
+    if (!f->folder && (!nm || !*nm)) return;
+    if (!f->folder) {
         char full[2048];
         if (nm[0] == '/') snprintf(full, sizeof full, "%s", nm);
         else snprintf(full, sizeof full, "%s%s%s", f->dir, strcmp(f->dir, "/") ? "/" : "", nm);
