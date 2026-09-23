@@ -3300,6 +3300,10 @@ static int event(W2kWin *w, XEvent *e)
             w2k_win_dirty(w);
             return 1;
         }
+        if (ex.tree && w2k_tree_motion(ex.tree, &e->xmotion)) {
+            w2k_win_dirty(w);
+            return 1;
+        }
         if (ex.show_address && ex.addr && ex.addr->edit &&
             w2k_edit_motion(ex.addr->edit, &e->xmotion)) {
             w2k_win_dirty(w);
@@ -3323,6 +3327,7 @@ static int event(W2kWin *w, XEvent *e)
             return 1;
         }
         ex.dragging_split = 0;
+        if (ex.tree) w2k_tree_release(ex.tree);
         w2k_toolbar_release(ex.tb);
         if (ex.addr && ex.addr->edit) w2k_edit_release(ex.addr->edit);
         if (ex.search) w2k_edit_release(ex.search);

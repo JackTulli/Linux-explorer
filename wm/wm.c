@@ -99,7 +99,9 @@ int wm_xerror(Display *d, XErrorEvent *e)
 static void on_sigchld(int sig)
 {
     (void)sig;
+    int saved = errno;                  /* the loop reads it after select() */
     while (waitpid(-1, NULL, WNOHANG) > 0) ;
+    errno = saved;
 }
 
 static void on_sigterm(int sig)
@@ -1019,14 +1021,19 @@ int main(int argc, char **argv)
         if (vfd > maxfd) maxfd = vfd;
         if (bfd > maxfd) maxfd = bfd;
         int rc = select(maxfd + 1, &r, NULL, NULL, &tv);
+        /* select()'s own errno, kept: the idle check below asks the X
+         * server, which leaves EAGAIN behind, and an interrupted wait --
+         * a program the shell started exiting -- then read as a fatal
+         * error and logged the user off. */
+        int serr = errno;
         power_idle_poll();
-        if (rc < 0 && errno == EBADF && nfd >= 0) {
+        if (rc < 0 && serr == EBADF && nfd >= 0) {
             /* The notification service's connection has gone bad; drop
              * it rather than treat a lost D-Bus as the end of the session. */
             notifyd_fini();
             continue;
         }
-        if (rc < 0 && errno != EINTR) break;
+        if (rc < 0 && serr != EINTR) break;
         if (nfd >= 0) notifyd_dispatch();
         /* A sink changed: read the level once, rather than every few
          * seconds whether or not anything happened. */

@@ -50,9 +50,12 @@ ifneq ($(wildcard /usr/include/X11/extensions/XInput2.h),)
 build/lib/input.o: CFLAGS += -DHAVE_XI2
 LDLIBS += -lXi
 endif
+# The glass (wm/glass.c) always uses Composite; only the idle timer is
+# optional.
+bin/l2kwm: LDLIBS += -lXcomposite
 ifneq ($(shell pkg-config --exists xscrnsaver 2>/dev/null && echo y),)
 build/wm/wm.o: CFLAGS += -DHAVE_XSS
-bin/l2kwm: LDLIBS += -lXss -lXcomposite
+bin/l2kwm: LDLIBS += -lXss
 endif
 ifneq ($(shell pkg-config --exists dbus-1 2>/dev/null && echo y),)
 build/wm/notifyd.o: CFLAGS += -DHAVE_DBUS $(shell pkg-config --cflags dbus-1)

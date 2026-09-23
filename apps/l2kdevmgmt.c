@@ -122,6 +122,9 @@ static void update_driver_wizard(W2kDevice *dev);
 static void command(void *u,int id);
 
 static void on_tree_select(void *u,W2kTreeNode*n){(void)u;if(node_dev(n)){char s[W2K_DEV_STR];W2kDevice*d=node_dev(n);snprintf(s,sizeof s,"%.*s — %.*s — Driver: %.*s",110,n->text,90,d->description[0]?d->description:"Linux device",60,d->driver[0]?d->driver:"Unknown");set_status(s);}else set_status("Device Manager — Linux hardware inventory");}
+static void show_properties(W2kDevice*d);
+/* A double-click on a device opens its Properties, as in Windows. */
+static void on_tree_activate(void *u,W2kTreeNode*n){(void)u;W2kDevice*d=node_dev(n);if(d)show_properties(d);}
 
 static W2kMenu *file_menu(void *u){(void)u;W2kMenu*m=w2k_menu_new();w2k_menu_item(m,ID_SCAN,"Scan for hardware changes","F5",ICO_NONE);w2k_menu_sep(m);w2k_menu_item(m,ID_EXIT,"E&xit","Alt+F4",ICO_NONE);return m;}
 static W2kMenu *action_menu(void *u){(void)u;W2kMenu*m=w2k_menu_new();w2k_menu_item(m,ID_PROPERTIES,"&Properties","Enter",ICO_PROPERTIES);w2k_menu_item(m,ID_UPDATE,"&Update Driver...",NULL,ICO_WINUPDATE);w2k_menu_item(m,ID_ENABLE,"&Enable Device",NULL,ICO_NONE);w2k_menu_item(m,ID_DISABLE,"&Disable Device",NULL,ICO_NONE);w2k_menu_item(m,ID_UNINSTALL,"&Uninstall Device",NULL,ICO_DELETE);w2k_menu_item(m,ID_DETAILS,"Driver &Details...",NULL,ICO_FILE_SYS);return m;}
@@ -130,6 +133,46 @@ static W2kMenu *help_menu(void *u){(void)u;W2kMenu*m=w2k_menu_new();w2k_menu_ite
 static void build_menus(void){w2k_menubar_clear(dm.mb);w2k_menubar_add(dm.mb,"&File",file_menu);w2k_menubar_add(dm.mb,"&Action",action_menu);w2k_menubar_add(dm.mb,"&View",view_menu);w2k_menubar_add(dm.mb,"&Help",help_menu);}
 
 static W2kDevice *selected(void){return node_dev(dm.tree->sel);}
+
+/* Disabling works by driver -- the module is unloaded and kept from
+ * loading -- so every device it drives stops with it. Said first, and
+ * asked, as Windows asks before it disables a device; it used to happen
+ * on any press, a wheel notch included. */
+static int confirm_disable(W2kWin *over, const W2kDevice *d)
+{
+    char others[700] = "";
+    int n = 0, len = 0;
+    for (size_t i = 0; i < dm.devices.count; i++) {
+        W2kDeviceCategory *c = &dm.devices.cats[i];
+        for (size_t j = 0; j < c->count; j++) {
+            const W2kDevice *o = &c->devices[j];
+            if (o == d || !d->driver[0] || strcmp(o->driver, d->driver)) continue;
+            /* One line each, three at most: the box has twelve lines, and
+             * the question has to be among them. */
+            if (++n <= 3 && len < (int)sizeof others - 100)
+                len += snprintf(others + len, sizeof others - (size_t)len,
+                                strlen(o->name) > 46 ? "\n    %.44s..." : "\n    %s", o->name);
+        }
+    }
+    char msg[1400], more[48] = "";
+    if (n > 3) snprintf(more, sizeof more, "\n    and %d more", n - 3);
+    if (n)
+        snprintf(msg, sizeof msg, "Disabling this device will cause it to stop functioning.\n\n"
+                 "Its driver, %.60s, also runs %d other device%s, which will stop as well:%s%s\n\n"
+                 "Do you really want to disable it?", d->driver, n, n == 1 ? "" : "s",
+                 others, more);
+    else
+        snprintf(msg, sizeof msg, "Disabling this device will cause it to stop functioning.\n\n"
+                 "Do you really want to disable it?");
+    return w2k_msgbox(over, "Device Manager", msg, MB_YESNO | MB_ICONWARNING) == ID_YES;
+}
+
+static int confirm_uninstall(W2kWin *over)
+{
+    return w2k_msgbox(over, "Confirm Device Removal",
+                      "Warning: You are about to uninstall this device from your system.",
+                      MB_OKCANCEL | MB_ICONWARNING) == ID_OK;
+}
 static void command(void *u,int id){(void)u;W2kDevice*d=selected();char err[1024];err[0]=0;
     switch(id){
     case ID_EXIT:w2k_win_close(dm.win,0);break;
@@ -137,8 +180,8 @@ static void command(void *u,int id){(void)u;W2kDevice*d=selected();char err[1024
     case ID_PROPERTIES:if(d)show_properties(d);break;
     case ID_DETAILS:if(d)show_properties(d);break;   /* the sheet reads modinfo itself */
     case ID_ENABLE: if(d && d->disabled){ if(w2k_device_set_enabled(d,1,err,sizeof err)==0) scan(); else w2k_notify("Device Manager",err); } break;
-    case ID_DISABLE: if(d && !d->disabled){ if(w2k_device_set_enabled(d,0,err,sizeof err)==0) scan(); else w2k_notify("Device Manager",err); } break;
-    case ID_UNINSTALL:if(d&&d->is_dkms){if(w2k_device_uninstall_dkms(d,err,sizeof err)==0)scan();else w2k_notify("Device Manager",err);}break;
+    case ID_DISABLE: if(d && !d->disabled && confirm_disable(dm.win,d)){ if(w2k_device_set_enabled(d,0,err,sizeof err)==0) scan(); else w2k_notify("Device Manager",err); } break;
+    case ID_UNINSTALL:if(d&&d->is_dkms&&confirm_uninstall(dm.win)){if(w2k_device_uninstall_dkms(d,err,sizeof err)==0)scan();else w2k_notify("Device Manager",err);}break;
     case ID_UPDATE:if(d)update_driver_wizard(d);break;
     case ID_HIDDEN:dm.show_hidden=!dm.show_hidden;tree_build();build_menus();w2k_win_dirty(dm.win);break;
     case ID_BYTYPE:case ID_BYCONNECTION:break;
@@ -158,16 +201,21 @@ static int event(W2kWin*w,XEvent*e){switch(e->type){case ButtonPress:if(e->xbutt
             w2k_tree_select(dm.tree, n);
             if (dm.tree->on_select) dm.tree->on_select(NULL, n);
             w2k_win_dirty(w);
-            context_menu(e->xbutton.x_root,e->xbutton.y_root);return 1;}if(w2k_menubar_press(dm.mb,&e->xbutton)){w2k_win_dirty(w);return 1;}if(w2k_tree_press(dm.tree,&e->xbutton)){w2k_win_dirty(w);return 1;}break;case ButtonRelease:break;case KeyPress:if(w2k_menubar_key(dm.mb,&e->xkey)){w2k_win_dirty(w);return 1;}if(w2k_tree_key(dm.tree,&e->xkey)){w2k_win_dirty(w);return 1;}if(XLookupKeysym(&e->xkey,0)==XK_F5){scan();return 1;}if(XLookupKeysym(&e->xkey,0)==XK_Return||XLookupKeysym(&e->xkey,0)==XK_KP_Enter){W2kDevice*d=selected();if(d)show_properties(d);return 1;}break;}return 0;}
+            context_menu(e->xbutton.x_root,e->xbutton.y_root);return 1;}if(w2k_menubar_press(dm.mb,&e->xbutton)){w2k_win_dirty(w);return 1;}if(w2k_tree_press(dm.tree,&e->xbutton)){w2k_win_dirty(w);return 1;}break;
+    case ButtonRelease:w2k_tree_release(dm.tree);w2k_win_dirty(w);break;   /* a held arrow stops */
+    case MotionNotify:if(w2k_tree_motion(dm.tree,&e->xmotion)){w2k_win_dirty(w);return 1;}break;case KeyPress:if(w2k_menubar_key(dm.mb,&e->xkey)){w2k_win_dirty(w);return 1;}if(w2k_tree_key(dm.tree,&e->xkey)){w2k_win_dirty(w);return 1;}if(XLookupKeysym(&e->xkey,0)==XK_F5){scan();return 1;}if(XLookupKeysym(&e->xkey,0)==XK_Return||XLookupKeysym(&e->xkey,0)==XK_KP_Enter){W2kDevice*d=selected();if(d)show_properties(d);return 1;}break;}return 0;}
 
 /* ---------- Native Update Driver wizard ---------- */
 typedef struct { W2kWin *win; W2kDevice *dev; W2kRect automatic, browse, cancel; int down; } UpdateDlg;
 static void update_paint(W2kWin*w,Drawable d){UpdateDlg*p=w->user;int y=18;w2k_text(d,F_UI_BOLD,20,y,"How do you want to search for driver software?",C_WINDOWTEXT);y+=34;w2k_draw_pushbutton(d,&p->automatic,"Search automatically for updated driver software",p->down==1?BS_PRESSED:0);y+=34;w2k_text(d,F_UI,34,y,"Search using the system's installed software updater.",C_WINDOWTEXT);y+=38;w2k_draw_pushbutton(d,&p->browse,"Browse my computer for driver software",p->down==2?BS_PRESSED:0);y+=34;w2k_text(d,F_UI,34,y,"Install a DKMS driver from a local source directory.",C_WINDOWTEXT);w2k_draw_pushbutton(d,&p->cancel,"Cancel",p->down==3?BS_PRESSED:0);}
-static int update_event(W2kWin*w,XEvent*e){UpdateDlg*p=w->user;if(e->type==ButtonPress){if(w2k_rect_hit(&p->automatic,e->xbutton.x,e->xbutton.y))p->down=1;else if(w2k_rect_hit(&p->browse,e->xbutton.x,e->xbutton.y))p->down=2;else if(w2k_rect_hit(&p->cancel,e->xbutton.x,e->xbutton.y))p->down=3;else return 0;w2k_win_dirty(w);return 1;}if(e->type==ButtonRelease&&p->down){int d=p->down;p->down=0;if(d==3){w2k_win_close(w,0);return 1;}if(d==1){char err[1024];if(w2k_device_update_driver(p->dev,err,sizeof err)!=0)w2k_notify("Update Driver",err);w2k_win_close(w,0);return 1;}if(d==2){char path[1024];if(w2k_file_dialog(w,0,path,sizeof path)){char *slash=strrchr(path,'/');if(slash)*slash=0;char err[1024];if(w2k_device_install_dkms(path,err,sizeof err)!=0)w2k_notify("Driver installation failed",err);else w2k_notify("Update Driver","The DKMS driver was installed successfully. Rescan hardware with F5.");}return 1;}}if(e->type==KeyPress&&XLookupKeysym(&e->xkey,0)==XK_Escape){w2k_win_close(w,0);return 1;}return 0;}
+static int update_event(W2kWin*w,XEvent*e){UpdateDlg*p=w->user;if(e->type==ButtonPress){if(e->xbutton.button!=Button1)return 1;if(w2k_rect_hit(&p->automatic,e->xbutton.x,e->xbutton.y))p->down=1;else if(w2k_rect_hit(&p->browse,e->xbutton.x,e->xbutton.y))p->down=2;else if(w2k_rect_hit(&p->cancel,e->xbutton.x,e->xbutton.y))p->down=3;else return 0;w2k_win_dirty(w);return 1;}if(e->type==ButtonRelease&&p->down){int d=p->down;p->down=0;w2k_win_dirty(w);const W2kRect*r=d==1?&p->automatic:d==2?&p->browse:&p->cancel;if(!w2k_rect_hit(r,e->xbutton.x,e->xbutton.y))return 1;if(d==3){w2k_win_close(w,0);return 1;}if(d==1){char err[1024];if(w2k_device_update_driver(p->dev,err,sizeof err)!=0)w2k_notify("Update Driver",err);w2k_win_close(w,0);return 1;}if(d==2){char path[1024];if(w2k_file_dialog(w,0,path,sizeof path)){char *slash=strrchr(path,'/');if(slash)*slash=0;char err[1024];if(w2k_device_install_dkms(path,err,sizeof err)!=0)w2k_notify("Driver installation failed",err);else w2k_notify("Update Driver","The DKMS driver was installed successfully. Rescan hardware with F5.");}return 1;}}if(e->type==KeyPress&&XLookupKeysym(&e->xkey,0)==XK_Escape){w2k_win_close(w,0);return 1;}return 0;}
 static void update_driver_wizard(W2kDevice*dev){if(!dev)return;UpdateDlg*p=calloc(1,sizeof*p);if(!p)return;p->dev=dev;p->win=w2k_win_new("Update Driver Software","l2kdevmgmt-update",520,260,0);p->win->user=p;p->win->paint=update_paint;p->win->event=update_event;p->automatic=(W2kRect){20,48,480,25};p->browse=(W2kRect){20,123,480,25};p->cancel=(W2kRect){420,220,76,23};w2k_win_center(p->win,dm.win);w2k_win_modal(p->win);free(p);}
 
 /* ---------- Native property sheet ---------- */
 typedef struct {W2kWin*win;W2kTabs*tabs;W2kDevice*d;W2kRect ok,details,update,enable,uninstall;int down;int tab;} Props;
+/* The sheet's buttons, as p->down names them: pressed with the left
+ * button, done when it comes up still over them -- like any button. */
+enum { PB_NONE, PB_OK, PB_DETAILS, PB_UPDATE, PB_ENABLE, PB_UNINSTALL };
 static void props_tab(void*u,int i){Props*p=u;p->tab=i;p->win->dirty=1;}
 static void draw_pair(Drawable d,int y,const char*k,const char*v){w2k_text(d,F_UI,16,y,k,C_WINDOWTEXT);w2k_text(d,F_UI,170,y,v&&*v?v:"Unknown",C_WINDOWTEXT);}
 static void props_paint(W2kWin*w,Drawable d){Props*p=w->user;w2k_tabs_draw(d,p->tabs);W2kRect c=w2k_tabs_client(p->tabs);w2k_fill(d,c.x,c.y,c.w,c.h,C_WINDOW);W2kDevice*q=p->d;int y=c.y+12;char b[512];
@@ -182,7 +230,7 @@ static void props_paint(W2kWin*w,Drawable d){Props*p=w->user;w2k_tabs_draw(d,p->
         static char out[4096]; static W2kDevice *res_for; static int res_done;
         if(res_for!=q||!res_done){w2k_device_resources(q,out,sizeof out);res_for=q;res_done=1;}
         char work[4096]; snprintf(work,sizeof work,"%s",out); char *out_p=work;for(char*line=strtok(out_p,"\n");line&&y<c.y+c.h-30;line=strtok(NULL,"\n")){w2k_text(d,F_FIXED,16,y,line,C_WINDOWTEXT);y+=15;}}
-    w2k_draw_pushbutton(d,&p->ok,"OK",BS_DEFAULT|(p->down==1?BS_PRESSED:0));}
+    w2k_draw_pushbutton(d,&p->ok,"OK",BS_DEFAULT|(p->down==PB_OK?BS_PRESSED:0));}
 static void props_layout(W2kWin*w){Props*p=w->user;p->tabs->r=(W2kRect){8,MENUBAR_H+4,w->w-16,w->h-MENUBAR_H-12};W2kRect c=w2k_tabs_client(p->tabs);p->ok=(W2kRect){w->w-92,w->h-34,76,23};p->details=(W2kRect){c.x+16,c.y+95,120,23};p->update=(W2kRect){c.x+144,c.y+95,120,23};}
 static void driver_paint(W2kWin *x, Drawable d) {
     char *copy = x->user ? strdup((char *)x->user) : NULL;
@@ -215,9 +263,15 @@ static void show_modinfo_dialog(Props*p) {
     free(text);
 }
 static void uevent_tick(void *u);
-static int props_event(W2kWin*w,XEvent*e){Props*p=w->user;if(e->type==ButtonPress){if(w2k_tabs_press(p->tabs,&e->xbutton)){w2k_win_dirty(w);return 1;}if(w2k_rect_hit(&p->ok,e->xbutton.x,e->xbutton.y)){p->down=1;w2k_win_dirty(w);return 1;}if(p->tab==1&&w2k_rect_hit(&p->details,e->xbutton.x,e->xbutton.y)){show_modinfo_dialog(p);return 1;}if(p->tab==1&&w2k_rect_hit(&p->update,e->xbutton.x,e->xbutton.y)){update_driver_wizard(p->d);return 1;}
-        if(p->tab==1&&w2k_rect_hit(&p->enable,e->xbutton.x,e->xbutton.y)){char err[1024];if(w2k_device_set_enabled(p->d,p->d->disabled,err,sizeof err)==0){w2k_win_close(w,0);scan();}else w2k_notify("Device Manager",err);return 1;}
-        if(p->tab==1&&p->d->is_dkms&&w2k_rect_hit(&p->uninstall,e->xbutton.x,e->xbutton.y)){char err[1024];if(w2k_device_uninstall_dkms(p->d,err,sizeof err)==0){w2k_win_close(w,0);scan();}else w2k_notify("Uninstall failed",err);return 1;}}else if(e->type==ButtonRelease){if(p->down&&w2k_rect_hit(&p->ok,e->xbutton.x,e->xbutton.y))w2k_win_close(w,0);p->down=0;w2k_win_dirty(w);}else if(e->type==KeyPress){if(w2k_tabs_key(p->tabs,&e->xkey)){w2k_win_dirty(w);return 1;}KeySym ks=XLookupKeysym(&e->xkey,0);if(ks==XK_Escape||ks==XK_Return){w2k_win_close(w,0);return 1;}}return 0;}
+static int props_button_at(Props*p,int x,int y){if(w2k_rect_hit(&p->ok,x,y))return PB_OK;if(p->tab!=1)return PB_NONE;if(w2k_rect_hit(&p->details,x,y))return PB_DETAILS;if(w2k_rect_hit(&p->update,x,y))return PB_UPDATE;if(w2k_rect_hit(&p->enable,x,y))return PB_ENABLE;if(p->d->is_dkms&&w2k_rect_hit(&p->uninstall,x,y))return PB_UNINSTALL;return PB_NONE;}
+static int props_event(W2kWin*w,XEvent*e){Props*p=w->user;if(e->type==ButtonPress){if(w2k_tabs_press(p->tabs,&e->xbutton)){w2k_win_dirty(w);return 1;}if(e->xbutton.button!=Button1)return 1;p->down=props_button_at(p,e->xbutton.x,e->xbutton.y);w2k_win_dirty(w);return 1;}
+    else if(e->type==ButtonRelease){int b=p->down;p->down=PB_NONE;w2k_win_dirty(w);if(e->xbutton.button!=Button1||!b||props_button_at(p,e->xbutton.x,e->xbutton.y)!=b)return 1;
+        if(b==PB_OK){w2k_win_close(w,0);return 1;}
+        if(b==PB_DETAILS){show_modinfo_dialog(p);return 1;}
+        if(b==PB_UPDATE){update_driver_wizard(p->d);return 1;}
+        if(b==PB_ENABLE){char err[1024];if(!p->d->disabled&&!confirm_disable(w,p->d))return 1;if(w2k_device_set_enabled(p->d,p->d->disabled,err,sizeof err)==0){w2k_win_close(w,0);scan();}else w2k_notify("Device Manager",err);return 1;}
+        if(b==PB_UNINSTALL){char err[1024];if(!confirm_uninstall(w))return 1;if(w2k_device_uninstall_dkms(p->d,err,sizeof err)==0){w2k_win_close(w,0);scan();}else w2k_notify("Uninstall failed",err);return 1;}
+        return 1;}else if(e->type==KeyPress){if(w2k_tabs_key(p->tabs,&e->xkey)){w2k_win_dirty(w);return 1;}KeySym ks=XLookupKeysym(&e->xkey,0);if(ks==XK_Escape||ks==XK_Return){w2k_win_close(w,0);return 1;}}return 0;}
 /* The driver's version and author come from modinfo, which takes a
  * moment for a big module (180 ms for amdgpu): asked for once the sheet
  * is on screen, not before it appears. */
@@ -230,4 +284,4 @@ static void show_properties(W2kDevice*d){if(!d)return;Props*p=calloc(1,sizeof*p)
 
 static void uevent_tick(void *u){(void)u;if(w2k_device_monitor_poll())scan();}
 
-int main(void){if(w2k_init("l2kdevmgmt")<0)return 1;memset(&dm,0,sizeof dm);w2k_devices_init(&dm.devices);dm.win=w2k_win_new("Device Manager","l2kdevmgmt",660,500,1);dm.win->min_w=480;dm.win->min_h=320;dm.win->paint=paint;dm.win->event=event;dm.win->resized=layout;dm.mb=w2k_menubar_new(NULL,command);dm.mb->win_ref=dm.win->win;dm.tree=w2k_tree_new();dm.tree->focused=1;dm.tree->on_select=on_tree_select;w2k_scroll_bind(&dm.tree->vsb,dm.win);dm.status=w2k_status_new();w2k_status_add(dm.status,0);build_menus();layout(dm.win);scan();w2k_device_monitor_open();w2k_add_timer(1000,uevent_tick,NULL);w2k_win_show(dm.win);w2k_run();w2k_tree_free(dm.tree);w2k_menubar_free(dm.mb);w2k_status_free(dm.status);w2k_device_monitor_close();w2k_devices_free(&dm.devices);w2k_fini();return 0;}
+int main(void){if(w2k_init("l2kdevmgmt")<0)return 1;memset(&dm,0,sizeof dm);w2k_devices_init(&dm.devices);dm.win=w2k_win_new("Device Manager","l2kdevmgmt",660,500,1);dm.win->min_w=480;dm.win->min_h=320;dm.win->paint=paint;dm.win->event=event;dm.win->resized=layout;dm.mb=w2k_menubar_new(NULL,command);dm.mb->win_ref=dm.win->win;dm.tree=w2k_tree_new();dm.tree->focused=1;dm.tree->on_select=on_tree_select;dm.tree->on_activate=on_tree_activate;w2k_scroll_bind(&dm.tree->vsb,dm.win);dm.status=w2k_status_new();w2k_status_add(dm.status,0);build_menus();layout(dm.win);scan();w2k_device_monitor_open();w2k_add_timer(1000,uevent_tick,NULL);w2k_win_show(dm.win);w2k_run();w2k_tree_free(dm.tree);w2k_menubar_free(dm.mb);w2k_status_free(dm.status);w2k_device_monitor_close();w2k_devices_free(&dm.devices);w2k_fini();return 0;}

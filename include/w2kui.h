@@ -315,6 +315,8 @@ typedef struct {
     W2kScroll    vsb;
     void       (*on_select)(void *user, W2kTreeNode *n);
     void       (*on_expand)(void *user, W2kTreeNode *n);
+    /* A double-click on a node with nothing under it; unset, it toggles. */
+    void       (*on_activate)(void *user, W2kTreeNode *n);
     void        *user;
 } W2kTree;
 
@@ -325,6 +327,8 @@ W2kTreeNode *w2k_tree_add(W2kTree *t, W2kTreeNode *parent, const char *text,
 void         w2k_tree_clear_children(W2kTree *t, W2kTreeNode *n);
 void         w2k_tree_draw(Drawable d, W2kTree *t);
 int          w2k_tree_press(W2kTree *t, XButtonEvent *b);
+void         w2k_tree_release(W2kTree *t);
+int          w2k_tree_motion(W2kTree *t, XMotionEvent *m);
 W2kTreeNode *w2k_tree_node_at(W2kTree *t, int x, int y);   /* the row's node, or NULL */
 int          w2k_tree_key(W2kTree *t, XKeyEvent *k);
 void         w2k_tree_layout(W2kTree *t);

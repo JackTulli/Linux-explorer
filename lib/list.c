@@ -738,8 +738,11 @@ void w2k_list_release(W2kList *l, XButtonEvent *b)
     }
     l->band_on = 0;
     l->drag_col = -1;
-    w2k_scroll_release(&l->vsb);
-    w2k_scroll_release(&l->hsb);
+    /* Only a scroll bar part that is held: a wheel's release comes with
+     * its press, and releasing then stopped the smooth scroll the notch
+     * had just started -- the list did not move at all. */
+    if (l->vsb.pressed) w2k_scroll_release(&l->vsb);
+    if (l->hsb.pressed) w2k_scroll_release(&l->hsb);
 }
 
 int w2k_list_key(W2kList *l, XKeyEvent *k)
@@ -998,6 +1001,24 @@ W2kTreeNode *w2k_tree_node_at(W2kTree *t, int x, int y)
     return NULL;
 }
 
+/* The button came up: a scroll arrow held down stops repeating. Without
+ * this a single click ran the tree to its end. */
+void w2k_tree_release(W2kTree *t)
+{
+    /* Only a held part: the release after a wheel notch must not stop
+     * the smooth scroll it started. */
+    if (t->vsb.pressed) w2k_scroll_release(&t->vsb);
+}
+
+/* The scroll box follows the pointer while it is held. 1 if it moved. */
+int w2k_tree_motion(W2kTree *t, XMotionEvent *m)
+{
+    if (!t->vsb.pressed) return 0;
+    int moved = w2k_scroll_motion(&t->vsb, m->x, m->y);
+    if (moved) t->top = t->vsb.pos;
+    return moved;
+}
+
 int w2k_tree_press(W2kTree *t, XButtonEvent *b)
 {
     w2k_tree_layout(t);
@@ -1024,9 +1045,13 @@ int w2k_tree_press(W2kTree *t, XButtonEvent *b)
             static Time last;
             static W2kTreeNode *lastn;
             if (n == lastn && (int)(b->time - last) < w2k_dblclk_ms) {
+                last = 0;
+                if (t->on_activate && !n->child && !n->has_kids) {
+                    t->on_activate(t->user, n);
+                    return 1;
+                }
                 n->expanded = !n->expanded;
                 if (n->expanded && t->on_expand) t->on_expand(t->user, n);
-                last = 0;
             } else { last = b->time; lastn = n; }
             return 1;
         }

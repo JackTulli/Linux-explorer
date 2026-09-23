@@ -108,6 +108,18 @@ if [ "$YES" != 1 ] && [ "$DRY" != 1 ] && ( : < /dev/tty ) 2>/dev/null; then
     case "$a" in [Yy][Ee][Ss]|[Yy]) ;; *) echo "Nothing was touched."; exit 0 ;; esac
 fi
 
+# Root hands the user's half to them by running this file again, and the
+# machine's half below can delete it (it lives in share/w2k, or in the
+# sources): a copy, readable by them, is what gets handed over.
+HANDOVER=$SELF
+if [ "$(id -u)" = 0 ] && [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != root ] &&
+   [ "$DO_USER" = 1 ] && [ "$DRY" != 1 ]; then
+    HANDOVER=$(mktemp /tmp/l2k-uninstall.XXXXXX)
+    cp "$SELF" "$HANDOVER"
+    chmod 644 "$HANDOVER"
+    trap 'rm -f "$HANDOVER"' EXIT
+fi
+
 # ------------------------------------------------------------------
 # 1. The machine
 # ------------------------------------------------------------------
@@ -183,7 +195,7 @@ if [ "$(id -u)" = 0 ] && [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != root ] && 
     [ "$KEEP_THEMES" = 1 ] && opts="$opts --keep-themes"
     [ "$DO_GAMES" = 1 ] && opts="$opts --games"
     say "Taking $TARGET_USER's settings off"
-    run su -s /bin/sh "$TARGET_USER" -c "sh '$SELF' $opts --prefix '$PREFIX'"
+    run su -s /bin/sh "$TARGET_USER" -c "sh '$HANDOVER' $opts --prefix '$PREFIX'"
     say "Done. $n_gone things went."
     exit 0
 fi

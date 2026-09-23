@@ -336,7 +336,8 @@ if [ "$DO_DEPS" = 1 ]; then
             libXrandr-devel libXcursor-devel libXft-devel fontconfig-devel \
             freetype2-devel zlib-devel libjpeg8-devel libwebp-devel libXss-devel xrandr xset xsetroot xrdb xmessage \
             xdg-utils zip unzip tar p7zip-full pulseaudio-utils alsa-utils xterm python3 git curl \
-            dejavu-fonts dbus-1-x11 cabextract pam-devel xauth dbus-1-devel libnotify-tools brightnessctl
+            dejavu-fonts dbus-1-x11 cabextract pam-devel xauth dbus-1-devel libnotify-tools brightnessctl \
+            libXcomposite-devel libXi-devel
         PM="as_root zypper --non-interactive install"
         PKG_LOOKS="qt5ct qt6ct"
         PKG_APPS="udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g ntfsprogs"
@@ -365,7 +366,8 @@ if [ "$DO_DEPS" = 1 ]; then
             libXcursor-devel libXft-devel fontconfig-devel freetype-devel zlib-devel \
             libjpeg-turbo-devel libwebp-devel libXScrnSaver-devel xrandr xset xsetroot xrdb xmessage xdg-utils zip unzip \
             tar p7zip pulseaudio-utils xterm python3 git curl dejavu-fonts-ttf dbus \
-            cabextract pam-devel xauth dbus-devel libnotify brightnessctl
+            cabextract pam-devel xauth dbus-devel libnotify brightnessctl \
+            libXcomposite-devel libXi-devel
         PM="as_root xbps-install -Sy"
         PKG_LOOKS="qt5ct qt6ct"
         PKG_APPS="udisks2 xdg-desktop-portal xdg-desktop-portal-gtk dosfstools exfatprogs ntfs-3g"
@@ -484,7 +486,10 @@ if [ "$DO_BUILD" = 1 ]; then
     if [ "$WANT_APPS" = all ]; then want="$want $APPS_EXTRA"; fi
     if [ "$WANT_WIRELESS" = 1 ]; then want="$want $APPS_WIRELESS"; fi
     if [ "$WANT_WINDOWS" = 1 ]; then want="$want $APPS_WINDOWS"; fi
-    if [ "$FULL" = 1 ]; then
+    # The logon screen stays while a boot service starts it, --full or
+    # not: a later run without --full took l2kdm away and left the machine
+    # booting into a service with nothing to start.
+    if [ "$FULL" = 1 ] || [ -e /etc/systemd/system/l2kdm.service ] || [ -e /etc/init.d/l2kdm ]; then
         case " $want " in *" l2kdm "*) ;; *) want="$want l2kdm" ;; esac
     fi
     bins='' missing=''
