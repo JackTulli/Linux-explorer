@@ -42,6 +42,9 @@
 
 static char session_cmd[1024] = "/usr/local/bin/l2k-session";
 static char cookie[33];
+/* The account PAM authenticated, as PAM names it (a module may map or
+ * fold the name typed); the session is started for this one. */
+static char auth_user[256];
 static pid_t xpid;
 static pid_t session_pid;                 /* the session leader, while one runs */
 static volatile sig_atomic_t x_ready, x_died;
@@ -261,6 +264,10 @@ static unsigned char *user_picture(const Who *u, const char *path, int w, int h,
         for (int i = 3; i < (maxfd > 0 && maxfd < 65536 ? maxfd : 1024); i++)
             if (i != fd[1]) close(i);
         if (lg.pass && lg.pass->text && lg.pass->cap > 0) memset(lg.pass->text, 0, (size_t)lg.pass->cap);
+        /* Nor the new server's cookie: a decoder made to run code by a
+         * crafted picture would have, as that user, the key to the
+         * logon screen and the next person's keystrokes. */
+        for (volatile char *c = cookie; c < cookie + sizeof cookie; c++) *c = 0;
         signal(SIGALRM, SIG_DFL);
         alarm(10);
         struct rlimit mem = { 1UL << 30, 1UL << 30 };
@@ -459,6 +466,8 @@ static void set_message(const char *m)
     w2k_win_dirty(lg.win);
 }
 
+static void focus_back(void);
+
 static void logon_failed(const char *why)
 {
     lg.busy = 0;
@@ -471,6 +480,7 @@ static void logon_failed(const char *why)
                "domain are correct, then type your password again. Letters in "
                "passwords must be typed using the correct case.",
                MB_OK | MB_ICONWARNING);
+    focus_back();
 }
 
 /* ------------------------------------------------------------------ *
@@ -486,17 +496,33 @@ static int converse(int n, const struct pam_message **msg, struct pam_response *
     (void)u;
     struct pam_response *r = calloc((size_t)n, sizeof *r);
     if (!r) return PAM_BUF_ERR;
-    for (int i = 0; i < n; i++) {
+    int rc = PAM_SUCCESS;
+    for (int i = 0; i < n && rc == PAM_SUCCESS; i++) {
         switch (msg[i]->msg_style) {
-        case PAM_PROMPT_ECHO_OFF: r[i].resp = strdup(w2k_edit_text(lg.pass)); break;
-        case PAM_PROMPT_ECHO_ON:  r[i].resp = strdup(w2k_edit_text(lg.user)); break;
+        case PAM_PROMPT_ECHO_OFF:
+            if (!(r[i].resp = strdup(w2k_edit_text(lg.pass)))) rc = PAM_BUF_ERR;
+            break;
+        case PAM_PROMPT_ECHO_ON:
+            if (!(r[i].resp = strdup(w2k_edit_text(lg.user)))) rc = PAM_BUF_ERR;
+            break;
         case PAM_ERROR_MSG:
         case PAM_TEXT_INFO:
             snprintf(pam_info, sizeof pam_info, "%s", msg[i]->msg ? msg[i]->msg : "");
             r[i].resp = NULL;
             break;
-        default: free(r); return PAM_CONV_ERR;
+        default: rc = PAM_CONV_ERR; break;
         }
+    }
+    if (rc != PAM_SUCCESS) {
+        /* The answers given so far -- a password among them -- are wiped
+         * before they go: this process lives as long as the machine. */
+        for (int i = 0; i < n; i++)
+            if (r[i].resp) {
+                for (volatile char *c = r[i].resp; *c; c++) *c = 0;
+                free(r[i].resp);
+            }
+        free(r);
+        return rc;
     }
     *resp = r;
     return PAM_SUCCESS;
@@ -522,6 +548,13 @@ static int authenticate(const char *user)
 
     rc = pam_authenticate(pamh, 0);
     if (rc == PAM_SUCCESS) rc = pam_acct_mgmt(pamh, 0);
+    if (rc == PAM_SUCCESS) {
+        const void *item = NULL;
+        if (pam_get_item(pamh, PAM_USER, &item) == PAM_SUCCESS && item &&
+            strlen(item) < sizeof auth_user)
+            snprintf(auth_user, sizeof auth_user, "%s", (const char *)item);
+        else rc = PAM_USER_UNKNOWN;          /* no name that fits: no session */
+    }
     if (rc == PAM_NEW_AUTHTOK_REQD) {
         /* The conversation only knows the password that was typed, so it
          * cannot answer a "new password" prompt: say so rather than have
@@ -746,6 +779,7 @@ static void do_shutdown_dialog(void)
     int rc = w2k_win_modal(w);
     int what = s.what->sel;
     w2k_combo_free(s.what);
+    focus_back();
     if (rc != ID_OK) return;
     lg.want = what == 1 ? 11 : 10;
     w2k_win_close(lg.win, ID_CANCEL);
@@ -758,6 +792,11 @@ static void do_logon(void)
 {
     const char *user = w2k_edit_text(lg.user);
     if (!*user || lg.busy) return;
+    auth_user[0] = 0;
+    if (strlen(user) >= sizeof auth_user) {
+        logon_failed("The user name is too long.");
+        return;
+    }
     lg.busy = 1;
     set_message("");
     XDefineCursor(w2k.dpy, lg.win->win, w2k.cur_wait);
@@ -807,6 +846,17 @@ static int event(W2kWin *w, XEvent *e)
         return 1;
     case KeyPress: {
         KeySym ks = XLookupKeysym(&e->xkey, 0);
+        /* The underlined letters: &User name, &Password, &Shutdown...,
+         * &Options -- the only way to Shut Down without a pointer. */
+        if (e->xkey.state & Mod1Mask) {
+            if (ks == XK_u || ks == XK_p) {
+                lg.user->focused = ks == XK_u;
+                lg.pass->focused = ks == XK_p;
+            } else if (ks == XK_s) do_shutdown_dialog();
+            else if (ks == XK_o) lg.options_open = !lg.options_open;
+            w2k_win_dirty(w);
+            return 1;
+        }
         if (ks == XK_Return || ks == XK_KP_Enter) { do_logon(); return 1; }
         if (ks == XK_Tab) {
             int u = lg.user->focused;
@@ -824,6 +874,23 @@ static int event(W2kWin *w, XEvent *e)
 }
 
 static void blink(void *u) { w2k_edit_blink(u); }
+
+/* No window manager runs here to give a box the keyboard: the logon
+ * screen kept it, and the Logon Message and Shut Down boxes over it took
+ * no Enter or Esc -- stuck, on a machine without a pointer. Each window
+ * takes the focus as it is shown, and the screen takes it back after. */
+static void focus_on_map(Window w)
+{
+    XSync(w2k.dpy, False);
+    XWindowAttributes wa;
+    if (XGetWindowAttributes(w2k.dpy, w, &wa) && wa.map_state == IsViewable)
+        XSetInputFocus(w2k.dpy, w, RevertToParent, CurrentTime);
+}
+
+static void focus_back(void)
+{
+    if (lg.win) XSetInputFocus(w2k.dpy, lg.win->win, RevertToParent, CurrentTime);
+}
 static void take_focus(void *u)
 {
     (void)u;
@@ -897,10 +964,13 @@ static int logon_screen(const char *last_user, char *user_out, int n)
     w2k_add_timer(w2k_caret_blink, blink, lg.user);
     w2k_add_timer(w2k_caret_blink, blink, lg.pass);
     w2k_add_timer(200, take_focus, NULL);
+    w2k_win_mapped = focus_on_map;
     int rc = w2k_win_modal(lg.win);
     w2k_del_timer(blink, lg.user);
     w2k_del_timer(blink, lg.pass);
-    snprintf(user_out, (size_t)n, "%s", w2k_edit_text(lg.user));
+    /* The name the session is for: the one PAM authenticated. */
+    snprintf(user_out, (size_t)n, "%s", rc == ID_OK && auth_user[0] ? auth_user
+                                                                    : w2k_edit_text(lg.user));
     w2k_edit_free(lg.user);
     w2k_edit_free(lg.pass);
     if (lg.banner) w2k_skin_free(lg.banner);
@@ -973,7 +1043,7 @@ int main(int argc, char **argv)
     last_user_load(last, sizeof last);
     for (;;) {
         if (own_x && !x_alive()) { log_line("the X server has gone"); return 1; }
-        char user[64];
+        char user[256];
         int want = logon_screen(last, user, sizeof user);
         if (want == 10 || want == 11) {
             log_line("%s requested from the logon screen", want == 10 ? "shutdown" : "restart");
