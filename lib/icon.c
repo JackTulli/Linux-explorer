@@ -92,8 +92,23 @@ static int smooth_wanted(void)
     return render_ok;
 }
 
+/* draw_scaled()'s pictures: any size other than 16 and 32, and every size
+ * at a desktop scale other than 100%. */
+#define N_SCALED 256
+static struct { int id, size, dimmed, method, smooth; Cached c; } scaled[N_SCALED];
+static int nscaled, next_slot;
+
 void w2k_icon_cache_drop(int id)
 {
+    /* The scaled pictures of it too: they kept showing the old artwork
+     * after an icon set changed, at 150% everywhere and in the Start
+     * panel's 24-pixel icons at any scale. */
+    for (int i = 0; i < nscaled; i++)
+        if (scaled[i].id == id) {
+            cached_drop(&scaled[i].c);
+            scaled[i].id = -1;
+        }
+
     if (id >= N_ICONS) {
         int k = id - N_ICONS;
         if (k >= nextra) return;
@@ -296,14 +311,11 @@ static void blit_cached(Drawable d, int x, int y, Cached *c, int size)
  * panel and its footer use. Kept per (icon, size) once built. */
 /* `size` is logical; the pixmap built is w2k_px(size) wide and drawn at
  * the mapped position. Kept per (icon, physical size, dimmed). */
-#define N_SCALED 256
 static void draw_scaled(Drawable d, int x, int y, int id, int size, int dimmed)
 {
     if (!w2k_icon_valid(id) || size < 4 || size > 128) return;
     int ps = w2k_px(size);
     if (ps < 1 || ps > 512) return;
-    static struct { int id, size, dimmed, method, smooth; Cached c; } scaled[N_SCALED];
-    static int nscaled, next_slot;
     int slot = -1, want = smooth_wanted();
     for (int i = 0; i < nscaled; i++)
         if (scaled[i].id == id && scaled[i].size == ps && scaled[i].smooth == want &&

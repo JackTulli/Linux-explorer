@@ -3162,12 +3162,18 @@ static int event(W2kWin *w, XEvent *e)
                 drag_from_y = y;
             }
             if (e->xbutton.button == Button3) {
+                /* On empty space it is the folder's menu, and what was
+                 * selected is let go, as in Windows: the item menu used to
+                 * come up for whatever had been selected before. */
+                if (hit < 0 || hit >= ex.list->n) {
+                    for (int k = 0; k < ex.list->n; k++) ex.list->items[k].selected = 0;
+                    ex.list->sel = -1;
+                    status_update();
+                }
                 W2kMenu *m = ex.list->sel >= 0 ? build_item_context()
                                                : build_folder_context();
-                Window ch;
-                int rx, ry;
-                XTranslateCoordinates(w2k.dpy, w->win, w2k.root, x, y, &rx, &ry, &ch);
-                int id = w2k_menu_popup(m, rx, ry, MPOP_LEFT);
+                w2k_win_repaint_now(w);
+                int id = w2k_menu_popup(m, e->xbutton.x_root, e->xbutton.y_root, MPOP_LEFT);
                 w2k_menu_free(m);
                 if (id) command(NULL, id);
             }

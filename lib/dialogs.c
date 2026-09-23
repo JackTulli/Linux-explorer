@@ -787,8 +787,10 @@ int w2k_combo_press(W2kCombo *c, XButtonEvent *b)
 
     Window child;
     int rx, ry;
-    XTranslateCoordinates(w2k.dpy, b->window, w2k.root, c->r.x,
-                          c->r.y + c->r.h, &rx, &ry, &child);
+    /* The box is laid out in logical pixels, the X window in screen ones:
+     * at 150% the list used to open over the middle of the dialog. */
+    XTranslateCoordinates(w2k.dpy, b->window, w2k.root, w2k_px(c->r.x),
+                          w2k_px(c->r.y + c->r.h), &rx, &ry, &child);
     c->pressed = 1;
     c->focused = 1;
     int i = combo_dropdown(c, rx, ry);
@@ -1070,7 +1072,10 @@ static void fd_fill(FileDlg *f)
         w2k_combo_set_text(f->look, f->dir);
 }
 
-static void fd_chdir(FileDlg *f, const char *sub)
+/* 1 when the dialog went there. A folder that cannot be read is said
+ * so, and the dialog stays where it was: it used to empty the list, keep
+ * the old folder in Look in, and aim Save at the one it could not show. */
+static int fd_chdir(FileDlg *f, const char *sub)
 {
     char next[2048];
     if (!strcmp(sub, "..")) {
@@ -1084,9 +1089,19 @@ static void fd_chdir(FileDlg *f, const char *sub)
         snprintf(next, sizeof next, "%s%s%s", f->dir,
                  strcmp(f->dir, "/") ? "/" : "", sub);
     }
+    DIR *dp = opendir(next);
+    if (!dp) {
+        char msg[2300];
+        snprintf(msg, sizeof msg, "%.2000s is not accessible.\n\n%s.", next,
+                 errno == EACCES ? "Access is denied" : strerror(errno));
+        w2k_msgbox(f->w, f->save ? "Save As" : "Open", msg, MB_OK | MB_ICONERROR);
+        return 0;
+    }
+    closedir(dp);
     snprintf(f->dir, sizeof f->dir, "%s", next);
     fd_fill(f);
     f->list->vsb.pos = 0;
+    return 1;
 }
 
 /* Saving over a file that is there: only when the answer is yes. Paint,
@@ -1105,6 +1120,29 @@ static int fd_replace_ok(FileDlg *f)
     char msg[2400];
     snprintf(msg, sizeof msg, "%s already exists.\nDo you want to replace it?", base ? base + 1 : full);
     return w2k_msgbox(f->w, "Save As", msg, MB_YESNO | MB_ICONWARNING) == ID_YES;
+}
+
+/* OK, Open or Save, or Enter: the name of a folder goes into that folder,
+ * as in Windows -- it used to come back as the chosen file, and the
+ * program then tried to write over a directory. Anything else is the
+ * answer, once a file it would replace is agreed to. */
+static void fd_try_accept(FileDlg *f)
+{
+    const char *nm = w2k_edit_text(f->name);
+    if (!f->folder && nm && *nm) {
+        char full[2048];
+        if (nm[0] == '/') snprintf(full, sizeof full, "%s", nm);
+        else snprintf(full, sizeof full, "%s%s%s", f->dir, strcmp(f->dir, "/") ? "/" : "", nm);
+        struct stat st;
+        if (stat(full, &st) == 0 && S_ISDIR(st.st_mode)) {
+            if (fd_chdir(f, full)) w2k_edit_set(f->name, "");
+            return;
+        }
+    }
+    if (fd_replace_ok(f)) {
+        f->accepted = 1;
+        w2k_win_close(f->w, ID_OK);
+    }
 }
 
 static void fd_activate(void *user, int idx)
@@ -1241,7 +1279,8 @@ static int fd_event(W2kWin *w, XEvent *e)
                 f->name->focused = 0;
                 f->list->focused = 0;
             } else if (f->look->sel >= 0 && f->look->sel < f->look->n) {
-                fd_chdir(f, f->look->items[f->look->sel]);
+                /* Refused: Look in goes back to the folder still shown. */
+                if (!fd_chdir(f, f->look->items[f->look->sel])) fd_fill(f);
             }
             w2k_win_dirty(w);
             return 1;
@@ -1303,10 +1342,7 @@ static int fd_event(W2kWin *w, XEvent *e)
         f->down = 0;
         f->place_hot = -1;
         if (d == 1 && w2k_rect_hit(&f->ok, e->xbutton.x, e->xbutton.y)) {
-            if (fd_replace_ok(f)) {
-                f->accepted = 1;
-                w2k_win_close(w, ID_OK);
-            }
+            fd_try_accept(f);
         } else if (d == 2 && w2k_rect_hit(&f->cancel, e->xbutton.x, e->xbutton.y))
             w2k_win_close(w, ID_CANCEL);
         w2k_win_dirty(w);
@@ -1379,17 +1415,7 @@ static int fd_event(W2kWin *w, XEvent *e)
             }
         }
         if (ks == XK_Return || ks == XK_KP_Enter) {
-            const char *nm = w2k_edit_text(f->name);
-            struct stat st;
-            char full[2048];
-            snprintf(full, sizeof full, "%s%s%s", f->dir,
-                     strcmp(f->dir, "/") ? "/" : "", nm);
-            if (!f->save && !f->folder && stat(full, &st) == 0 && S_ISDIR(st.st_mode)) {
-                fd_chdir(f, nm);
-            } else if (fd_replace_ok(f)) {
-                f->accepted = 1;
-                w2k_win_close(w, ID_OK);
-            }
+            fd_try_accept(f);
             w2k_win_dirty(w);
             return 1;
         }

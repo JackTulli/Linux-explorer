@@ -119,7 +119,8 @@ static int bar_title_at_root(int rx, int ry)
     Window dummy;
     XTranslateCoordinates(w2k.dpy, w2k.root, tracking_bar->win_ref, rx, ry,
                           &lx, &ly, &dummy);
-    int t = menubar_index_at(tracking_bar, lx, ly);
+    /* Screen pixels back to the bar's logical layout. */
+    int t = menubar_index_at(tracking_bar, w2k_lp(lx), w2k_lp(ly));
     /* The title whose menu this is: crossing back over it is nothing. */
     return t == tracking_bar->open ? -1 : t;
 }
@@ -153,7 +154,7 @@ static void menubar_track(W2kMenubar *mb, int i)
         int gx, gy;
         Window dummy;
         XTranslateCoordinates(w2k.dpy, mb->win_ref, w2k.root,
-                              mb->item[i].x, mb->r.y + MENUBAR_H,
+                              w2k_px(mb->item[i].x), w2k_px(mb->r.y + MENUBAR_H),
                               &gx, &gy, &dummy);
 
         /* The title lights as its menu opens, drawn on the window now: the
@@ -183,7 +184,7 @@ static void menubar_track(W2kMenubar *mb, int i)
         int lx, ly;
         XTranslateCoordinates(w2k.dpy, w2k.root, mb->win_ref, rx, ry, &lx, &ly,
                               &dummy);
-        int j = menubar_index_at(mb, lx, ly);
+        int j = menubar_index_at(mb, w2k_lp(lx), w2k_lp(ly));
         if (j < 0 || j == i) break;
         i = j;
     }

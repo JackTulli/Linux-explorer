@@ -290,14 +290,17 @@ int w2k_bmp_save(const char *path, const unsigned char *rgba, int w, int h)
     hd[18] = w & 0xff; hd[19] = (w >> 8) & 0xff; hd[20] = (w >> 16) & 0xff; hd[21] = (w >> 24) & 0xff;
     hd[22] = h & 0xff; hd[23] = (h >> 8) & 0xff; hd[24] = (h >> 16) & 0xff; hd[25] = (h >> 24) & 0xff;
     hd[26] = 1; hd[28] = 24;
-    fwrite(hd, 1, 54, f);
+    /* Every write checked: a full disk used to leave a short file behind
+     * a program saying it had saved. */
+    int ok = fwrite(hd, 1, 54, f) == 54;
     unsigned char *row = calloc(1, (size_t)stride);
-    for (int y = h - 1; y >= 0 && row; y--) {
+    if (!row) ok = 0;
+    for (int y = h - 1; y >= 0 && ok; y--) {
         const unsigned char *p = rgba + (size_t)y * w * 4;
         for (int x = 0; x < w; x++) { row[x * 3] = p[x * 4 + 2]; row[x * 3 + 1] = p[x * 4 + 1]; row[x * 3 + 2] = p[x * 4]; }
-        fwrite(row, 1, (size_t)stride, f);
+        if (fwrite(row, 1, (size_t)stride, f) != (size_t)stride) ok = 0;
     }
     free(row);
-    fclose(f);
-    return 1;
+    if (fclose(f) != 0) ok = 0;
+    return ok;
 }

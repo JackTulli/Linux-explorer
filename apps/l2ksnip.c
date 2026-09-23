@@ -1301,8 +1301,8 @@ static int popup_under(int button_id, W2kMenu *m)
     for (int i = 0; i < st.tb->n; i++) if (st.tb->b[i].id == button_id) x = st.tb->b[i].x;
     int rx, ry;
     Window child;
-    XTranslateCoordinates(w2k.dpy, st.win->win, w2k.root, x, st.tb->r.y + st.tb->r.h,
-                          &rx, &ry, &child);
+    XTranslateCoordinates(w2k.dpy, st.win->win, w2k.root, w2k_px(x),
+                          w2k_px(st.tb->r.y + st.tb->r.h), &rx, &ry, &child);
     int c = w2k_menu_popup(m, rx, ry, MPOP_LEFT);
     w2k_menu_free(m);
     return c;

@@ -599,8 +599,8 @@ static void pick_color(int which)
     const W2kRect *r = which ? &dl.swatch2 : &dl.swatch;
     int rx, ry;
     Window dummy;
-    XTranslateCoordinates(w2k.dpy, dl.win->win, w2k.root, r->x, r->y + r->h,
-                          &rx, &ry, &dummy);
+    XTranslateCoordinates(w2k.dpy, dl.win->win, w2k.root, w2k_px(r->x),
+                          w2k_px(r->y + r->h), &rx, &ry, &dummy);
     w2k_win_dirty(dl.win);
     w2k_win_repaint_now(dl.win);
     int cr, cg, cb;

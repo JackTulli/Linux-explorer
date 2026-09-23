@@ -118,7 +118,11 @@ int w2k_fs_copy_tree(const char *from, const char *to)
     /* A folder into itself would never end. */
     size_t fl = strlen(from);
     if (!strncmp(from, to, fl) && (to[fl] == '/' || to[fl] == 0)) { errno = EINVAL; return 0; }
-    if (mkdir(to, st.st_mode & 07777) != 0 && errno != EEXIST) return 0;
+    /* Made writable, and given the folder's own mode once its contents
+     * are in: a read-only folder -- anything copied off a CD -- was made
+     * read-only first, and nothing could then go into it. */
+    int made = mkdir(to, (st.st_mode & 07777) | S_IRWXU) == 0;
+    if (!made && errno != EEXIST) return 0;
     DIR *dp = opendir(from);
     if (!dp) return 0;
     int ok = 1;
@@ -133,6 +137,7 @@ int w2k_fs_copy_tree(const char *from, const char *to)
     }
     depth--;
     closedir(dp);
+    if (made && chmod(to, st.st_mode & 07777) != 0) ok = 0;
     return ok;
 }
 
