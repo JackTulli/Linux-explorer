@@ -102,23 +102,58 @@ static int load_file(const char *path)
         w2k_msgbox(pad.win, "Notepad", msg, MB_OK | MB_ICONWARNING);
         return 0;
     }
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (n < 0) n = 0;
-    char *buf = w2k_alloc(n + 1);
-    size_t got = fread(buf, 1, n, f);
-    buf[got] = 0;
+    /* A file, read to its end: a folder used to be taken at the size
+     * ftell gave it (LONG_MAX on ext4) and Notepad quit out of memory,
+     * and /proc's files, which say they are empty, opened empty. */
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0) st.st_mode = 0;
+    if (!S_ISREG(st.st_mode)) {
+        fclose(f);
+        char msg[1200];
+        snprintf(msg, sizeof msg, "%s\n\n%s", path, S_ISDIR(st.st_mode)
+                 ? "This is a folder, not a file Notepad can open."
+                 : "This is not a file Notepad can open.");
+        w2k_msgbox(pad.win, "Notepad", msg, MB_OK | MB_ICONWARNING);
+        return 0;
+    }
+    size_t cap = st.st_size > 0 ? (size_t)st.st_size + 1 : 4096, got = 0;
+    const size_t limit = (size_t)256 << 20;
+    char *buf = cap <= limit + 1 ? malloc(cap) : NULL;
+    while (buf) {
+        size_t r = fread(buf + got, 1, cap - 1 - got, f);
+        got += r;
+        if (got < cap - 1) break;                   /* the end, or an error */
+        if (cap > limit) { free(buf); buf = NULL; break; }
+        char *more = realloc(buf, cap * 2);
+        if (!more) { free(buf); buf = NULL; break; }
+        buf = more;
+        cap *= 2;
+    }
     fclose(f);
+    if (!buf) {
+        char msg[1200];
+        snprintf(msg, sizeof msg, "%s\n\nThis file is too large for Notepad.", path);
+        w2k_msgbox(pad.win, "Notepad", msg, MB_OK | MB_ICONWARNING);
+        return 0;
+    }
+    buf[got] = 0;
 
-    /* Strip CRs so DOS files do not sprout stray glyphs -- and remember
-     * them, so the file is written back the way it came. A NUL inside the
-     * file would be lost on save, so such a file opens read-only. */
-    pad.crlf = memchr(buf, '\r', got) != NULL;
+    /* A DOS file -- most of its lines end CR LF -- loses the CRs before
+     * the line ends, and gets them back on save. Only those: a lone CR
+     * (a progress bar in a script, an old Mac file) stays in the text, and
+     * a Unix file with one used to be rewritten all CR LF, the CR lost.
+     * A NUL inside the file would be lost on save, so such a file opens
+     * read-only. */
+    size_t lf = 0, crlf = 0;
+    for (size_t i = 0; i < got; i++)
+        if (buf[i] == '\n') { lf++; if (i && buf[i - 1] == '\r') crlf++; }
+    pad.crlf = crlf > 0 && crlf * 2 >= lf;
     pad.binary = strlen(buf) != got;
-    char *w = buf;
-    for (char *r = buf; *r; r++) if (*r != '\r') *w++ = *r;
-    *w = 0;
+    if (pad.crlf) {
+        char *w = buf;
+        for (char *r = buf; *r; r++) if (!(r[0] == '\r' && r[1] == '\n')) *w++ = *r;
+        *w = 0;
+    }
 
     w2k_edit_set(pad.ed, buf);
     free(buf);
@@ -132,13 +167,16 @@ static int load_file(const char *path)
 
 int do_save(int saveas)
 {
+    /* The name chosen becomes the document's only once it is written: a
+     * Save As that failed used to leave Ctrl+S aimed at the failed name. */
+    char path[sizeof pad.path];
+    snprintf(path, sizeof path, "%s", pad.path);
     if (saveas || pad.untitled) {
         char p[1024];
         snprintf(p, sizeof p, "%s", pad.untitled ? "" : pad.path);
         if (!w2k_file_dialog_filter(pad.win, 1, p, sizeof p, TEXT_FILTERS))
             return 0;
-        snprintf(pad.path, sizeof pad.path, "%s", p);
-        pad.untitled = 0;
+        snprintf(path, sizeof path, "%s", p);
     }
     if (pad.binary && !saveas) {
         w2k_msgbox(pad.win, "Notepad",
@@ -153,15 +191,23 @@ int do_save(int saveas)
      * rename used to replace it with a plain file). A file with other hard
      * links is written in place, or the rename would split it from them. */
     char real[PATH_MAX], tmp[PATH_MAX + 16];
-    const char *dest = realpath(pad.path, real) ? real : pad.path;
+    const char *dest = realpath(path, real) ? real : path;
     struct stat old;
     int have_old = stat(dest, &old) == 0, inplace = have_old && old.st_nlink > 1;
-    snprintf(tmp, sizeof tmp, "%s.w2ktmp", dest);
-    FILE *f = fopen(inplace ? dest : tmp, "wb");
+    /* The temporary file is made new, under a name no one can guess or
+     * plant a link at, and readable by the owner alone until it takes the
+     * old file's mode. */
+    FILE *f = NULL;
+    if (inplace) f = fopen(dest, "wb");
+    else {
+        snprintf(tmp, sizeof tmp, "%s.w2kXXXXXX", dest);
+        int fd = mkstemp(tmp);
+        if (fd >= 0 && !(f = fdopen(fd, "wb"))) { close(fd); unlink(tmp); }
+    }
     if (!f) {
         char msg[1200];
         snprintf(msg, sizeof msg, "Cannot create the file %s.\n\n%s",
-                 pad.path, strerror(errno));
+                 path, strerror(errno));
         w2k_msgbox(pad.win, "Notepad", msg, MB_OK | MB_ICONERROR);
         return 0;
     }
@@ -175,7 +221,11 @@ int do_save(int saveas)
     } else if (fwrite(t, 1, strlen(t), f) != strlen(t)) ok = 0;
     if (fclose(f) != 0) ok = 0;
     if (ok && !inplace) {
-        if (have_old) {
+        if (!have_old) {
+            mode_t um = umask(0);          /* a new file: the usual 0666 less the umask */
+            umask(um);
+            chmod(tmp, 0666 & ~um);
+        } else {
             chmod(tmp, old.st_mode & 07777);
             /* The owner too, when it can be kept (root editing a user's file). */
             if (old.st_uid != geteuid() || old.st_gid != getegid())
@@ -186,11 +236,13 @@ int do_save(int saveas)
     if (!ok) {
         char msg[1200];
         snprintf(msg, sizeof msg, "Cannot save the file %s.\n\n%s",
-                 pad.path, strerror(errno));
+                 path, strerror(errno));
         if (!inplace) unlink(tmp);
         w2k_msgbox(pad.win, "Notepad", msg, MB_OK | MB_ICONERROR);
         return 0;
     }
+    snprintf(pad.path, sizeof pad.path, "%s", path);
+    pad.untitled = 0;
     pad.binary = 0;
     pad.dirty = 0;
     update_title();
@@ -238,11 +290,14 @@ static void do_find_next(int announce)
 {
     if (!pad.find_what[0]) return;
     const char *t = w2k_edit_text(pad.ed);
-    int from = pad.find_up ? pad.ed->caret - (int)strlen(pad.find_what) - 1
-                           : (pad.ed->caret > pad.ed->sel ? pad.ed->caret
-                                                          : pad.ed->sel);
-    if (pad.find_up && from < 0) from = 0;
-    int at = find_from(t, pad.find_what, from, pad.find_up, pad.find_case);
+    /* Up: before the selection (the match found last), or ending at the
+     * caret when nothing is selected -- the one just before the caret used
+     * to be skipped. */
+    int lo = pad.ed->caret < pad.ed->sel ? pad.ed->caret : pad.ed->sel;
+    int from = !pad.find_up ? (pad.ed->caret > pad.ed->sel ? pad.ed->caret : pad.ed->sel)
+             : pad.ed->caret != pad.ed->sel ? lo - 1
+             : pad.ed->caret - (int)strlen(pad.find_what);
+    int at = from < 0 ? -1 : find_from(t, pad.find_what, from, pad.find_up, pad.find_case);
     if (at < 0) {
         if (announce) {
             char msg[300];
@@ -473,6 +528,7 @@ static void goto_dialog(void)
     }
     pad.ed->caret = pad.ed->sel = off;
     w2k_edit_layout(pad.ed);
+    w2k_edit_scroll_to_caret(pad.ed);   /* the line gone to is shown */
     w2k_win_dirty(pad.win);
 }
 
@@ -529,6 +585,8 @@ static void command(void *user, int id)
             free(pad.undo_text);
             pad.undo_text = cur;             /* undo is its own redo */
             pad.undo_caret = curcaret;
+            w2k_edit_layout(pad.ed);
+            w2k_edit_scroll_to_caret(pad.ed);
         }
         break;
     case ID_CUT:   checkpoint(); w2k_edit_cut(pad.ed); break;
@@ -609,6 +667,11 @@ static int event(W2kWin *w, XEvent *e)
             case XK_f: case XK_F: command(NULL, ID_FIND); return 1;
             case XK_g: case XK_G: command(NULL, ID_GOTO); return 1;
             case XK_z: case XK_Z: command(NULL, ID_UNDO); return 1;
+            /* Through the menu's commands, which set the undo point: the
+             * keys went straight to the edit box, and Ctrl+Z undid the
+             * wrong amount after them. */
+            case XK_x: case XK_X: command(NULL, ID_CUT); w2k_win_dirty(w); return 1;
+            case XK_v: case XK_V: command(NULL, ID_PASTE); w2k_win_dirty(w); return 1;
             }
         }
         if (ks == XK_F3) { command(NULL, ID_FINDNEXT); return 1; }
@@ -622,7 +685,12 @@ static int event(W2kWin *w, XEvent *e)
         int n = XLookupString(&e->xkey, tmp, sizeof tmp, &dummy, NULL);
         if (n > 0 && (unsigned char)tmp[0] >= 32 &&
             !(e->xkey.state & ControlMask)) mods = 1;
-        if (mods && !pad.typing_run) { checkpoint(); pad.typing_run = 1; }
+        /* Replacing a selection is an edit of its own, whatever came
+         * before it. */
+        if (mods && (!pad.typing_run || pad.ed->sel != pad.ed->caret)) {
+            checkpoint();
+            pad.typing_run = 1;
+        }
         if (!mods) pad.typing_run = 0;
 
         if (w2k_edit_key(pad.ed, &e->xkey)) { w2k_win_dirty(w); return 1; }
