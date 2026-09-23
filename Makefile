@@ -43,6 +43,13 @@ ifneq ($(shell pkg-config --exists libwebp 2>/dev/null && echo y),)
 build/lib/image.o: CFLAGS += -DHAVE_WEBP $(shell pkg-config --cflags libwebp)
 LDLIBS += $(shell pkg-config --libs libwebp)
 endif
+# Pointer speed and acceleration on a libinput machine are device
+# properties, set through XInput 2; without its header only the server's
+# own (evdev) acceleration is set.
+ifneq ($(wildcard /usr/include/X11/extensions/XInput2.h),)
+build/lib/input.o: CFLAGS += -DHAVE_XI2
+LDLIBS += -lXi
+endif
 ifneq ($(shell pkg-config --exists xscrnsaver 2>/dev/null && echo y),)
 build/wm/wm.o: CFLAGS += -DHAVE_XSS
 bin/l2kwm: LDLIBS += -lXss -lXcomposite
@@ -109,7 +116,7 @@ build/wm/wm.o build/lib/sysprops.o build/apps/linver.o: VERSION $(wildcard .git/
 # without -- l2kdm with no PAM, which can log nobody on -- because make
 # sees no reason to build it again. The stamp is only written when the
 # answers change, so nothing is rebuilt for nothing.
-FEATURES := pam=$(if $(wildcard /usr/include/security/pam_appl.h),1,0) dbus=$(if $(shell pkg-config --exists dbus-1 2>/dev/null && echo y),1,0) webp=$(if $(shell pkg-config --exists libwebp 2>/dev/null && echo y),1,0) xss=$(if $(shell pkg-config --exists xscrnsaver 2>/dev/null && echo y),1,0) glx=$(if $(wildcard /usr/include/GL/glx.h),1,0) prefix=$(PREFIX)
+FEATURES := pam=$(if $(wildcard /usr/include/security/pam_appl.h),1,0) dbus=$(if $(shell pkg-config --exists dbus-1 2>/dev/null && echo y),1,0) webp=$(if $(shell pkg-config --exists libwebp 2>/dev/null && echo y),1,0) xss=$(if $(shell pkg-config --exists xscrnsaver 2>/dev/null && echo y),1,0) glx=$(if $(wildcard /usr/include/GL/glx.h),1,0) xi2=$(if $(wildcard /usr/include/X11/extensions/XInput2.h),1,0) prefix=$(PREFIX)
 
 build/.features: .FORCE
 	@mkdir -p $(@D)
