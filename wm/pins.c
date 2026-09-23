@@ -259,10 +259,20 @@ void pin_command_for_client(Client *c, char *cmd, int cn, char *label, int ln,
                 fclose(f);
                 if (got) {
                     buf[got] = 0;
-                    /* argv is NUL-separated; join the parts with spaces. */
-                    for (size_t i = 0; i + 1 < got; i++)
-                        if (!buf[i]) buf[i] = ' ';
-                    snprintf(cmd, cn, "%s", buf);
+                    /* argv is NUL-separated. The pin is run by sh -c, so
+                     * an argument with a space or a character the shell
+                     * reads -- a document's path, a URL -- goes in quoted. */
+                    int o = 0;
+                    cmd[0] = 0;
+                    for (size_t i = 0; i < got && buf[i] && o < cn - 1; i += strlen(buf + i) + 1) {
+                        const char *arg = buf + i;
+                        char q[1100];
+                        if (strspn(arg, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                        "0123456789_./:=@%+,-") == strlen(arg))
+                            snprintf(q, sizeof q, "%s", arg);
+                        else w2k_shell_quote(arg, q, sizeof q);
+                        o += snprintf(cmd + o, (size_t)(cn - o), "%s%s", o ? " " : "", q);
+                    }
                 }
             }
         }

@@ -32,6 +32,7 @@ struct W2kWin {
 
     unsigned dirty : 1;
     unsigned alive : 1;
+    unsigned grip : 1;            /* a size grip was painted in the corner */
     int      result;
     unsigned long serial;         /* creation order: a modal dialog shuts out older windows */
     int      focus;               /* has the keyboard: 1, 0, or -1 before any FocusIn/Out */
@@ -40,6 +41,7 @@ struct W2kWin {
 
 W2kWin *w2k_win_new(const char *title, const char *cls,
                     int w, int h, int resizable);
+void    w2k_win_note_grip(int x, int y);  /* a status bar's size grip ends here */
 void    w2k_win_show(W2kWin *w);
 /* Resize to a logical size; the X window follows at the desktop scale. */
 void    w2k_win_resize(W2kWin *w, int width, int height);

@@ -40,6 +40,7 @@ static Window cur_target;           /* the XDND-aware window under the pointer *
 static int    cur_version;
 static int    target_accepts;
 static char  *drag_data;            /* the URI list being offered */
+static int    dragging;             /* the button is still down */
 static int    drag_move;            /* move rather than copy */
 
 /* Target state, for a drag arriving over one of our windows. */
@@ -141,13 +142,18 @@ static Window target_at(int rx, int ry, int *version)
 /* ------------------------------------------------------------------ *
  * Source
  * ------------------------------------------------------------------ */
-int w2k_dnd_active(void) { return drag_data != NULL; }
+/* A drag in progress: from begin to the button coming up. The list is
+ * kept after that, for the target to ask for, but a target that never
+ * says it is finished no longer leaves the source stuck in a drag that
+ * ignored every click. */
+int w2k_dnd_active(void) { return dragging; }
 
 void w2k_dnd_begin(Window from, const char *uri_list, int move)
 {
     atoms();
     free(drag_data);
     drag_data = uri_list ? w2k_strdup(uri_list) : NULL;
+    dragging = drag_data != NULL;
     if (!drag_data) return;
 
     src_win = from;
@@ -161,7 +167,7 @@ void w2k_dnd_begin(Window from, const char *uri_list, int move)
 /* Follow the pointer. Returns 1 if a target is willing to take the drop. */
 int w2k_dnd_motion(int rx, int ry)
 {
-    if (!drag_data) return 0;
+    if (!drag_data || !dragging) return 0;
 
     int version = 0;
     Window t = target_at(rx, ry, &version);
@@ -192,7 +198,8 @@ int w2k_dnd_motion(int rx, int ry)
 /* The button came up: drop if anybody wants it. Returns 1 if dropped. */
 int w2k_dnd_drop(void)
 {
-    if (!drag_data) return 0;
+    if (!drag_data || !dragging) return 0;
+    dragging = 0;
     int dropped = 0;
     if (cur_target && target_accepts) {
         send_client(cur_target, a_drop, (long)src_win, 0, (long)last_time, 0, 0);
@@ -210,6 +217,7 @@ void w2k_dnd_cancel(void)
 {
     if (cur_target) send_client(cur_target, a_leave, (long)src_win, 0, 0, 0, 0);
     cur_target = None;
+    dragging = 0;
     free(drag_data);
     drag_data = NULL;
 }

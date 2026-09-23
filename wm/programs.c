@@ -429,10 +429,12 @@ static W2kMenu *group_menu(int group, int flatpak, int wine)
             if (apps[i].flatpak != flatpak || apps[i].wine != wine) continue;
             if (!flatpak && !wine && apps[i].group != group) continue;
             int used = usage_count(apps[i].name) > 0;
-            /* First pass: what has been used. Second: the rest, and only
-             * when the group is expanded. */
+            /* First pass: what has been used. Second: the rest, unless
+             * the group is folded away behind a chevron -- which only a
+             * group with a few unused items gets, so one or two are never
+             * hidden with nothing to bring them back. */
             if (pass == 0 && !used) { hidden++; continue; }
-            if (pass == 1 && (used || !expand)) continue;
+            if (pass == 1 && (used || (!expand && hidden >= PERSONAL_MIN_HIDDEN))) continue;
             if (!m) m = w2k_menu_new();
             w2k_menu_item(m, PROG_BASE + i, apps[i].name, NULL,
                           app_icon(&apps[i]));
@@ -440,7 +442,6 @@ static W2kMenu *group_menu(int group, int flatpak, int wine)
         }
     }
     /* Nothing used yet: show the lot rather than an empty group. */
-    if (m && !shown) return m;
     if (!m && hidden) {
         m = w2k_menu_new();
         for (int i = 0; i < napps; i++) {

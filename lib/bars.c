@@ -489,9 +489,11 @@ void w2k_status_draw(Drawable d, W2kStatus *s)
         w2k_text(d, F_UI, tx, s->r.y + 2 + (s->r.h - 4 - fh) / 2, buf, C_TEXT);
         x += w + 2;
     }
-    if (s->sizegrip)
+    if (s->sizegrip) {
         /* One pixel inside the last pane's bottom-right corner. */
         sizegrip(d, s->r.x + s->r.w - 17, s->r.y + s->r.h - 15);
+        w2k_win_note_grip(s->r.x + s->r.w, s->r.y + s->r.h);
+    }
 }
 
 /* ------------------------------------------------------------------ *

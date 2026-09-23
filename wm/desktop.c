@@ -1153,7 +1153,27 @@ static int cmp_type(const void *a, const void *b)
 
 static void arrange_icons(int by_type)
 {
+    /* The selection is kept by position, so it goes through the sort by
+     * name: it used to stay on the same places, and Delete then asked
+     * about whichever file had moved under the highlight. */
+    char *keep[MAX_ICONS], *selkey = NULL;
+    int nk = 0;
+    for (int i = 0; i < nicons; i++)
+        if (picked[i]) keep[nk++] = w2k_strdup(layout_key(&icons[i]));
+    if (sel >= 0 && sel < nicons) selkey = w2k_strdup(layout_key(&icons[sel]));
+
     qsort(icons, (size_t)nicons, sizeof *icons, by_type ? cmp_type : cmp_name);
+
+    memset(picked, 0, sizeof picked);
+    sel = -1;
+    for (int i = 0; i < nicons; i++) {
+        const char *k = layout_key(&icons[i]);
+        for (int j = 0; j < nk; j++)
+            if (keep[j] && !strcmp(k, keep[j])) picked[i] = 1;
+        if (selkey && !strcmp(k, selkey)) sel = i;
+    }
+    for (int j = 0; j < nk; j++) free(keep[j]);
+    free(selkey);
     int rows = grid_rows();
     for (int i = 0; i < nicons; i++) {
         icons[i].col = i / rows;

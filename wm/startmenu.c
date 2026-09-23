@@ -101,9 +101,12 @@ enum { CM_PIN_START = 1, CM_PIN_QL, CM_UNPIN, CM_RENAME, CM_ICON };
 
 static int pinned_ctx(int which, const Pin *p, int x, int y)
 {
-    /* The nested menu is not itself right-clickable. */
+    /* The nested menu is not itself right-clickable, and its keys are its
+     * own mnemonics, not the start of a search. */
     int (*saved)(int, int, int) = w2k_menu_on_context;
+    char *saved_typed = w2k_menu_typeahead;
     w2k_menu_on_context = NULL;
+    w2k_menu_typeahead = NULL;
 
     W2kMenu *m = w2k_menu_new();
     w2k_menu_item(m, CM_RENAME, "Rena&me...", NULL, ICO_NONE);
@@ -113,6 +116,7 @@ static int pinned_ctx(int which, const Pin *p, int x, int y)
     int id = w2k_menu_popup(m, x, y, MPOP_LEFT);
     w2k_menu_free(m);
     w2k_menu_on_context = saved;
+    w2k_menu_typeahead = saved_typed;
 
     switch (id) {
     case CM_RENAME: {
@@ -145,7 +149,9 @@ static int program_ctx(const char *cmd, const char *label, const char *icon,
     int on_sm = pins_contains(PIN_START, cmd);
     int on_tb = pins_contains(PIN_TASKBAR, cmd);
     int (*saved)(int, int, int) = w2k_menu_on_context;
+    char *saved_typed = w2k_menu_typeahead;
     w2k_menu_on_context = NULL;
+    w2k_menu_typeahead = NULL;
 
     W2kMenu *m = w2k_menu_new();
     w2k_menu_item(m, CM_PIN_START,
@@ -159,6 +165,7 @@ static int program_ctx(const char *cmd, const char *label, const char *icon,
     int id = w2k_menu_popup(m, x, y, MPOP_LEFT);
     w2k_menu_free(m);
     w2k_menu_on_context = saved;
+    w2k_menu_typeahead = saved_typed;
 
     if (id == CM_PIN_START)   pins_add(PIN_START, cmd, label, icon);
     else if (id == CM_PIN_QL) pins_add(PIN_TASKBAR, cmd, label, icon);

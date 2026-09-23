@@ -90,6 +90,7 @@ int w2k_ime_filter(XEvent *e)
 static int key_text(XKeyEvent *k, char *buf, int n, KeySym *ks)
 {
     ic_point_at(k->window);
+    *ks = NoSymbol;                     /* an input method's commit carries none */
     if (ic) {
         Status st;
         int r = Xutf8LookupString(ic, k, buf, n - 1, ks, &st);
@@ -739,7 +740,7 @@ void w2k_edit_release(W2kEdit *e)
  * ------------------------------------------------------------------ */
 int w2k_edit_key(W2kEdit *e, XKeyEvent *k)
 {
-    char buf[32];
+    char buf[512];                      /* room for what an input method commits */
     KeySym ks;
     int n = key_text(k, buf, sizeof buf, &ks);
 

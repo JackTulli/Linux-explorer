@@ -297,6 +297,16 @@ void w2k_win_destroy(W2kWin *w)
     free(w);
 }
 
+/* The window being painted, for w2k_win_note_grip(). */
+static W2kWin *painting;
+
+/* A status bar drew its size grip with its bottom-right corner at (x, y):
+ * when that is the window's own corner, a press there resizes it. */
+void w2k_win_note_grip(int x, int y)
+{
+    if (painting && x >= painting->w - 4 && y >= painting->h - 4) painting->grip = 1;
+}
+
 static void repaint(W2kWin *w)
 {
     if (!w->alive || w->w <= 0 || w->h <= 0) return;
@@ -311,7 +321,10 @@ static void repaint(W2kWin *w)
      * window manager's own dialogs go through here too. */
     int raw = w2k_scale_raw;
     w2k_scale_raw = 0;
+    w->grip = 0;
+    painting = w;
     if (w->paint) w->paint(w, w->buf);
+    painting = NULL;
     w2k_scale_raw = raw;
     XCopyArea(w2k.dpy, w->buf, w->win, w2k.gc, 0, 0, (unsigned)w->pw,
               (unsigned)w->ph, 0, 0);
@@ -451,9 +464,11 @@ static void dispatch_win(W2kWin *w, XEvent *e)
      * grip in the corner of a status bar is inside the client area, where
      * the manager never sees the click. Windows solves this by having the
      * application report the corner as a resize handle; the X equivalent is
-     * to ask the manager to take over the drag, which is what this does. */
+     * to ask the manager to take over the drag, which is what this does.
+     * Only where a grip is drawn: without a status bar the corner is a
+     * scroll bar's down arrow, which a press there used to resize over. */
     if (e->type == ButtonPress && e->xbutton.button == Button1 && w->resizable &&
-        e->xbutton.x >= w->w - 16 && e->xbutton.y >= w->h - 16) {
+        w->grip && e->xbutton.x >= w->w - 16 && e->xbutton.y >= w->h - 16) {
         XUngrabPointer(w2k.dpy, e->xbutton.time);
         XEvent m = { 0 };
         m.xclient.type = ClientMessage;

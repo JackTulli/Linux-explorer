@@ -48,6 +48,7 @@ void w2k_list_free(W2kList *l)
 {
     if (!l) return;
     w2k_scroll_release(&l->vsb);         /* a held arrow's timer dies with it */
+    w2k_scroll_release(&l->hsb);
     w2k_list_clear(l);
     for (int c = 0; c < l->ncols; c++) free(l->col[c].title);
     free(l->items);

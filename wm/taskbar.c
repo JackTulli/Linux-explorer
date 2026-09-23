@@ -269,6 +269,18 @@ static int quicklaunch_hit(int x, int y)
     return x >= ql_x && x < ql_x + NQL * QL_BTN;
 }
 
+/* The command that opens a dropped file: a program runs, quoted, since
+ * the command goes through sh -c; a folder or a document opens through
+ * the shell's associations. */
+static void drop_command(const char *path, char *cmd, int n)
+{
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISREG(st.st_mode) && access(path, X_OK) == 0)
+        w2k_shell_quote(path, cmd, n);
+    else
+        w2k_assoc_command(path, cmd, n);
+}
+
 /* Write a .desktop for `path` into `dir`. */
 static void make_shortcut(const char *dir, const char *path)
 {
@@ -285,14 +297,13 @@ static void make_shortcut(const char *dir, const char *path)
     FILE *f = fopen(file, "w");
     if (!f) return;
 
-    /* A folder or document opens through the shell's associations; an
-     * executable runs directly. */
-    char cmd[2200];
-    if (access(path, X_OK) == 0) snprintf(cmd, sizeof cmd, "%.1023s", path);
-    else                         w2k_assoc_command(path, cmd, sizeof cmd);
+    char cmd[2200], ename[600], ecmd[4500];
+    drop_command(path, cmd, sizeof cmd);
+    w2k_desktop_escape(name, ename, sizeof ename, 0);
+    w2k_desktop_escape(cmd, ecmd, sizeof ecmd, 1);
 
     fprintf(f, "[Desktop Entry]\nType=Application\nName=%s\nExec=%s\n"
-               "Terminal=false\n", name, cmd);
+               "Terminal=false\n", ename, ecmd);
     fclose(f);
     chmod(file, 0755);
 }
@@ -321,10 +332,7 @@ void taskbar_dnd_drop(int x, int y, const char *uris)
     if (quicklaunch_hit(x, y)) {
         for (int i = 0; i < n; i++) {
             char cmd[2200];
-            if (access(paths[i], X_OK) == 0)
-                snprintf(cmd, sizeof cmd, "%.1023s", paths[i]);
-            else
-                w2k_assoc_command(paths[i], cmd, sizeof cmd);
+            drop_command(paths[i], cmd, sizeof cmd);
             const char *base = strrchr(paths[i], '/');
             pins_add(PIN_TASKBAR, cmd, base ? base + 1 : paths[i], NULL);
         }
@@ -350,6 +358,19 @@ int taskbar_button_rect(Client *c, int *x, int *y, int *w, int *h)
 /* Dragging a task button to another position, and the hover that raises a
  * tooltip. Both are pointer state the bar has to remember between events. */
 static int drag_task = -1;
+static Client *drag_client;          /* whose button drag_task is */
+
+/* After the buttons are rebuilt, the held one is wherever its window now
+ * is -- or gone with it. The index alone could name a slot whose Client
+ * had been freed, or another window's button. */
+static void drag_refind(void)
+{
+    int was = drag_task;
+    drag_task = -1;
+    if (was < 0) return;
+    for (int i = 0; i < ntasks; i++)
+        if (tasks[i].c == drag_client) drag_task = i;
+}
 static int hover_task = -1;
 static long hover_since;
 static int hover_ql = -1;         /* the pinned item under the pointer (Windows 7) */
@@ -430,6 +451,7 @@ static void layout_vertical(void)
             k--;
         }
     }
+    drag_refind();
 
     int avail = notify_y - task_y - TASK_GAP;
     if (avail < 0) avail = 0;
@@ -449,10 +471,6 @@ static void layout_vertical(void)
 
 static void layout(void)
 {
-    /* A window can close while its button is held: the drag index would
-     * then name a slot layout() no longer writes, whose Client * is
-     * freed. hover_task is guarded the same way where it is used. */
-    if (drag_task >= ntasks) drag_task = -1;
     if (vertical()) { layout_vertical(); return; }
     ql_build();
     /* A themed Start button is a bitmap, so the strip's width is the
@@ -521,6 +539,7 @@ static void layout(void)
             k--;
         }
     }
+    drag_refind();
 
     /* Task buttons fill the strip between Quick Launch and the tray, and
      * wrap onto further rows when the bar is more than one row tall --
@@ -1159,6 +1178,26 @@ static void taskbar_place(void)
     orb_place();
 }
 
+/* While one of the bar's own menus or popups is up, the bar stays: the
+ * pointer going off it into the menu is not the pointer leaving. */
+static int tb_holding;
+
+/* After one of the bar's own menus or popups: the pointer may be long
+ * gone from the bar, and while the popup held the pointer no leave was
+ * sent. Hidden again unless the pointer is on the bar (or its orb). */
+static void autohide_settle(void)
+{
+    if (!w2k_taskbar_autohide || !tb_shown) return;
+    if (tb_holding || startmenu_is_open()) return;
+    Window rw, cw;
+    int rx, ry, wx, wy;
+    unsigned mask;
+    if (!XQueryPointer(w2k.dpy, w2k.root, &rw, &cw, &rx, &ry, &wx, &wy, &mask)) return;
+    if (cw == tb || (orb && cw == orb)) return;
+    if (rx >= tb_x && rx < tb_x + tb_pw && ry >= tb_y && ry < tb_y + tb_ph) return;
+    taskbar_reveal(0);
+}
+
 void taskbar_reveal(int show)
 {
     if (!w2k_taskbar_autohide) { tb_shown = 1; taskbar_place(); return; }
@@ -1576,9 +1615,13 @@ int taskbar_event(XEvent *e)
             taskbar_reveal(1);
             return 1;
         }
+        /* Only the pointer really leaving: a menu or popup of the bar's
+         * own takes the pointer with a grab, which sends a leave too --
+         * and the bar used to slide away under the open Start menu. The
+         * orb stands above the bar and counts as part of it. */
         if (e->type == LeaveNotify && e->xcrossing.window == tb &&
             e->xcrossing.detail != NotifyInferior) {
-            taskbar_reveal(0);
+            if (e->xcrossing.mode == NotifyNormal) autohide_settle();
             return 1;
         }
     }
@@ -1599,7 +1642,10 @@ int taskbar_event(XEvent *e)
             w2k_menu_item(m, 1, volume_is_muted() ? "&Unmute" : "&Mute",
                           NULL, ICO_NONE);
             w2k_menu_item(m, 2, "Open Volume &Control", NULL, ICO_NONE);
+            tb_holding++;
             int id = w2k_menu_popup(m, e->xbutton.x_root, tb_y, MPOP_BOTTOMUP);
+            tb_holding--;
+            autohide_settle();
             w2k_menu_free(m);
             if (id == 1) { volume_toggle_mute(); taskbar_paint(); }
             else if (id == 2) {
@@ -1631,7 +1677,10 @@ int taskbar_event(XEvent *e)
             char item[160];
             snprintf(item, sizeof item, "&Unpin \"%.100s\"", ql[i].tip);
             w2k_menu_item(m, QL_UNPIN, item, NULL, ICO_DELETE);
+            tb_holding++;
             int id = w2k_menu_popup(m, e->xbutton.x_root, tb_y, MPOP_BOTTOMUP);
+            tb_holding--;
+            autohide_settle();
             w2k_menu_free(m);
             /* ql[] is rebuilt by taskbar_paint(), so the command and label
              * are copied out before anything can move them. */
@@ -1672,7 +1721,10 @@ int taskbar_event(XEvent *e)
                 task_context_menu(tasks[i].c, e->xbutton.x_root, tb_y);
                 return 1;
             }
+        tb_holding++;
         taskbar_context_menu(e->xbutton.x_root, tb_y);
+        tb_holding--;
+        autohide_settle();
         return 1;
     }
     if (e->xbutton.button != Button1) return 1;
@@ -1695,7 +1747,12 @@ int taskbar_event(XEvent *e)
     int sby = vertical() ? TB_PAD : by;
     if (x >= TB_PAD && x < TB_PAD + start_w && y >= sby && y < sby + BTN_H) {
         if (startmenu_is_open()) startmenu_close();
-        else                     startmenu_open();
+        else {
+            tb_holding++;
+            startmenu_open();
+            tb_holding--;
+        }
+        autohide_settle();
         return 1;
     }
     for (int i = 0; i < NQL; i++) {
@@ -1714,8 +1771,11 @@ int taskbar_event(XEvent *e)
     }
     if (vertical() ? (y >= vol_y - 2 && y < vol_y + 18)
                    : (x >= vol_x - 2 && x < vol_x + 18)) {
+        tb_holding++;
         volume_popup(vertical() ? tb_x + tb_pw : tb_x + w2k_px(vol_x),
                      vertical() ? tb_y + w2k_px(vol_y) : tb_y);
+        tb_holding--;
+        autohide_settle();
         return 1;
     }
     for (int i = 0; i < ntasks; i++) {
@@ -1723,6 +1783,7 @@ int taskbar_event(XEvent *e)
         if (y < tasks[i].y || y >= tasks[i].y + tasks[i].h) continue;
         Client *c = tasks[i].c;
         drag_task = i;              /* may turn into a reorder drag */
+        drag_client = c;
         /* Clicking the active window's button minimises it, as in Windows. */
         if (c == focused && !c->minimized) client_minimize(c);
         else                               client_restore(c);
