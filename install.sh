@@ -514,8 +514,11 @@ if [ "$DO_BUILD" = 1 ]; then
     say "Installing under $PREFIX"
     as_root make -C "$HERE" -s install PREFIX="$PREFIX" \
         INSTALL_BINS="$bins" INSTALL_LOOKS="$WANT_LOOKS" INSTALL_SOUNDS="$sounds"
+    # make install has put the cursor sets in already -- the folder's own
+    # and every set folder inside it. Only the loose files again here:
+    # install(1) refuses a folder, and under set -e that stopped the run.
     as_root install -d "$PREFIX/share/w2k/cursors"
-    as_root sh -c "install -m644 '$HERE'/cursors/* '$PREFIX/share/w2k/cursors/'"
+    as_root sh -c "install -m644 '$HERE'/cursors/*.cur '$HERE'/cursors/*.crs '$PREFIX/share/w2k/cursors/'"
     # What was chosen, for the next run and for anyone wondering later.
     as_root sh -c "printf '%s\n' '# What install.sh put in. Run it again with --setup full,' \
         '# --setup light or --setup custom to change this.' \
