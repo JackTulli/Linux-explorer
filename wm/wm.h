@@ -198,7 +198,7 @@ void volume_set(int pct);
 void volume_toggle_mute(void);
 void volume_draw(Drawable d, int x, int y);
 void volume_popup(int bx, int by);   /* the slider, above the speaker */
-void media_control(const char *method);   /* "PlayPause" or "Stop", to the player */
+void media_control(const char *method);   /* "PlayPause", "Pause" or "Stop", to the player */
 
 /* balloon.c -- notification balloons */
 void balloon_show(const char *title, const char *text);

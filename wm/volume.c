@@ -189,7 +189,8 @@ void volume_set(int pct)
  * directly. Runs in the background; a key must not wait on D-Bus. */
 void media_control(const char *method)
 {
-    if (!method || (strcmp(method, "PlayPause") != 0 && strcmp(method, "Stop") != 0)) return;
+    if (!method || (strcmp(method, "PlayPause") != 0 && strcmp(method, "Pause") != 0 &&
+                    strcmp(method, "Stop") != 0)) return;
     char cmd[512];
     snprintf(cmd, sizeof cmd,
              "if command -v playerctl >/dev/null 2>&1; then playerctl %s; else "
@@ -197,7 +198,8 @@ void media_control(const char *method)
              "awk '/^org\\.mpris\\.MediaPlayer2\\./{print $1; exit}'); "
              "[ -n \"$p\" ] && dbus-send --session --dest=\"$p\" /org/mpris/MediaPlayer2 "
              "org.mpris.MediaPlayer2.Player.%s; fi >/dev/null 2>&1",
-             strcmp(method, "Stop") == 0 ? "stop" : "play-pause", method);
+             strcmp(method, "Stop") == 0 ? "stop" :
+             strcmp(method, "Pause") == 0 ? "pause" : "play-pause", method);
     wm_spawn(cmd);
 }
 

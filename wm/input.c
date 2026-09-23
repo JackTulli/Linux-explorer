@@ -530,6 +530,7 @@ static const struct { unsigned mod; KeySym key; } bindings[] = {
     { 0, XF86XK_AudioLowerVolume },
     { 0, XF86XK_AudioMute },
     { 0, XF86XK_AudioPlay },
+    { 0, XF86XK_AudioPause },
     { 0, XF86XK_AudioStop },
 };
 
@@ -537,8 +538,9 @@ static const struct { unsigned mod; KeySym key; } bindings[] = {
  * five as Windows' keys do; the mute key is the speaker's own mute. */
 static void media_key(KeySym ks)
 {
-    if (ks == XF86XK_AudioPlay) { media_control("PlayPause"); return; }
-    if (ks == XF86XK_AudioStop) { media_control("Stop"); return; }
+    if (ks == XF86XK_AudioPlay)  { media_control("PlayPause"); return; }
+    if (ks == XF86XK_AudioPause) { media_control("Pause"); return; }
+    if (ks == XF86XK_AudioStop)  { media_control("Stop"); return; }
     if (!volume_available()) return;
     if (ks == XF86XK_AudioMute) {
         volume_toggle_mute();
@@ -553,24 +555,42 @@ static void media_key(KeySym ks)
     taskbar_paint();
 }
 
-void grab_keys(void)
+/* Grab every key that gives `ks` unshifted -- which is how handle_key()
+ * reads it. A keymap can put one symbol on several keys: the usual one has
+ * Play on three (a keyboard's play/pause key, a headset's play, a remote's
+ * play), and XKeysymToKeycode() names only the first, so the others did
+ * nothing. */
+static void grab_sym(const KeySym *map, int min, int max, int per,
+                     KeySym ks, unsigned mod)
 {
     /* Ignore the lock modifiers so bindings work with Caps/Num Lock on. */
     static const unsigned locks[] = { 0, LockMask, Mod2Mask, LockMask | Mod2Mask };
-    XUngrabKey(w2k.dpy, AnyKey, AnyModifier, w2k.root);
-    for (size_t i = 0; i < sizeof bindings / sizeof *bindings; i++) {
-        KeyCode kc = XKeysymToKeycode(w2k.dpy, bindings[i].key);
-        if (!kc) continue;
+    for (int kc = min; kc <= max; kc++) {
+        if (map[(size_t)(kc - min) * (size_t)per] != ks) continue;
+        if (mod == AnyModifier) {
+            XGrabKey(w2k.dpy, kc, AnyModifier, w2k.root, True,
+                     GrabModeAsync, GrabModeAsync);
+            continue;
+        }
         for (size_t j = 0; j < sizeof locks / sizeof *locks; j++)
-            XGrabKey(w2k.dpy, kc, bindings[i].mod | locks[j], w2k.root,
+            XGrabKey(w2k.dpy, kc, mod | locks[j], w2k.root,
                      True, GrabModeAsync, GrabModeAsync);
     }
+}
+
+void grab_keys(void)
+{
+    XUngrabKey(w2k.dpy, AnyKey, AnyModifier, w2k.root);
+    int min = 0, max = 0, per = 0;
+    XDisplayKeycodes(w2k.dpy, &min, &max);
+    KeySym *map = XGetKeyboardMapping(w2k.dpy, (KeyCode)min, max - min + 1, &per);
+    if (!map || per < 1) { if (map) XFree(map); return; }
+    for (size_t i = 0; i < sizeof bindings / sizeof *bindings; i++)
+        grab_sym(map, min, max, per, bindings[i].key, bindings[i].mod);
     /* The Windows key alone opens the Start menu. */
-    for (int i = 0; i < 2; i++) {
-        KeyCode kc = XKeysymToKeycode(w2k.dpy, i ? XK_Super_R : XK_Super_L);
-        if (kc) XGrabKey(w2k.dpy, kc, AnyModifier, w2k.root, True,
-                         GrabModeAsync, GrabModeAsync);
-    }
+    grab_sym(map, min, max, per, XK_Super_L, AnyModifier);
+    grab_sym(map, min, max, per, XK_Super_R, AnyModifier);
+    XFree(map);
 }
 
 /* Win+D, the Quick Launch icon and the Windows 7 sliver: everything down,
@@ -634,7 +654,8 @@ void handle_key(XKeyEvent *e)
         return;
     }
     if (ks == XF86XK_AudioRaiseVolume || ks == XF86XK_AudioLowerVolume ||
-        ks == XF86XK_AudioMute || ks == XF86XK_AudioPlay || ks == XF86XK_AudioStop) {
+        ks == XF86XK_AudioMute || ks == XF86XK_AudioPlay ||
+        ks == XF86XK_AudioPause || ks == XF86XK_AudioStop) {
         media_key(ks);
         return;
     }
