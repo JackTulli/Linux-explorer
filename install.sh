@@ -462,10 +462,16 @@ if [ "$DO_BUILD" = 1 ]; then
     # by a build that was interrupted or run twice at once, which reads as
     # a wall of undefined references -- rather than a real fault. Clear it
     # out and try once more before giving up.
-    if ! run make -C "$HERE" -s; then
+    # With the prefix it installs to, or make install -- which passes it
+    # -- found the build's record changed and compiled it all again, as
+    # root. The second try goes on past a program that will not build
+    # (-k): one optional program, the scaler say, used to end the whole
+    # install with nothing in; what did build goes in, and only the shell
+    # itself missing is the end.
+    if ! run make -C "$HERE" -s PREFIX="$PREFIX"; then
         say "That failed; building again from nothing"
         run make -C "$HERE" -s clean
-        run make -C "$HERE" -s
+        run make -C "$HERE" -s -k PREFIX="$PREFIX" || true
     fi
     # A link that failed can leave the program behind with nothing in it.
     # make then counts it as built and never tries again, and the machine
@@ -478,8 +484,14 @@ if [ "$DO_BUILD" = 1 ]; then
     if [ -n "$empty" ] && [ "$DRY" != 1 ]; then
         say "An earlier build left empty programs ($empty ); building again from nothing"
         run make -C "$HERE" -s clean
-        run make -C "$HERE" -s
+        run make -C "$HERE" -s -k PREFIX="$PREFIX" || true
     fi
+    for b in l2kwm l2kexplorer; do
+        if [ "$DRY" != 1 ] && [ ! -s "$HERE/bin/$b" ]; then
+            echo "install.sh: $b did not build; see the compiler's messages above." >&2
+            exit 1
+        fi
+    done
     # Everything builds; what goes in is what this setup asked for, of the
     # programs that did build.
     want=$APPS_BASIC
@@ -567,7 +579,7 @@ if [ "$DO_BUILD" = 1 ]; then
            { [ ! -s "$PREFIX/bin/l2kdm" ] || ! "$PREFIX/bin/l2kdm" --check 2>/dev/null; }; then
             say "The logon screen came out without PAM; building again from nothing"
             run make -C "$HERE" -s clean
-            run make -C "$HERE" -s
+            run make -C "$HERE" -s -k PREFIX="$PREFIX" || true
             as_root make -C "$HERE" -s install PREFIX="$PREFIX" \
                 INSTALL_BINS="$bins" INSTALL_LOOKS="$WANT_LOOKS" INSTALL_SOUNDS="$sounds"
         fi
@@ -696,7 +708,19 @@ if [ "$(id -u)" = 0 ] && [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != root ]; th
     [ "$DO_TAHOMA" = 1 ] && opts="$opts --tahoma"
     [ "$DO_XINITRC" = 1 ] && opts="$opts --xinitrc"
     [ "$DRY" = 1 ] && opts="$opts --dry-run"
-    run su -s /bin/sh "$TARGET_USER" -c "cd '$HERE' && ./install.sh $opts --prefix '$PREFIX'"
+    # The user's half reads the tree (cursors, themes, tools). Cloned where
+    # they cannot read it -- /root, say -- it runs from a copy: the cd used
+    # to fail and end the install with no settings written.
+    src=$HERE
+    if [ "$DRY" != 1 ] && ! su -s /bin/sh "$TARGET_USER" -c "test -r '$HERE/install.sh' && cd '$HERE'" 2>/dev/null; then
+        src=$(mktemp -d /tmp/l2k-src.XXXXXX)
+        for e in "$HERE"/*; do
+            case "${e##*/}" in build) ;; *) cp -r "$e" "$src/" ;; esac
+        done
+        chmod -R a+rX "$src"
+        trap 'rm -rf "$src"' EXIT
+    fi
+    run su -s /bin/sh "$TARGET_USER" -c "cd '$src' && ./install.sh $opts --prefix '$PREFIX'"
     run su -s /bin/sh "$TARGET_USER" -c "xdg-user-dirs-update >/dev/null 2>&1 || true"
     # Whatever the init system: the lines above said how it starts.
     if [ "$FULL" = 1 ]; then say "Done. Reboot to start at Log On to Windows."

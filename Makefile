@@ -27,7 +27,11 @@ WM_OBJ  := $(WM_SRC:%.c=build/%.o)
 APPS    := $(filter-out bin/l2kswatch,$(patsubst apps/%.c,bin/%,$(wildcard apps/*.c)))
 # The nested compositor draws with OpenGL and needs the GLX, XTest, Damage
 # and Fixes headers; without them it is left out and the option is absent.
-ifeq ($(wildcard /usr/include/GL/glx.h),)
+# All of them: glx.h alone let it be tried without the rest, and the
+# failure ended the build.
+SCALER_HDRS := GL/glx.h X11/extensions/Xdamage.h X11/extensions/Xfixes.h \
+               X11/extensions/XTest.h X11/extensions/Xcomposite.h X11/extensions/XInput2.h
+ifneq ($(words $(wildcard $(addprefix /usr/include/,$(SCALER_HDRS)))),$(words $(SCALER_HDRS)))
 APPS    := $(filter-out bin/l2kscaler,$(APPS))
 endif
 bin/l2kscaler: LDLIBS += -lGL -lXtst -lXdamage -lXfixes -lXcomposite -lXi

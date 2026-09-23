@@ -181,7 +181,12 @@ if [ "$(sed -n 's/^Compositor=//p' "$HOME/.w2k/scheme" 2>/dev/null | head -n 1)"
             NESTED_PID=$!
             i=0; while [ ! -e "/tmp/.X11-unix/X$n" ] && kill -0 "$NESTED_PID" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
             if [ -e "/tmp/.X11-unix/X$n" ]; then nested_kind=xephyr
-            else echo "l2k-session: Xephyr with glamor did not come up; trying Xvfb"; kill "$NESTED_PID" 2>/dev/null; NESTED_PID=
+            else
+                echo "l2k-session: Xephyr with glamor did not come up; trying Xvfb"
+                # Gone before Xvfb asks for the same display: a dying
+                # Xephyr still holds its lock, and Xvfb refused it.
+                kill "$NESTED_PID" 2>/dev/null; wait "$NESTED_PID" 2>/dev/null; NESTED_PID=
+                rm -f "/tmp/.X$n-lock"
             fi
         fi
         if [ -z "$nested_kind" ] && [ -n "$nauth" ] && command -v Xvfb >/dev/null 2>&1; then
@@ -337,7 +342,10 @@ fi
 # the lid and power-button settings, Device Manager's drivers, Disk
 # Management and the brightness fallback all go through it. Whichever of
 # the usual agents is installed; none is fatal, only those things fail.
-if ! pgrep -f 'polkit.*agent' >/dev/null 2>&1 && ! pgrep -x lxpolkit >/dev/null 2>&1; then
+# This user's: an agent serves its own session, and another user's (a
+# second logon) left this one with none, and pkexec failing.
+if ! pgrep -u "$(id -u)" -f 'polkit.*agent' >/dev/null 2>&1 &&
+   ! pgrep -u "$(id -u)" -x lxpolkit >/dev/null 2>&1; then
     for agent in lxpolkit \
         /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1 \
         /usr/libexec/polkit-gnome-authentication-agent-1 \

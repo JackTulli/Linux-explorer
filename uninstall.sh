@@ -31,6 +31,9 @@
 # The machine gets its display manager back: whichever one is installed is
 # enabled again, since install.sh had stood it down for l2kdm.
 set -e
+# Run from Windows Update in a terminal on the desktop being removed: a
+# hang-up when that desktop goes must not cut the job in half.
+trap '' HUP
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 SELF=$HERE/$(basename "$0")             # this file, wherever it was run from
@@ -126,12 +129,15 @@ fi
 if [ "$DO_SYSTEM" = 1 ]; then
     say "Taking the desktop off the machine"
 
-    # The logon screen goes first -- stopped before its files do -- and the
-    # console goes back to whichever display manager is installed, or the
-    # machine would come up with none at all.
+    # The logon screen is taken off the boot first, and the console goes
+    # back to whichever display manager is installed, or the machine would
+    # come up with none at all. It is not stopped: this may be running in
+    # the session it started (Windows Update's Remove button does that),
+    # and stopping it ended the session -- and this script with it -- with
+    # nothing removed. It goes at the next boot.
     if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
         for u in l2kdm w2kdm; do
-            as_root sh -c "systemctl disable --now $u >/dev/null 2>&1; true"
+            as_root sh -c "systemctl disable $u >/dev/null 2>&1; true"
         done
         sdel /etc/systemd/system/l2kdm.service /etc/systemd/system/w2kdm.service
         as_root sh -c "systemctl daemon-reload >/dev/null 2>&1; true"
@@ -149,7 +155,7 @@ if [ "$DO_SYSTEM" = 1 ]; then
     fi
     # OpenRC (Alpine and friends): the same, in its own words.
     if command -v rc-update >/dev/null 2>&1; then
-        as_root sh -c "rc-service l2kdm stop >/dev/null 2>&1; rc-update del l2kdm default >/dev/null 2>&1; true"
+        as_root sh -c "rc-update del l2kdm default >/dev/null 2>&1; true"
         sdel /etc/init.d/l2kdm
         for dm in lightdm gdm sddm xdm lxdm slim greetd; do
             if [ -x "/etc/init.d/$dm" ]; then
@@ -291,5 +297,6 @@ say "Done. $n_gone things went."
 if [ "$DO_SYSTEM" = 1 ]; then
     echo "  The packages install.sh asked for -- Wine, NetworkManager, bluez, qt5ct and"
     echo "  the rest -- are still installed; the package manager takes those off."
-    echo "  A desktop that is still running is running from deleted files: log out."
+    echo "  A desktop that is still running is running from deleted files: restart the"
+    echo "  computer, and it comes up without Linux 2000's logon screen."
 fi
