@@ -649,11 +649,19 @@ static int expand_level(Level *lv, int *n, int li, int id)
 
 static int menu_popup(W2kMenu *m, int x, int y, int flags);
 
+/* A drop-down from a menu bar is one of a row: the pointer crossing onto
+ * another title, or Left and Right at the top level, means that menu
+ * instead. The bar says which title is under a root point (or -1) and
+ * reads back which one was asked for. */
+int (*w2k_menu_bar_hit)(int root_x, int root_y);
+int   w2k_menu_bar_switch = W2K_MENU_SWITCH_NONE;
+
 /* Menus are laid out in logical pixels even when the window manager,
  * which draws its chrome raw, opens them. */
 int w2k_menu_popup(W2kMenu *m, int x, int y, int flags)
 {
     if (popup_depth++ == 0) w2k_menu_cancel = 0;
+    w2k_menu_bar_switch = W2K_MENU_SWITCH_NONE;
     int raw = w2k_scale_raw;
     w2k_scale_raw = 0;
     int r = menu_popup(m, x, y, flags);
@@ -731,7 +739,15 @@ static int menu_popup(W2kMenu *m, int x, int y, int flags)
         case MotionNotify: {
             int rx = e.xmotion.x_root, ry = e.xmotion.y_root;
             int li = level_at(lv, n, rx, ry);
-            if (li < 0) break;
+            if (li < 0) {
+                /* Over another title of the bar this came from: that
+                 * menu opens in this one's place, as it does in Windows. */
+                if (w2k_menu_bar_hit) {
+                    int t = w2k_menu_bar_hit(rx, ry);
+                    if (t >= 0) { w2k_menu_bar_switch = t; done = 1; }
+                }
+                break;
+            }
             int idx = item_at(lv[li].m, w2k_lp(rx - lv[li].x), w2k_lp(ry - lv[li].y));
             /* Moving back into a shallower menu closes everything below it. */
             if (li < n - 1 && (idx < 0 || idx != lv[li].sel)) {
@@ -827,7 +843,11 @@ static int menu_popup(W2kMenu *m, int x, int y, int flags)
                 repaint = 1;
             } else if (ks == XK_Right) {
                 Item *it = (top->sel >= 0) ? &top->m->items[top->sel] : NULL;
-                if (it && it->sub && !it->disabled && n < MAXLEVEL) {
+                if (!(it && it->sub && !it->disabled) && w2k_menu_bar_hit) {
+                    /* Nothing to open to the right: the next menu along. */
+                    w2k_menu_bar_switch = W2K_MENU_SWITCH_RIGHT;
+                    done = 1;
+                } else if (it && it->sub && !it->disabled && n < MAXLEVEL) {
                     int iy = top->y + w2k_px(item_y(top->m, top->sel));
                     menu_paint(top->m, top->win, top->w, top->h, top->sel);   /* as on hover */
                     XFlush(w2k.dpy);
@@ -838,6 +858,10 @@ static int menu_popup(W2kMenu *m, int x, int y, int flags)
                 }
             } else if (ks == XK_Left) {
                 if (n > 1) { level_destroy(top); n--; repaint = 1; }
+                else if (w2k_menu_bar_hit) {
+                    w2k_menu_bar_switch = W2K_MENU_SWITCH_LEFT;
+                    done = 1;
+                }
             } else if (ks == XK_Return || ks == XK_KP_Enter) {
                 Item *it = (top->sel >= 0) ? &top->m->items[top->sel] : NULL;
                 if (it && !it->disabled) {

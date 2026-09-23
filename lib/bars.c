@@ -110,12 +110,40 @@ static int menubar_index_at(W2kMenubar *mb, int x, int y)
 
 /* Open dropdown `i`, and keep going while the user slides onto a sibling --
  * which is what makes a menu bar feel like a menu bar. */
+/* The bar whose menu is open, for the hit test the menu asks. */
+static W2kMenubar *tracking_bar;
+static int bar_title_at_root(int rx, int ry)
+{
+    if (!tracking_bar) return -1;
+    int lx, ly;
+    Window dummy;
+    XTranslateCoordinates(w2k.dpy, w2k.root, tracking_bar->win_ref, rx, ry,
+                          &lx, &ly, &dummy);
+    int t = menubar_index_at(tracking_bar, lx, ly);
+    /* The title whose menu this is: crossing back over it is nothing. */
+    return t == tracking_bar->open ? -1 : t;
+}
+
+/* The Expose events the menu just closed left for the bar's window,
+ * handled now: the next menu opens straight after, and the owner's own
+ * loop would not get to them until every menu had closed -- which left
+ * the picture of the last drop-down under the new one. */
+static void menubar_settle(W2kMenubar *mb)
+{
+    XSync(w2k.dpy, False);
+    XEvent e;
+    while (XCheckTypedWindowEvent(w2k.dpy, mb->win_ref, Expose, &e))
+        w2k_win_handle_event(&e);
+}
+
 static void menubar_track(W2kMenubar *mb, int i)
 {
     Window root_ret, child;
     int rx, ry, wx, wy;
     unsigned mask;
 
+    tracking_bar = mb;
+    w2k_menu_bar_hit = bar_title_at_root;
     while (i >= 0 && i < mb->n) {
         mb->open = i;
         W2kMenu *m = mb->item[i].build ? mb->item[i].build(mb->user) : NULL;
@@ -133,25 +161,35 @@ static void menubar_track(W2kMenubar *mb, int i)
         w2k_menubar_draw(mb->win_ref, mb);
         XFlush(w2k.dpy);
         int id = w2k_menu_popup(m, gx, gy, MPOP_LEFT);
+        int sw = w2k_menu_bar_switch;
         w2k_menu_free(m);
         mb->open = -1;
+        menubar_settle(mb);
         w2k_menubar_draw(mb->win_ref, mb);
 
         if (id) {
             if (mb->on_command) mb->on_command(mb->user, id);
-            return;
+            break;
         }
-        /* Dismissed: if the pointer landed on another title, open that one. */
+        /* The menu asked for a neighbour: the pointer crossed onto another
+         * title, or Left or Right was pressed at the top. */
+        if (sw == W2K_MENU_SWITCH_LEFT)  { i = (i + mb->n - 1) % mb->n; continue; }
+        if (sw == W2K_MENU_SWITCH_RIGHT) { i = (i + 1) % mb->n; continue; }
+        if (sw >= 0 && sw < mb->n && sw != i) { i = sw; continue; }
+        if (sw >= 0) break;
+        /* Dismissed by a click: if it landed on another title, open that one. */
         XQueryPointer(w2k.dpy, w2k.root, &root_ret, &child, &rx, &ry, &wx, &wy,
                       &mask);
         int lx, ly;
         XTranslateCoordinates(w2k.dpy, w2k.root, mb->win_ref, rx, ry, &lx, &ly,
                               &dummy);
         int j = menubar_index_at(mb, lx, ly);
-        if (j < 0 || j == i) return;
+        if (j < 0 || j == i) break;
         i = j;
     }
     mb->open = -1;
+    w2k_menu_bar_hit = NULL;
+    tracking_bar = NULL;
 }
 
 int w2k_menubar_press(W2kMenubar *mb, XButtonEvent *b)
