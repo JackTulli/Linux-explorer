@@ -281,10 +281,12 @@ int w2k_fs_put(const char *from, const char *to, int move,
 
 /* Put `n` paths into `dir`, moving or copying. Returns how many landed;
  * `confirm` (may be NULL: always replace) is asked about existing names. */
-int w2k_fs_transfer(char paths[][1024], int n, const char *dir, int move,
-                    int (*confirm)(const char *dst, void *user), void *user)
+int w2k_fs_transfer_err(char paths[][1024], int n, const char *dir, int move,
+                        int (*confirm)(const char *dst, void *user), void *user,
+                        char *err, int errn)
 {
-    int done = 0;
+    int done = 0, failed = 0;
+    if (err && errn > 0) err[0] = 0;
     for (int i = 0; i < n; i++) {
         const char *base = strrchr(paths[i], '/');
         base = base ? base + 1 : paths[i];
@@ -294,8 +296,24 @@ int w2k_fs_transfer(char paths[][1024], int n, const char *dir, int move,
         int r = w2k_fs_put(paths[i], to, move, confirm, user);
         if (r < 0 && r != -2) break;
         if (r == 1) done++;
+        /* A failure goes on to the next item, as Windows does, and the
+         * first one is said: a drop that failed used to show nothing. */
+        if (r == -2 && failed++ == 0 && err && errn > 0)
+            snprintf(err, (size_t)errn, "Cannot %s %.200s: %s", move ? "move" : "copy",
+                     base, strerror(errno));
+    }
+    if (failed > 1 && err && errn > 0) {
+        size_t l = strlen(err);
+        snprintf(err + l, (size_t)errn - l, "\n\n(%d items could not be %s.)",
+                 failed, move ? "moved" : "copied");
     }
     return done;
+}
+
+int w2k_fs_transfer(char paths[][1024], int n, const char *dir, int move,
+                    int (*confirm)(const char *dst, void *user), void *user)
+{
+    return w2k_fs_transfer_err(paths, n, dir, move, confirm, user, NULL, 0);
 }
 
 /* ------------------------------------------------------------------ *

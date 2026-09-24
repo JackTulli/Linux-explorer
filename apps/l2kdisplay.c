@@ -1027,6 +1027,9 @@ static void fill_walls(void)
         dl.walls->sel = k;
         dl.walls->items[k].selected = 1;
     }
+    /* The wallpaper in use is shown, not only selected somewhere off
+     * past the edge of the list. */
+    if (dl.walls->sel >= 0) w2k_list_ensure_visible(dl.walls, dl.walls->sel);
 }
 
 /* The list of modes belongs to whichever monitor is selected. */

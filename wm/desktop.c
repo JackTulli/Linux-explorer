@@ -947,19 +947,26 @@ void desktop_dnd_drop(int x, int y, const char *uris, int move)
     char dir[1024];
     desktop_dir(dir, sizeof dir);
 
-    char paths[64][1024];
-    int n = w2k_uri_list_paths(uris, paths, 64);
+    /* Room for every file dropped, not the first 64. */
+    int cap = 1;
+    for (const char *c = uris; *c; c++) if (*c == '\n') cap++;
+    char (*paths)[1024] = calloc((size_t)cap, sizeof *paths);
+    if (!paths) return;
+    int n = w2k_uri_list_paths(uris, paths, cap);
     /* Ctrl held copies, as in Windows; otherwise the source's choice. */
     Window rw, cw;
     int rxp, ryp, wx, wy;
     unsigned mask = 0;
     XQueryPointer(w2k.dpy, w2k.root, &rw, &cw, &rxp, &ryp, &wx, &wy, &mask);
     if (mask & ControlMask) move = 0;
-    int done = w2k_fs_transfer(paths, n, dir, move, NULL, NULL);
+    char err[400];
+    int done = w2k_fs_transfer_err(paths, n, dir, move, NULL, NULL, err, sizeof err);
     char urls[16][1024];
     int nu = w2k_uri_list_urls(uris, urls, 16);
     for (int i = 0; i < nu; i++) done += w2k_fs_write_url_shortcut(dir, urls[i]);
-    if (!done) return;
+    if (err[0]) w2k_msgbox(NULL, move ? "Error Moving File or Folder" : "Error Copying File or Folder",
+                           err, MB_OK | MB_ICONERROR);
+    if (!done) { free(paths); return; }
     desktop_scan();
     /* The first thing dropped lands in the cell under the pointer. */
     for (int i = 0; i < n; i++) {
@@ -978,6 +985,7 @@ void desktop_dnd_drop(int x, int y, const char *uris, int move)
                 break;
             }
     }
+    free(paths);
     desktop_paint();
 }
 

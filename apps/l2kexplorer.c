@@ -1650,7 +1650,8 @@ static void ex_on_drop(Window w, int x, int y, const char *uris, int move)
     if (mask & ControlMask) move = 0;
     XDefineCursor(w2k.dpy, ex.win->win, w2k.cur_wait);
     XFlush(w2k.dpy);
-    int done = w2k_fs_transfer(paths, n, dir, move, drop_confirm, NULL);
+    char err[400];
+    int done = w2k_fs_transfer_err(paths, n, dir, move, drop_confirm, NULL, err, sizeof err);
     free(paths);
     /* A link dragged out of a browser becomes an Internet shortcut. */
     char urls[16][1024];
@@ -1658,6 +1659,8 @@ static void ex_on_drop(Window w, int x, int y, const char *uris, int move)
     for (int i = 0; i < nu; i++) done += w2k_fs_write_url_shortcut(dir, urls[i]);
     XDefineCursor(w2k.dpy, ex.win->win, None);
     if (done) refill_list();
+    if (err[0]) w2k_msgbox(ex.win, move ? "Error Moving File or Folder" : "Error Copying File or Folder",
+                           err, MB_OK | MB_ICONERROR);
 }
 
 /* ------------------------------------------------------------------ *

@@ -308,6 +308,10 @@ int  w2k_fs_move(const char *from, const char *to);      /* rename, or copy and 
  * many landed. */
 int  w2k_fs_transfer(char paths[][1024], int n, const char *dir, int move,
                      int (*confirm)(const char *dst, void *user), void *user);
+/* The same, with what failed put in `err` (empty when nothing did). */
+int  w2k_fs_transfer_err(char paths[][1024], int n, const char *dir, int move,
+                         int (*confirm)(const char *dst, void *user), void *user,
+                         char *err, int errn);
 /* One item to `to` (the full destination path), by the same rules: what
  * is replaced goes only once its replacement is in, folders merge, and
  * the source's own folder is never replaced. 1 done, 0 skipped, -1

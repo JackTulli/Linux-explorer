@@ -188,6 +188,24 @@ void w2k_list_ensure_visible(W2kList *l, int idx)
         int row = idx / per;
         if (row < l->vsb.pos) l->vsb.pos = row;
         if (row >= l->vsb.pos + l->vsb.page) l->vsb.pos = row - l->vsb.page + 1;
+    } else {
+        /* List view runs in columns across, so it is the horizontal bar
+         * that brings an item into view: the selection used to stay out
+         * of sight -- the wallpaper in use, an arrow key past the edge. */
+        W2kRect v;
+        int vs, hs;
+        view_rect(l, &v, &vs, &hs);
+        int per = v.h / l->row_h;
+        if (per < 1) per = 1;
+        int x0 = idx / per * LIST_CW;
+        if (x0 < l->hsb.pos) l->hsb.pos = x0;
+        if (x0 + LIST_CW > l->hsb.pos + v.w) {
+            /* On a column's edge, so the one at the left is not cut. */
+            int pos = x0 + LIST_CW - v.w;
+            l->hsb.pos = (pos + LIST_CW - 1) / LIST_CW * LIST_CW;
+        }
+        w2k_scroll_clamp(&l->hsb);
+        l->scroll_x = l->hsb.pos;
     }
     w2k_scroll_clamp(&l->vsb);
     l->top = l->vsb.pos;
