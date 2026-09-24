@@ -109,6 +109,39 @@ static void path_parent(char *p)
     *s = 0;
 }
 
+/* A typed path made whole: taken from `base` when it does not start at
+ * /, with "//", "." and ".." worked out and no slash at the end. The
+ * Address bar used to look for "Documents/" (what Tab completes to) in
+ * whatever folder Explorer was started from, and a trailing slash left
+ * Up doing nothing the first time. 0 when it does not fit. */
+static int path_tidy(char *out, int n, const char *base, const char *p)
+{
+    char tmp[2100];
+    snprintf(tmp, sizeof tmp, "%s%s%s", p[0] == '/' ? "" : base, p[0] == '/' ? "" : "/", p);
+    int o = 0;
+    out[0] = 0;
+    for (const char *s = tmp; *s; ) {
+        while (*s == '/') s++;
+        const char *e = s;
+        while (*e && *e != '/') e++;
+        int len = (int)(e - s);
+        if (len == 2 && s[0] == '.' && s[1] == '.') {
+            while (o > 0 && out[o - 1] != '/') o--;
+            if (o > 0) o--;
+            out[o] = 0;
+        } else if (len && !(len == 1 && s[0] == '.')) {
+            if (o + 1 + len >= n) return 0;
+            out[o++] = '/';
+            memcpy(out + o, s, (size_t)len);
+            o += len;
+            out[o] = 0;
+        }
+        s = e;
+    }
+    if (!o && n > 1) snprintf(out, (size_t)n, "/");
+    return 1;
+}
+
 /* Lowercase ASCII into out (NUL-terminated). Used so fnmatch can match
  * case-insensitively without depending on the non-POSIX FNM_CASEFOLD. */
 static void lower_copy(char *out, int n, const char *in)
@@ -571,7 +604,7 @@ static void viewmem_apply(const Node *nd)
         }
 }
 
-static void navigate(const Node *nd, int record)
+static int navigate(const Node *nd, int record)
 {
     /* The Recycle Bin is the folder its files are kept in, shown under
      * its own name: as a place of its own it listed nothing, whatever
@@ -588,6 +621,20 @@ static void navigate(const Node *nd, int record)
             if (*q == '/') { *q = 0; mkdir(p, (size_t)(q - p) >= tl ? 0700 : 0755); *q = '/'; }
         mkdir(p, 0700);
         nd = &bin;
+    }
+    /* A folder that cannot be read is not gone into, as in Windows: it
+     * used to become the folder shown, empty, and stay in Back's list
+     * to fail again. */
+    if (nd->kind == K_FS) {
+        DIR *dp = opendir(nd->path);
+        if (!dp) {
+            char msg[1200];
+            snprintf(msg, sizeof msg, "%s is not accessible.\n\n%s",
+                     nd->path, strerror(errno));
+            w2k_msgbox(ex.win, "Windows Explorer", msg, MB_OK | MB_ICONERROR);
+            return 0;
+        }
+        closedir(dp);
     }
     w2k_sound_play(SND_NAVIGATING);
     viewmem_store();                 /* the folder we are leaving */
@@ -615,13 +662,14 @@ static void navigate(const Node *nd, int record)
     refill_list();
     update_caption();
     w2k_win_dirty(ex.win);
+    return 1;
 }
 
-static void navigate_path(const char *p, int record)
+static int navigate_path(const char *p, int record)
 {
     Node nd = { K_FS, { 0 } };
     set_path(nd.path, sizeof nd.path, p);
-    navigate(&nd, record);
+    return navigate(&nd, record);
 }
 
 /* Go to whatever is typed in the address bar (Enter). Virtual names
@@ -649,16 +697,20 @@ static void addr_go(void)
         navigate(&nd, 1);
         return;
     }
-    char path[1024];
-    snprintf(path, sizeof path, "%s", t);
+    char path[1024], typed[1024];
+    snprintf(typed, sizeof typed, "%s", t);
     /* Expand a leading ~ to $HOME. */
-    if (path[0] == '~' && (path[1] == '/' || path[1] == 0)) {
+    if (typed[0] == '~' && (typed[1] == '/' || typed[1] == 0)) {
         char tmp[1024];
-        snprintf(tmp, sizeof tmp, "%s%s", ex.home, path[1] ? path + 1 : "");
-        snprintf(path, sizeof path, "%s", tmp);
+        snprintf(tmp, sizeof tmp, "%s%s", ex.home, typed[1] ? typed + 1 : "");
+        snprintf(typed, sizeof typed, "%s", tmp);
     }
+    /* A name on its own is looked for in the folder shown, as Tab
+     * completes it there. */
+    const char *base = (ex.cur.kind == K_FS && ex.cur.path[0]) ? ex.cur.path : "/";
     struct stat st;
-    if (stat(path, &st) == 0 && S_ISDIR(st.st_mode))
+    if (path_tidy(path, sizeof path, base, typed) &&
+        stat(path, &st) == 0 && S_ISDIR(st.st_mode))
         navigate_path(path, 1);
     else {
         char msg[1200];
@@ -1528,26 +1580,13 @@ static int drop_target_dir(int x, int y, char *out, int n)
     return 1;
 }
 
-/* The folder under a point in the Folders bar, walking the rows the tree
- * shows: expanded nodes' children follow them. */
-static W2kTreeNode *tree_node_at_row(W2kTreeNode *n, int *row, int want)
-{
-    for (; n; n = n->sibling) {
-        if (*row == want) return n;
-        (*row)++;
-        if (n->expanded && n->child) {
-            W2kTreeNode *hit = tree_node_at_row(n->child, row, want);
-            if (hit) return hit;
-        }
-    }
-    return NULL;
-}
-
+/* The folder under a point in the Folders bar, by the tree's own hit
+ * test: counted by hand, the bottom pixels of a row dropped into the
+ * folder below it, and a drop on the scroll bar into the one beside. */
 static int tree_drop_dir(int x, int y, char *out, int n)
 {
-    if (!ex.show_tree || !w2k_rect_hit(&ex.tree->r, x, y) || ex.tree->row_h <= 0) return 0;
-    int want = (y - ex.tree->r.y) / ex.tree->row_h + ex.tree->top, row = 0;
-    W2kTreeNode *tn = tree_node_at_row(ex.tree->root ? ex.tree->root->child : NULL, &row, want);
+    if (!ex.show_tree || ex.tree->row_h <= 0) return 0;
+    W2kTreeNode *tn = w2k_tree_node_at(ex.tree, x, y);
     if (!tn || !tn->data) return 0;
     Node *nd = tn->data;
     if (nd->kind != K_FS) return 0;
@@ -2129,6 +2168,65 @@ static void arc_paint(W2kWin *w, Drawable d)
     w2k_draw_pushbutton(d, &a->cancel, "Cancel", a->down == 2 ? BS_PRESSED : 0);
 }
 
+static void arc_browse(ArcDlg *a)
+{
+    char path[1024];
+    snprintf(path, sizeof path, "%s", w2k_edit_text(a->name));
+    if (a->extract) {
+        /* Pick anything inside the folder wanted; its folder is taken. */
+        if (w2k_file_dialog(a->win, 0, path, sizeof path)) {
+            struct stat st;
+            if (stat(path, &st) == 0 && !S_ISDIR(st.st_mode)) {
+                char *s = strrchr(path, '/');
+                if (s && s != path) *s = 0;
+            }
+            w2k_edit_set(a->name, path);
+        }
+    } else if (w2k_file_dialog_filter(a->win, 1, path, sizeof path,
+                                      "Archives (*.zip;*.7z;*.tar;*.tar.gz;*.tar.bz2;*.tar.xz)|"
+                                      "*.zip;*.7z;*.tar;*.tar.gz;*.tar.bz2;*.tar.xz|All Files (*.*)|*"))
+        w2k_edit_set(a->name, path);
+}
+
+static int mnemonic_is(const char *label, int c)
+{
+    const char *amp = strchr(label, '&');
+    return amp && tolower((unsigned char)amp[1]) == c;
+}
+
+/* Drop a combo's list down, as a click on it would. */
+static void arc_combo_open(ArcDlg *a, W2kCombo *c)
+{
+    XButtonEvent b;
+    memset(&b, 0, sizeof b);
+    b.type = ButtonPress;
+    b.window = a->win->win;
+    b.button = Button1;
+    b.x = c->r.x + c->r.w / 2;
+    b.y = c->r.y + c->r.h / 2;
+    w2k_combo_press(c, &b);
+}
+
+static int arc_mnemonic(ArcDlg *a, XKeyEvent *k)
+{
+    char ch[4];
+    if (XLookupString(k, ch, sizeof ch, NULL, NULL) != 1) return 0;
+    int c = tolower((unsigned char)ch[0]);
+    for (int i = 0; i < 3; i++)
+        if (a->chk_label[i] && mnemonic_is(a->chk_label[i], c)) { a->chk[i] = !a->chk[i]; return 1; }
+    if (mnemonic_is(a->extract ? "&Extract" : "&Add", c)) { w2k_win_close(a->win, ID_OK); return 1; }
+    if (mnemonic_is("&Browse...", c)) { arc_browse(a); return 1; }
+    if (mnemonic_is(a->extract ? "E&xtract to:" : "Archive &name:", c)) {
+        a->name->focused = 1;
+        a->name->sel = 0;
+        a->name->caret = (int)strlen(w2k_edit_text(a->name));
+        return 1;
+    }
+    if (!a->extract && mnemonic_is("&Format:", c)) { arc_combo_open(a, a->format); return 1; }
+    if (!a->extract && mnemonic_is("&Compression:", c)) { arc_combo_open(a, a->level); return 1; }
+    return 0;
+}
+
 static int arc_event(W2kWin *w, XEvent *e)
 {
     ArcDlg *a = w->user;
@@ -2152,24 +2250,7 @@ static int arc_event(W2kWin *w, XEvent *e)
         w2k_edit_release(a->name);
         if (b == 1 && w2k_rect_hit(&a->ok, x, y)) w2k_win_close(w, ID_OK);
         else if (b == 2 && w2k_rect_hit(&a->cancel, x, y)) w2k_win_close(w, ID_CANCEL);
-        else if (b == 3 && w2k_rect_hit(&a->browse, x, y)) {
-            char path[1024];
-            snprintf(path, sizeof path, "%s", w2k_edit_text(a->name));
-            if (a->extract) {
-                /* Pick anything inside the folder wanted; its folder is taken. */
-                if (w2k_file_dialog(w, 0, path, sizeof path)) {
-                    struct stat st;
-                    if (stat(path, &st) == 0 && !S_ISDIR(st.st_mode)) {
-                        char *s = strrchr(path, '/');
-                        if (s && s != path) *s = 0;
-                    }
-                    w2k_edit_set(a->name, path);
-                }
-            } else if (w2k_file_dialog_filter(w, 1, path, sizeof path,
-                                              "Archives (*.zip;*.7z;*.tar;*.tar.gz;*.tar.bz2;*.tar.xz)|"
-                                              "*.zip;*.7z;*.tar;*.tar.gz;*.tar.bz2;*.tar.xz|All Files (*.*)|*"))
-                w2k_edit_set(a->name, path);
-        }
+        else if (b == 3 && w2k_rect_hit(&a->browse, x, y)) arc_browse(a);
         w2k_win_dirty(w);
         return 1;
     }
@@ -2178,6 +2259,13 @@ static int arc_event(W2kWin *w, XEvent *e)
         return 1;
     case KeyPress: {
         KeySym ks = XLookupKeysym(&e->xkey, 0);
+        /* Alt and an underlined letter, as in every other dialog: the
+         * options could only be reached with the mouse, and Alt+D typed
+         * a "d" into the name instead of ticking the box. */
+        if (e->xkey.state & Mod1Mask) {
+            if (arc_mnemonic(a, &e->xkey)) w2k_win_dirty(w);
+            return 1;
+        }
         if (ks == XK_Escape) { w2k_win_close(w, ID_CANCEL); return 1; }
         if (ks == XK_Return || ks == XK_KP_Enter) { w2k_win_close(w, ID_OK); return 1; }
         if (w2k_edit_key(a->name, &e->xkey)) w2k_win_dirty(w);
@@ -2393,7 +2481,10 @@ static void do_zip(void)
     free(paths);
 }
 
-/* How many entries an archive holds, from its listing. */
+/* How many entries an archive holds, from its listing; -1 for a
+ * compressed tar. Counting one means unpacking all of it, and the
+ * window froze for minutes on a big backup before the dialog came up:
+ * its bar runs without a total instead. */
 static int archive_entries(const char *path)
 {
     char q[1200], cmd[1500];
@@ -2401,9 +2492,10 @@ static int archive_entries(const char *path)
     const char *dot = strrchr(path, '.');
     if (dot && (!strcasecmp(dot, ".zip") || !strcasecmp(dot, ".jar")))
         snprintf(cmd, sizeof cmd, "unzip -Z1 %s 2>/dev/null | wc -l", q);
-    else if (dot && (!strcasecmp(dot, ".tar") || !strcasecmp(dot, ".tgz") ||
-                     !strcasecmp(dot, ".gz")  || !strcasecmp(dot, ".bz2") ||
-                     !strcasecmp(dot, ".xz")))
+    else if (dot && (!strcasecmp(dot, ".tgz") || !strcasecmp(dot, ".gz") ||
+                     !strcasecmp(dot, ".bz2") || !strcasecmp(dot, ".xz")))
+        return -1;
+    else if (dot && !strcasecmp(dot, ".tar"))
         snprintf(cmd, sizeof cmd, "tar tf %s 2>/dev/null | wc -l", q);
     else
         snprintf(cmd, sizeof cmd, "7z l -ba %s 2>/dev/null | wc -l", q);
@@ -2436,7 +2528,8 @@ static void do_unzip(void)
     struct stat st;
     char sz[32] = "";
     if (stat(paths[0], &st) == 0) size_text(st.st_size, sz, sizeof sz);
-    snprintf(a.info, sizeof a.info, "%.100s: %d item(s), %s", base, entries, sz);
+    if (entries >= 0) snprintf(a.info, sizeof a.info, "%.100s: %d item(s), %s", base, entries, sz);
+    else              snprintf(a.info, sizeof a.info, "%.100s: %s", base, sz);
     if (!arc_dialog(&a, "Extract", ex.cur.path)) { w2k_edit_free(a.name); return; }
 
     char dest[1200];
@@ -2466,7 +2559,7 @@ static void do_unzip(void)
         snprintf(cmd, sizeof cmd, "tar xvf %s -C %s%s", qf, qd, overwrite ? "" : " --skip-old-files");
     else
         snprintf(cmd, sizeof cmd, "7z x -y -bb1 %s -o%s %s", overwrite ? "-aoa" : "-aos", qd, qf);
-    int ok = run_with_progress("Extracting...", cmd, entries, base, dest);
+    int ok = run_with_progress("Extracting...", cmd, entries > 0 ? entries : 0, base, dest);
     refill_list();
     if (ok && show) navigate_path(dest, 1);
 }
@@ -2988,6 +3081,9 @@ static void command(void *user, int id)
 
     case ID_CUT:
     case ID_COPY:
+        /* As on the menus: Ctrl+C on a drive in My Computer used to put
+         * "/Local Disk (C:)" on the clipboard, and Paste then failed. */
+        if (ex.cur.kind != K_FS) break;
         free(ex.clip);
         ex.clip = selection_paths(&ex.nclip);
         ex.clip_cut = (id == ID_CUT);
@@ -3039,7 +3135,7 @@ static void command(void *user, int id)
             ex.hist_i--;
             Node nd = { ex.hist_kind[ex.hist_i], { 0 } };
             set_path(nd.path, sizeof nd.path, ex.history[ex.hist_i]);
-            navigate(&nd, 0);
+            if (!navigate(&nd, 0)) ex.hist_i++;     /* stayed where it was */
         }
         break;
     case ID_FORWARD:
@@ -3047,7 +3143,7 @@ static void command(void *user, int id)
             ex.hist_i++;
             Node nd = { ex.hist_kind[ex.hist_i], { 0 } };
             set_path(nd.path, sizeof nd.path, ex.history[ex.hist_i]);
-            navigate(&nd, 0);
+            if (!navigate(&nd, 0)) ex.hist_i--;
         }
         break;
     case ID_UP:     go_up(); break;
@@ -3126,7 +3222,9 @@ static void layout(W2kWin *w)
     ex.sb->r = (W2kRect){ 0, bottom, w->w, ex.show_status ? STATUS_H : 0 };
 
     if (ex.show_tree) {
-        if (ex.split_x < 80) ex.split_x = 190;
+        /* Held at its narrowest: a drag past it used to snap the pane
+         * back to its first width. */
+        if (ex.split_x < 80) ex.split_x = 80;
         if (ex.split_x > w->w - 120) ex.split_x = w->w - 120;
         ex.tree->r = (W2kRect){ 2, y, ex.split_x - 2, bottom - y - 2 };
         ex.split_r = (W2kRect){ ex.split_x, y, 4, bottom - y - 2 };
@@ -3605,10 +3703,17 @@ int main(int argc, char **argv)
 
     if (argc > 1) {
         struct stat st;
-        if (!strcmp(argv[1], "~")) navigate_path(ex.home, 1);
-        else if (stat(argv[1], &st) == 0 && S_ISDIR(st.st_mode))
-            navigate_path(argv[1], 1);
-        else { Node nd = { K_MYCOMPUTER, "" }; navigate(&nd, 1); }
+        char cwd[1024], path[1024];
+        if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, "/");
+        if (!strcmp(argv[1], "~")) snprintf(path, sizeof path, "%s", ex.home);
+        else if (!path_tidy(path, sizeof path, cwd, argv[1])) path[0] = 0;
+        /* One that cannot be read opens My Computer after the error box,
+         * not an empty window with no folder. */
+        if (!path[0] || stat(path, &st) != 0 || !S_ISDIR(st.st_mode) ||
+            !navigate_path(path, 1)) {
+            Node nd = { K_MYCOMPUTER, "" };
+            navigate(&nd, 1);
+        }
     } else {
         Node nd = { K_MYCOMPUTER, { 0 } };
         navigate(&nd, 1);
