@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 /* ------------------------------------------------------------------ *
  * Appearance: the editable elements and the classic preset schemes
@@ -150,6 +151,7 @@ static void fill_monitor_combos(void);
 typedef struct {
     char name[64];
     int  x, y, w, h;                /* geometry as xrandr reports it now */
+    int  rotated;                   /* turned on its side: the modes are listed landscape */
     int  primary, connected, enabled;
     char modes[64][16];
     int  nmodes, cur_mode;
@@ -254,18 +256,31 @@ static void read_monitors(void)
             /* "... connected [primary] WxH+X+Y ..." */
             const char *q = g;
             while (q && *q && sscanf(q, "%dx%d+%d+%d", &w, &h, &x, &y) != 4) q++;
-            if (q && *q) { m->w = w; m->h = h; m->x = x; m->y = y; }
+            if (q && *q) {
+                m->w = w; m->h = h; m->x = x; m->y = y;
+                /* "1024x1280+0+0 left (...)": a portrait screen's area is
+                 * given turned, its modes are not. Read as landscape, a
+                 * 1280x1024 panel on its side came out as 125 per cent and
+                 * OK magnified it. */
+                char rot[16] = "";
+                sscanf(q, "%*s %15s", rot);
+                m->rotated = !strcmp(rot, "left") || !strcmp(rot, "right");
+            }
             m->cur_mode = -1;
-        } else if (m && m->nmodes < 64) {
+        } else if (m && (m->nmodes < 64 || strchr(line, '*'))) {
             char mode[16];
             int used = 0;
             if (sscanf(line, " %15s%n", mode, &used) != 1 || !strchr(mode, 'x')) continue;
-            int k = m->nmodes;
+            /* The mode in use takes the last place rather than be lost past
+             * it: without it the dialog showed the first mode, and OK
+             * switched the screen to that. */
+            int k = m->nmodes < 64 ? m->nmodes : 63;
+            if (k != m->nmodes) m->nrates[k] = 0;
             snprintf(m->modes[k], 16, "%s", mode);
             /* The rates follow: "59.95*+  74.94" -- '*' marks the one in
              * use, '+' the panel's preferred. */
             const char *q = line + used;
-            while (*q && m->nrates[k] < 8) {
+            while (*q) {
                 while (*q == ' ' || *q == '\t') q++;
                 if (!*q || *q == '\n') break;
                 char rate[8];
@@ -276,11 +291,17 @@ static void read_monitors(void)
                 int current = 0;
                 while (*q == '*' || *q == '+') { if (*q == '*') current = 1; q++; }
                 if (!rn) { while (*q && *q != ' ') q++; continue; }
-                snprintf(m->rates[k][m->nrates[k]], 8, "%s", rate);
-                if (current) { m->cur_mode = k; m->cur_rate = m->nrates[k]; }
-                m->nrates[k]++;
+                /* Likewise the rate in use, past the eighth. */
+                int slot = m->nrates[k];
+                if (slot >= 8) {
+                    if (!current) continue;
+                    slot = 7;
+                }
+                snprintf(m->rates[k][slot], 8, "%s", rate);
+                if (current) { m->cur_mode = k; m->cur_rate = slot; }
+                if (slot == m->nrates[k]) m->nrates[k]++;
             }
-            m->nmodes++;
+            if (m->nmodes < 64) m->nmodes++;
         }
     }
     pclose(p);
@@ -307,6 +328,7 @@ static void read_monitors(void)
         if (m->cur_mode >= 0 && m->w > 0) {
             int mw = 0, mh = 0;
             sscanf(m->modes[m->cur_mode], "%dx%d", &mw, &mh);
+            if (m->rotated) mw = mh;
             if (mw > 0) {
                 int pct = (int)(100.0 * mw / m->w + 0.5);
                 for (int k = 0; k < NSCALES; k++)
@@ -319,6 +341,7 @@ static void read_monitors(void)
         if (w2k_scale_mode != SCALE_XRANDR && m->cur_mode >= 0 && m->w > 0) {
             int mw = 0, mh = 0;
             sscanf(m->modes[m->cur_mode], "%dx%d", &mw, &mh);
+            if (m->rotated) mw = mh;
             if (mw > 0) {
                 int want = (int)(w2k_ui_scale_pref * (double)mw / m->w + 0.5);
                 m->scale = 100;
@@ -358,6 +381,7 @@ static void pending_size(const Monitor *m, int *w, int *h)
     int mw = 0, mh = 0;
     if (m->nmodes && m->mode_sel >= 0 && m->mode_sel < m->nmodes)
         sscanf(m->modes[m->mode_sel], "%dx%d", &mw, &mh);
+    if (m->rotated) { int t = mw; mw = mh; mh = t; }
     if (mw <= 0 || mh <= 0) { mw = m->w; mh = m->h; }
     if (mw <= 0 || mh <= 0) { mw = 1024; mh = 768; }
     /* The virtual area: smaller when the screen stretches, larger when
@@ -435,11 +459,35 @@ static void snap_monitor(int idx)
     normalise_positions();
 }
 
+/* A monitor switched back on. One that was off has no place of its own
+ * (xrandr gives it none): left at 0,0 it snapped onto the screen already
+ * there, and Apply mirrored the two instead of extending the desktop. It
+ * goes to the right of the others, level with the primary. */
+static void place_monitor(int idx)
+{
+    Monitor *m = &mons[idx];
+    int mw, mh, right = 0, top = 0, over = 0, first = 1;
+    pending_size(m, &mw, &mh);
+    for (int i = 0; i < nmons; i++) {
+        if (i == idx || !mons[i].want_enabled) continue;
+        int ow, oh;
+        pending_size(&mons[i], &ow, &oh);
+        const Monitor *o = &mons[i];
+        if (m->px < o->px + ow && o->px < m->px + mw && m->py < o->py + oh && o->py < m->py + mh)
+            over = 1;
+        if (o->px + ow > right) right = o->px + ow;
+        if (first || o->want_primary) top = o->py;
+        first = 0;
+    }
+    if (over) { m->px = right; m->py = top; }
+    snap_monitor(idx);
+}
+
 /* One xrandr invocation for the whole arrangement: mode, absolute position
  * and primary for every output at once. Doing it output by output would put
  * the desktop through invalid intermediate layouts (two screens briefly on
  * top of each other, or no primary at all). */
-static void apply_monitors(void)
+static int apply_monitors(int *sel)
 {
     char cmd[2048] = "xrandr";
     normalise_positions();
@@ -451,18 +499,29 @@ static void apply_monitors(void)
             strncat(cmd, part, sizeof cmd - strlen(cmd) - 1);
             continue;
         }
-        char extra[128];
+        char extra[128], mode[32];
         rate_scale_args(m, extra, sizeof extra);
-        snprintf(part, sizeof part, " --output %.63s --mode %.15s%s --pos %dx%d%s",
-                 m->name, m->nmodes ? m->modes[m->mode_sel] : "auto", extra,
-                 m->px, m->py, m->want_primary ? " --primary" : "");
+        /* An output that lists no modes yet gets the server's choice:
+         * xrandr has no mode called "auto", and refused the whole line. */
+        if (m->nmodes) snprintf(mode, sizeof mode, "--mode %.15s", m->modes[m->mode_sel]);
+        else           snprintf(mode, sizeof mode, "--auto");
+        snprintf(part, sizeof part, " --output %.63s %s%s --pos %dx%d%s",
+                 m->name, mode, extra, m->px, m->py, m->want_primary ? " --primary" : "");
         strncat(cmd, part, sizeof cmd - strlen(cmd) - 1);
     }
-    if (getenv("W2K_XRANDR_DRY")) { fprintf(stderr, "%s\n", cmd); return; }
+    if (getenv("W2K_XRANDR_DRY")) { fprintf(stderr, "%s\n", cmd); return 1; }
     strncat(cmd, " 2>&1", sizeof cmd - strlen(cmd) - 1);
     FILE *p = popen(cmd, "r");
     char out[1024] = "";
-    if (p) { size_t n = fread(out, 1, sizeof out - 1, p); out[n] = 0; pclose(p); }
+    int ok = 0;
+    if (p) {
+        size_t n = fread(out, 1, sizeof out - 1, p);
+        out[n] = 0;
+        char rest[256];                 /* the rest unread, not a broken pipe */
+        while (fread(rest, 1, sizeof rest, p) > 0) {}
+        int st = pclose(p);
+        ok = st != -1 && WIFEXITED(st) && WEXITSTATUS(st) == 0;
+    }
     if (out[0]) {
         char msg[1200];
         snprintf(msg, sizeof msg, "xrandr reported:\n\n%s", out);
@@ -470,9 +529,16 @@ static void apply_monitors(void)
     }
     /* Read back in the order they are now arranged -- and the lists with
      * them, or the next change went to the monitor that used to be at that
-     * place in the list. */
+     * place in the list. The selection goes with its monitor, too: kept
+     * by place, it jumped to the other screen when a drag had changed
+     * their order. */
+    char name[64] = "";
+    if (*sel >= 0 && *sel < nmons) snprintf(name, sizeof name, "%s", mons[*sel].name);
     read_monitors();
+    for (int i = 0; i < nmons; i++)
+        if (name[0] && !strcmp(mons[i].name, name)) *sel = i;
     fill_monitor_combos();
+    return ok;
 }
 
 /* ------------------------------------------------------------------ *
@@ -519,6 +585,7 @@ typedef struct {
     int       nsets;
     /* Drag state for the monitor arrangement. */
     int       drag_mon;                     /* -1 when not dragging   */
+    int       drag_moved;                   /* and it has moved since the press */
     int       drag_dx, drag_dy;             /* grab offset, screen px */
     double    layout_scale;                 /* screen px -> layout px */
     int       layout_ox, layout_oy;
@@ -774,15 +841,26 @@ static void wallpaper_preview(Drawable d, int x, int y, int w, int h)
 {
     static Pixmap cache;
     static char cache_path[1024];
-    static int cache_style = -1, cache_w, cache_h, cache_method = -1;
+    static int cache_style = -1, cache_w, cache_h, cache_method = -1, cache_sw, cache_sh;
+    static unsigned long cache_bg;
     /* Built and blitted in screen pixels: the picture is resampled once
      * at the size the little monitor has on the panel. */
     int px0 = w2k_cx(x), py0 = w2k_cx(y);
     int pw = w2k_cw(x, w), ph = w2k_cw(y, h);
     if (pw <= 0 || ph <= 0) return;
     x = px0; y = py0; w = pw; h = ph;
+    /* The screen the preview stands for, so the picture keeps its scale. */
+    const W2kMonitor *m = w2k_monitor_primary();
+    int SW = w2k_wallpaper_style == 5 ? w2k.sw : m->w;
+    int SH = w2k_wallpaper_style == 5 ? w2k.sh : m->h;
+    if (SW <= 0 || SH <= 0) { SW = 1024; SH = 768; }
+    const int scr_w = SW, scr_h = SH;   /* SW and SH shrink with the decode below */
+    /* The desktop colour round the picture and the screen's shape are in
+     * the copy as well: a new colour chosen on Appearance left the old one
+     * round the picture here. */
     if (cache && !strcmp(cache_path, w2k_wallpaper) && cache_style == w2k_wallpaper_style &&
-        cache_w == w && cache_h == h && cache_method == w2k_resample) {
+        cache_w == w && cache_h == h && cache_method == w2k_resample &&
+        cache_bg == w2k.col[C_DESKTOP] && cache_sw == scr_w && cache_sh == scr_h) {
         XCopyArea(w2k.dpy, cache, d, w2k_copy_gc(), 0, 0, (unsigned)w, (unsigned)h, x, y);
         return;
     }
@@ -792,11 +870,6 @@ static void wallpaper_preview(Drawable d, int x, int y, int w, int h)
         if (!preview_go) w2k_add_timer(0, preview_later, NULL);
         return;
     }
-    /* The screen the preview stands for, so the picture keeps its scale. */
-    const W2kMonitor *m = w2k_monitor_primary();
-    int SW = w2k_wallpaper_style == 5 ? w2k.sw : m->w;
-    int SH = w2k_wallpaper_style == 5 ? w2k.sh : m->h;
-    if (SW <= 0 || SH <= 0) { SW = 1024; SH = 768; }
     int st = w2k_wallpaper_style;
     /* Decoded no bigger than the little monitor needs: libjpeg shrinks a
      * photograph by up to 8 as it reads it. The whole of it was decoded for
@@ -833,6 +906,7 @@ static void wallpaper_preview(Drawable d, int x, int y, int w, int h)
     cache = XCreatePixmap(w2k.dpy, w2k.root, (unsigned)w, (unsigned)h, w2k.depth);
     snprintf(cache_path, sizeof cache_path, "%s", w2k_wallpaper);
     cache_style = w2k_wallpaper_style; cache_w = w; cache_h = h; cache_method = w2k_resample;
+    cache_bg = w2k.col[C_DESKTOP]; cache_sw = scr_w; cache_sh = scr_h;
     long fx = 0, ox = 0, oy = 0;
     if (st == 3 || st == 4) {
         long sw = ((long)iw << 16) / SW, shh = ((long)ih << 16) / SH;
@@ -1558,6 +1632,7 @@ static int fd_event(W2kWin *w, XEvent *e)
     switch (e->type) {
     case ButtonPress: {
         int x = e->xbutton.x, y = e->xbutton.y;
+        if (e->xbutton.button != Button1) return 1;     /* as in the dialog */
         if (w2k_combo_press(fd->filter, &e->xbutton)) { w2k_win_dirty(w); return 1; }
         if (w2k_rect_hit(&fd->antiring_box, x, y)) { fd->antiring = !fd->antiring; fd_push(fd); }
         else if (w2k_rect_hit(&fd->linear_box, x, y)) { fd->linear = !fd->linear; fd_push(fd); }
@@ -1567,6 +1642,7 @@ static int fd_event(W2kWin *w, XEvent *e)
         return 1;
     }
     case ButtonRelease: {
+        if (e->xbutton.button != Button1) return 1;
         int b = fd->down, x = e->xbutton.x, y = e->xbutton.y;
         fd->down = 0;
         if (b == 1 && w2k_rect_hit(&fd->ok, x, y)) w2k_win_close(w, ID_OK);
@@ -1625,8 +1701,10 @@ static void compositor_dialog(void)
 static int do_apply(void)
 {
     /* Settings-tab changes apply whichever tab is showing when OK or Apply
-     * is pressed; before, switching tabs after choosing a scale lost it. */
-    int monitors = nmons && (dl.tabs->sel == 2 || dl.mon_dirty);
+     * is pressed; before, switching tabs after choosing a scale lost it.
+     * With none, the screens are left alone: OK on the Settings page used
+     * to set them again to what was read of them. */
+    int monitors = nmons && dl.mon_dirty;
     int running = w2k_ui_scale;
     if (monitors) {
         /* The X server's framebuffer has a ceiling -- 16384 on most GPUs --
@@ -1650,16 +1728,45 @@ static int do_apply(void)
             return 0;
         }
     }
+    /* What the scheme held, to go back to if xrandr refuses the new
+     * arrangement -- or it was set again at every logon. */
+    W2kMonitorCfg was[8];
+    int was_n = w2k_monitor_cfg_n, was_mode = w2k_scale_mode, was_pref = w2k_ui_scale_pref;
+    memcpy(was, w2k_monitor_cfg, sizeof was);
     if (monitors) record_monitors();
     w2k_compositor = dl.compositor;
-    w2k_scheme_save(NULL);
+    if (w2k_scheme_save(NULL) < 0) {
+        /* Broadcast, every program -- this one too -- read back the old
+         * file, and the choices vanished without a word. They stay here,
+         * pending, to try again. */
+        w2k_msgbox(dl.win, "Display Properties",
+                   "Your settings could not be saved in the .w2k folder of your home "
+                   "folder. It may be read-only, or the disk may be full.",
+                   MB_OK | MB_ICONERROR);
+        return 0;
+    }
     /* Nothing pending now: the broadcast comes back here too, and reloads
      * what other programs may have applied meanwhile (the save kept it). */
     dl.dirty = dl.mon_dirty = 0;
     w2k_scheme_broadcast();
     /* Inside the nested compositor the layout is the session's; xrandr
      * there would only confuse it. The scheme still records the wish. */
-    if (monitors && !(getenv("W2K_MONITORS") && *getenv("W2K_MONITORS"))) apply_monitors();
+    if (monitors && !(getenv("W2K_MONITORS") && *getenv("W2K_MONITORS")) &&
+        !apply_monitors(&dl.mon->sel)) {
+        memcpy(w2k_monitor_cfg, was, sizeof was);
+        w2k_monitor_cfg_n = was_n;
+        w2k_scale_mode = was_mode;
+        w2k_ui_scale_pref = was_pref;
+        if (w2k_scheme_save(NULL) == 0) w2k_scheme_broadcast();
+        /* The page shows the screens as they are, read with the method
+         * that is still in force. */
+        scale_method = w2k_scale_mode;
+        for (int k = 0; k < 4; k++) if (method_modes[k] == scale_method) dl.method->sel = k;
+        read_monitors();
+        fill_monitor_combos();
+        w2k_win_dirty(dl.win);
+        return 0;
+    }
     w2k_win_dirty(dl.win);
     int wanted = w2k_scale_mode != SCALE_XRANDR ? w2k_ui_scale_pref : 100;
     if (monitors && wanted != running)
@@ -1670,14 +1777,29 @@ static int do_apply(void)
     return 1;
 }
 
-static void do_cancel(void)
+static void discard(void)
 {
     w2k_scheme_load(NULL);          /* discard unapplied edits locally */
     dl.dirty = dl.mon_dirty = 0;
     /* The filter sheet changes the running scaler as it goes: it gets the
      * saved settings back too, or the one chosen stayed on the screen. */
     w2k_compositor_push();
+}
+
+static void do_cancel(void)
+{
+    discard();
     w2k_win_close(dl.win, ID_CANCEL);
+}
+
+/* The title bar's close button and Alt+F4 are Cancel as well: they closed
+ * the window without it, and a filter tried and not saved stayed on the
+ * screen. */
+static int closing(W2kWin *w)
+{
+    (void)w;
+    discard();
+    return 1;
 }
 
 /* The dialog's choices live in the shared settings until they are
@@ -1694,6 +1816,13 @@ static int event(W2kWin *w, XEvent *e)
     case ButtonPress: {
         int x = e->xbutton.x, y = e->xbutton.y;
         if (w2k_tabs_press(dl.tabs, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        /* The left button works the controls. A wheel notch over OK is a
+         * press and a release there, and it applied and closed the window;
+         * over a check box it ticked it. The wheel scrolls the pictures. */
+        if (e->xbutton.button != Button1) {
+            if (tab == 0 && w2k_list_press(dl.walls, &e->xbutton)) w2k_win_dirty(w);
+            return 1;
+        }
         if (tab == 0) {
             if (w2k_list_press(dl.walls, &e->xbutton)) { w2k_win_dirty(w); return 1; }
             if (w2k_combo_press(dl.style, &e->xbutton)) { w2k_win_dirty(w); return 1; }
@@ -1764,8 +1893,9 @@ static int event(W2kWin *w, XEvent *e)
                         mons[cur].want_primary = 0;
                         for (int i = 0; i < nmons; i++)
                             if (mons[i].want_enabled) { mons[i].want_primary = 1; break; }
+                        fill_monitor_combos();      /* the "(primary)" label moved */
                     }
-                    if (on) snap_monitor(cur);
+                    if (on) place_monitor(cur);
                     dl.dirty = dl.mon_dirty = 1;
                 }
                 w2k_win_dirty(w);
@@ -1779,6 +1909,7 @@ static int event(W2kWin *w, XEvent *e)
                     fill_mode_combo();
                     W2kRect b = mon_box(i);
                     dl.drag_mon = i;
+                    dl.drag_moved = 0;
                     dl.drag_dx = x - b.x;
                     dl.drag_dy = y - b.y;
                 }
@@ -1811,6 +1942,7 @@ static int event(W2kWin *w, XEvent *e)
                 to_screen(nx - dl.layout_ox);
             mons[dl.drag_mon].py = dl.layout_miny +
                 to_screen(ny - dl.layout_oy);
+            dl.drag_moved = 1;
             dl.dirty = dl.mon_dirty = 1;
             w2k_win_dirty(w);
             return 1;
@@ -1820,10 +1952,18 @@ static int event(W2kWin *w, XEvent *e)
                          w2k_edit_motion(dl.blue, &e->xmotion))) { w2k_win_dirty(w); return 1; }
         return 0;
     case ButtonRelease: {
+        if (e->xbutton.button != Button1) {
+            w2k_list_release(dl.walls, &e->xbutton);
+            return 1;
+        }
         if (dl.drag_mon >= 0) {
-            snap_monitor(dl.drag_mon);
+            /* Only a monitor that was moved: a click to select one snapped
+             * it to a neighbour and lit Apply. */
+            if (dl.drag_moved) {
+                snap_monitor(dl.drag_mon);
+                dl.dirty = 1;
+            }
             dl.drag_mon = -1;
-            dl.dirty = 1;
             dl.down = 0;
             w2k_win_dirty(w);
             return 1;
@@ -1951,7 +2091,11 @@ int main(int argc, char **argv)
                     w2k_color_set(presets[i].t[k].color, presets[i].t[k].r,
                                   presets[i].t[k].g, presets[i].t[k].b);
                 w2k_look_themes(w2k_theme);
-                w2k_scheme_save(NULL);
+                if (w2k_scheme_save(NULL) < 0) {
+                    fprintf(stderr, "l2kdisplay: could not save the scheme in ~/.w2k\n");
+                    w2k_fini();
+                    return 1;
+                }
                 w2k_scheme_broadcast();
                 w2k_fini();
                 return 0;
@@ -1964,6 +2108,7 @@ int main(int argc, char **argv)
     dl.win = w2k_win_new("Display Properties", "l2kdisplay", W, H, 0);
     dl.win->paint = paint;
     dl.win->event = event;
+    dl.win->closing = closing;
 
     dl.tabs = w2k_tabs_new(NULL, on_tab);
     /* Development aid: W2K_RENDER_COMPOSITOR=1 renders the filter sheet. */
