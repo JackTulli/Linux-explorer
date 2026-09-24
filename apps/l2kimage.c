@@ -172,6 +172,11 @@ static void set_status(void)
     w2k_status_set(im.sb, 2, b);
 }
 
+static int cmp_path(const void *a, const void *b)
+{
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
 /* The other pictures in the same folder, so the arrow keys can step. */
 static void scan_siblings(void)
 {
@@ -212,15 +217,10 @@ static void scan_siblings(void)
     }
     closedir(dp);
 
-    for (int i = 1; i < im.nsib; i++) {          /* name order */
-        char *v = im.siblings[i];
-        int k = i - 1;
-        while (k >= 0 && strcmp(im.siblings[k], v) > 0) {
-            im.siblings[k + 1] = im.siblings[k];
-            k--;
-        }
-        im.siblings[k + 1] = v;
-    }
+    /* Name order. The names are unique within a folder, so qsort gives
+     * the same order an insertion sort did -- without its 2.5 s over a
+     * camera import of 50,000 pictures. */
+    qsort(im.siblings, (size_t)im.nsib, sizeof *im.siblings, cmp_path);
     for (int i = 0; i < im.nsib; i++)
         if (!strcmp(im.siblings[i], im.path)) { im.sib_at = i; break; }
 }
