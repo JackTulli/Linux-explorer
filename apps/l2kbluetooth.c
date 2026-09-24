@@ -877,6 +877,7 @@ static void reply_empty(DBusMessage *m)
 
 static void agent_ask(void *unused);
 static void agent_display(void *unused);
+static int wiz_takes(const char *device);
 
 /* BlueZ gave up on the question (the device went away, or cancelled). */
 static void agent_cancel(void)
@@ -910,6 +911,11 @@ static DBusHandlerResult agent_message(DBusConnection *c, DBusMessage *m, void *
         reply_empty(m);
         if (!ok) return DBUS_HANDLER_RESULT_HANDLED;
         int fresh = !adisp.active || strcmp(adisp.device, dev);
+        /* One passkey on show at a time. A second device's used to take
+         * over the first's: the dialog kept the first number under the
+         * first name, and neither pairing was called off when it closed. */
+        if (fresh && adisp.active && (adisp.dlg || wiz_takes(adisp.device)))
+            return DBUS_HANDLER_RESULT_HANDLED;
         adisp.active = 1;
         snprintf(adisp.device, sizeof adisp.device, "%s", dev);
         if (pk) snprintf(adisp.text, sizeof adisp.text, "%06u", (unsigned)u32);
@@ -1107,12 +1113,14 @@ static int bt_connect(void)
 }
 
 /* Devices may connect to this computer only when the Options page says
- * so: with it off the radio stops listening for them at all. */
+ * so: with it off the radio stops listening for them at all. Both ways,
+ * and again each time the radio comes on: a box changed while it was off
+ * used to be left unapplied, the radio keeping what it had. */
 static void enforce_connectable(void)
 {
     Adapter *a = adapter();
     if (!a || demo || !a->powered) return;
-    if (!opt.allow && a->connectable) set_bool(a->path, IF_ADAPTER, "Connectable", 0, done_quiet, NULL);
+    if (!a->connectable != !opt.allow) set_bool(a->path, IF_ADAPTER, "Connectable", opt.allow, done_quiet, NULL);
 }
 
 /* ------------------------------------------------------------------ *
@@ -1228,6 +1236,17 @@ typedef struct {
 
 #define ASK_W 400
 
+/* BlueZ takes a PIN of 1 to 16 characters: a longer one failed the
+ * pairing, and the user was told the device had not paired. */
+#define PIN_MAX 16
+
+static int ask_ok(const Ask *a)
+{
+    if (!a->edit) return 1;
+    size_t n = strlen(w2k_edit_text(a->edit));
+    return n > 0 && n <= (size_t)(a->digits ? 6 : PIN_MAX);
+}
+
 static int ask_layout(Ask *a, int paint_h)
 {
     int y = para(0, F_UI, 58, 16, a->text_w, a->text, 0);
@@ -1259,7 +1278,7 @@ static void ask_paint(W2kWin *w, Drawable d)
         w2k_text(d, F_UI, 58, y + 4, t, C_GRAYTEXT);
     }
     if (a->edit) w2k_edit_draw(d, a->edit);
-    int ok = !a->edit || w2k_edit_text(a->edit)[0];
+    int ok = ask_ok(a);
     w2k_draw_pushbutton(d, &a->r1, a->b1, BS_DEFAULT | (a->down == 1 ? BS_PRESSED : 0) | (ok ? 0 : BS_DISABLED));
     if (a->b2) w2k_draw_pushbutton(d, &a->r2, a->b2, a->down == 2 ? BS_PRESSED : 0);
 }
@@ -1267,7 +1286,7 @@ static void ask_paint(W2kWin *w, Drawable d)
 static int ask_event(W2kWin *w, XEvent *e)
 {
     Ask *a = w->user;
-    int ok = !a->edit || w2k_edit_text(a->edit)[0];
+    int ok = ask_ok(a);
     /* A pairing question comes up on its own, over whatever is being
      * typed: for a moment it takes no keys or clicks at all, and Return
      * never says yes to it -- the Enter meant for another window used to
@@ -1306,8 +1325,8 @@ static int ask_event(W2kWin *w, XEvent *e)
             int n = XLookupString(&e->xkey, ch, sizeof ch, NULL, NULL);
             if (a->digits && n == 1 && isprint((unsigned char)ch[0]) && !isdigit((unsigned char)ch[0]))
                 return 1;
-            if (a->digits && n == 1 && isdigit((unsigned char)ch[0]) && strlen(w2k_edit_text(a->edit)) >= 6 &&
-                !w2k_edit_has_sel(a->edit))
+            if (n == 1 && isprint((unsigned char)ch[0]) &&
+                strlen(w2k_edit_text(a->edit)) >= (size_t)(a->digits ? 6 : PIN_MAX) && !w2k_edit_has_sel(a->edit))
                 return 1;
             if (w2k_edit_key(a->edit, &e->xkey)) { w2k_win_dirty(w); return 1; }
         }
@@ -1343,7 +1362,12 @@ static int ask(W2kWin *over, W2kWin **handle, const char *title, int icon, const
     w2k_win_center(w, over);
     dialog_hints(w, over);
     if (handle) *handle = w;
-    if (agent_mode) { w2k_sound_play(SND_NOTIFICATION); a.shown = w2k_now_ms(); }
+    /* Every question here is the agent's, one nobody asked for (the
+     * wizard answers its own in its page); the Bluetooth Devices window,
+     * standing in as the agent where none runs, used to take the Return
+     * meant for another window as a yes. */
+    a.shown = w2k_now_ms();
+    if (agent_mode) w2k_sound_play(SND_NOTIFICATION);
     int r = w2k_win_modal(w);
     if (handle) *handle = NULL;
     if (a.edit) {
@@ -1674,13 +1698,14 @@ static void dev_forget(W2kWin *over, const char *path_in)
     char path[128];
     snprintf(path, sizeof path, "%s", path_in);
     Dev *d = dev_find(path);
-    if (!d) return;
+    /* Already going: Delete, or the menu, asked a second time. */
+    if (!d || d->busy == BUSY_REMOVE) return;
     char text[400];
     snprintf(text, sizeof text, "Are you sure you want to remove %s?\n\n"
              "To use it with this computer again, you will have to add it again.", dev_name(d));
     if (w2k_msgbox(over, "Remove Bluetooth Device", text, MB_YESNO | MB_ICONQUESTION) != ID_YES) return;
     d = dev_find(path);
-    if (!d || !bus) return;
+    if (!d || !bus || d->busy == BUSY_REMOVE) return;
     DBusMessage *m = dbus_message_new_method_call(BLUEZ, d->adapter, IF_ADAPTER, "RemoveDevice");
     if (!m) return;
     const char *p = d->path;
@@ -2166,6 +2191,7 @@ static struct {
     W2kRect  oc[NOC], og[3];        /* the Options page's check boxes and groups */
     int      ov[NOC];
     int      odirty;
+    int      otouched[NOC];         /* boxes changed since the last Apply */
 } sh;
 
 #define SH_W 410
@@ -2173,14 +2199,28 @@ static struct {
 
 static void wizard(W2kWin *over);
 
+/* The boxes follow the radio and the settings, all but those changed and
+ * not yet applied: ticking one used to freeze the others, and OK then
+ * turned the radio back on after the tray (or the airplane key) had
+ * turned it off. */
 static void options_load(void)
 {
     Adapter *a = adapter();
-    sh.ov[OC_POWER] = a && a->powered;
-    sh.ov[OC_DISC]  = a && a->discoverable;
-    sh.ov[OC_ALLOW] = opt.allow;
-    sh.ov[OC_ALERT] = opt.alert;
-    sh.ov[OC_TRAY]  = opt.tray;
+    int v[NOC] = { 0 };
+    v[OC_POWER] = a && a->powered;
+    v[OC_DISC]  = a && a->discoverable;
+    v[OC_ALLOW] = opt.allow;
+    v[OC_ALERT] = opt.alert;
+    v[OC_TRAY]  = opt.tray;
+    for (int i = 0; i < NOC; i++)
+        if (!sh.otouched[i]) sh.ov[i] = v[i];
+}
+
+static void oc_toggle(int i)
+{
+    sh.ov[i] = !sh.ov[i];
+    sh.otouched[i] = 1;
+    sh.odirty = 1;
 }
 
 static int oc_enabled(int i)
@@ -2214,13 +2254,14 @@ static void options_apply(void)
 {
     Adapter *a = adapter();
     if (a && !demo) {
-        int on = sh.ov[OC_POWER];
+        int on = sh.otouched[OC_POWER] ? sh.ov[OC_POWER] : a->powered;
         pending_disc = -1;
         if (on != a->powered) set_power(a, on);
         /* A radio still coming on would refuse: wait for it. */
         if (on && !a->powered && sh.ov[OC_DISC]) pending_disc = 1;
-        else if (on && sh.ov[OC_DISC] != a->discoverable) set_discovery(a, sh.ov[OC_DISC]);
-        if (on && sh.ov[OC_ALLOW] != opt.allow)
+        else if (on && sh.otouched[OC_DISC] && sh.ov[OC_DISC] != a->discoverable) set_discovery(a, sh.ov[OC_DISC]);
+        /* (A radio that is off gets it when it comes on: see refresh.) */
+        if (on && a->powered && !sh.ov[OC_ALLOW] != !a->connectable)
             set_bool(a->path, IF_ADAPTER, "Connectable", sh.ov[OC_ALLOW], done_report,
                      sh.ov[OC_ALLOW] ? "let devices connect" : "stop devices connecting");
     }
@@ -2229,6 +2270,7 @@ static void options_apply(void)
     opt.tray  = sh.ov[OC_TRAY];
     opt_save();
     sh.odirty = 0;
+    memset(sh.otouched, 0, sizeof sh.otouched);
 }
 
 static const char *const oc_label[NOC] = {
@@ -2448,6 +2490,7 @@ static void sh_press(int b)
     case SH_DEFAULTS:
         sh.ov[OC_POWER] = 1; sh.ov[OC_DISC] = 0; sh.ov[OC_ALLOW] = 1;
         sh.ov[OC_ALERT] = 1; sh.ov[OC_TRAY] = 1;
+        for (int i = 0; i < NOC; i++) sh.otouched[i] = 1;
         sh.odirty = 1;
         break;
     case SH_HWPROPS: { Adapter *a = hw_selected(); if (a) { char p[64]; snprintf(p, sizeof p, "%s", a->path); adapter_properties(sh.w, p); } break; }
@@ -2461,16 +2504,21 @@ static int sh_mnemonic(XKeyEvent *k)
     char ch[4];
     if (XLookupString(k, ch, sizeof ch, NULL, NULL) != 1) return 0;
     int c = tolower((unsigned char)ch[0]);
+    /* A letter two buttons share (Remove and Properties, on the Devices
+     * page) presses neither, as in Windows: Alt+R, meant for Properties,
+     * used to ask to remove the device. */
+    int hit = 0, n = 0;
     for (int b = 1; b < NSH; b++) {
         const char *l = sh_label(b), *amp = strchr(l, '&');
-        if (sh_on_page(b) && sh_enabled(b) && amp && tolower((unsigned char)amp[1]) == c) { sh_press(b); return 1; }
+        if (sh_on_page(b) && amp && tolower((unsigned char)amp[1]) == c) { n++; if (sh_enabled(b) && !hit) hit = b; }
     }
+    if (n > 1) return 1;
+    if (hit) { sh_press(hit); return 1; }
     if (sh.tabs->sel == 1)
         for (int i = 0; i < NOC; i++) {
             const char *amp = strchr(oc_label[i], '&');
             if (amp && tolower((unsigned char)amp[1]) == c && oc_enabled(i)) {
-                sh.ov[i] = !sh.ov[i];
-                sh.odirty = 1;
+                oc_toggle(i);
                 return 1;
             }
         }
@@ -2496,7 +2544,7 @@ static int sh_event(W2kWin *w, XEvent *e)
         }
         if (page == 1 && b->button == Button1)
             for (int i = 0; i < NOC; i++)
-                if (oc_enabled(i) && w2k_rect_hit(&sh.oc[i], b->x, b->y)) { sh.ov[i] = !sh.ov[i]; sh.odirty = 1; }
+                if (oc_enabled(i) && w2k_rect_hit(&sh.oc[i], b->x, b->y)) oc_toggle(i);
         if (b->button == Button1)
             for (int i = 1; i < NSH; i++)
                 if (sh_on_page(i) && sh_enabled(i) && w2k_rect_hit(&sh.b[i], b->x, b->y)) sh.down = i;
@@ -2523,7 +2571,7 @@ static int sh_event(W2kWin *w, XEvent *e)
         if (w2k_tabs_key(sh.tabs, k)) { w2k_win_dirty(w); return 1; }
         if (k->state & Mod1Mask) { if (sh_mnemonic(k)) w2k_win_dirty(w); return 1; }
         if (page == 0) {
-            if (ks == XK_Delete && dv_selected(&sh.dv)) { sh_press(SH_REMOVE); return 1; }
+            if (ks == XK_Delete && sh_enabled(SH_REMOVE)) { sh_press(SH_REMOVE); return 1; }
             if (ks == XK_F2 && dv_selected(&sh.dv)) { dev_rename(sh.w, dv_selected(&sh.dv)->path); return 1; }
             if (ks == XK_F10 && (k->state & ShiftMask)) ks = XK_Menu, k->keycode = XKeysymToKeycode(w2k.dpy, XK_Menu);
             int was = sh.dv.focused;
@@ -2902,6 +2950,8 @@ static void wz_go(int page)
     if (wiz.w) w2k_win_dirty(wiz.w);
 }
 
+static int pin_fits(const char *t) { return t[0] && strlen(t) <= PIN_MAX; }
+
 static int wz_enabled(int b)
 {
     const Dev *d = dv_selected(&wiz.dv);
@@ -2912,14 +2962,14 @@ static int wz_enabled(int b)
         switch (wiz.page) {
         case WP_WELCOME: return wiz.ready;
         case WP_SEARCH:  return d && !dev_known(d);
-        case WP_PASSKEY: return (wiz.pk_mode != PK_DOC || w2k_edit_text(wiz.pk_doc)[0]) &&
-                                (wiz.pk_mode != PK_OWN || w2k_edit_text(wiz.pk_own)[0]);
+        case WP_PASSKEY: return (wiz.pk_mode != PK_DOC || pin_fits(w2k_edit_text(wiz.pk_doc))) &&
+                                (wiz.pk_mode != PK_OWN || pin_fits(w2k_edit_text(wiz.pk_own)));
         case WP_PAIR:    return 0;
         }
         return 1;
     case WB_CANCEL: return wiz.page != WP_DONE;
     case WB_AGAIN:  return !searching;
-    case WB_ENTER:  return w2k_edit_text(wiz.entry)[0] != 0;
+    case WB_ENTER:  return pin_fits(w2k_edit_text(wiz.entry));
     }
     return 1;
 }
@@ -3180,6 +3230,13 @@ static W2kEdit *wz_focused_edit(void)
     return NULL;
 }
 
+static void wz_pk_mode(int i)
+{
+    wiz.pk_mode = i;
+    wiz.pk_doc->focused = i == PK_DOC;
+    wiz.pk_own->focused = i == PK_OWN;
+}
+
 static int wz_event(W2kWin *w, XEvent *e)
 {
     switch (e->type) {
@@ -3190,11 +3247,7 @@ static int wz_event(W2kWin *w, XEvent *e)
             if (w2k_edit_press(wiz.pk_doc, b)) { wiz.pk_own->focused = 0; wiz.pk_mode = PK_DOC; w2k_win_dirty(w); return 1; }
             if (w2k_edit_press(wiz.pk_own, b)) { wiz.pk_doc->focused = 0; wiz.pk_mode = PK_OWN; w2k_win_dirty(w); return 1; }
             for (int i = 0; i < 4; i++)
-                if (w2k_rect_hit(&wiz.rb[i], b->x, b->y)) {
-                    wiz.pk_mode = i;
-                    wiz.pk_doc->focused = i == PK_DOC;
-                    wiz.pk_own->focused = i == PK_OWN;
-                }
+                if (w2k_rect_hit(&wiz.rb[i], b->x, b->y)) wz_pk_mode(i);
         }
         if (wiz.page == WP_PAIR && wz_on_page(WB_ENTER) && w2k_edit_press(wiz.entry, b)) { w2k_win_dirty(w); return 1; }
         if (wiz.page == WP_WELCOME && w2k_rect_hit(&wiz.cb_ready, b->x, b->y)) wiz.ready = !wiz.ready;
@@ -3231,17 +3284,32 @@ static int wz_event(W2kWin *w, XEvent *e)
             w2k_win_dirty(w);
             return 1;
         }
+        char ch[4];
+        int nch = XLookupString(k, ch, sizeof ch, NULL, NULL);
+        if (!(k->state & Mod1Mask) && ed && nch == 1 && isprint((unsigned char)ch[0]) &&
+            strlen(w2k_edit_text(ed)) >= PIN_MAX && !w2k_edit_has_sel(ed))
+            return 1;
         if (!(k->state & Mod1Mask) && ed && w2k_edit_key(ed, k)) { w2k_win_dirty(w); return 1; }
+        /* The passkey choices from the keyboard: their letters, and the
+         * arrows within the group. They could only be clicked, and the
+         * boxes beside them only reached with the mouse. */
+        if (wiz.page == WP_PASSKEY && (ks == XK_Up || ks == XK_Down)) {
+            int m = wiz.pk_mode + (ks == XK_Down ? 1 : -1);
+            if (m >= PK_AUTO && m <= PK_NONE) wz_pk_mode(m);
+            w2k_win_dirty(w);
+            return 1;
+        }
         if (wiz.page == WP_SEARCH && !(k->state & Mod1Mask) && !ed) {
             int was = wiz.dv.focused;
             wiz.dv.focused = 1;
             if (dv_key(&wiz.dv, k)) { w2k_win_dirty(w); return 1; }
             wiz.dv.focused = was;
         }
-        char ch[4];
-        if (XLookupString(k, ch, sizeof ch, NULL, NULL) == 1) {
+        if (nch == 1) {
             int c = tolower((unsigned char)ch[0]);
-            if (c == 'b' && wz_enabled(WB_BACK)) wz_press(WB_BACK);
+            const char *pk = wiz.page == WP_PASSKEY && c ? strchr("puld", c) : NULL;
+            if (pk) wz_pk_mode((int)(pk - "puld"));
+            else if (c == 'b' && wz_enabled(WB_BACK)) wz_press(WB_BACK);
             else if (c == 'n' && wz_enabled(WB_NEXT) && wiz.page != WP_DONE) wz_press(WB_NEXT);
             else if (c == 'm' && wiz.page == WP_WELCOME) wiz.ready = !wiz.ready;
             else if (c == 'a' && wiz.page == WP_SEARCH) { wiz.showall = !wiz.showall; model_dirty = 1; bt_kick(); }
@@ -3325,6 +3393,10 @@ static void wizard(W2kWin *over)
     w2k_add_timer(100, wz_tick, NULL);
     w2k_add_timer(w2k_caret_blink, wz_blink, NULL);
     int r = w2k_win_modal(wiz.w);
+    /* Closed with a scroll arrow held down, its repeat went on scrolling
+     * the window the wizard had freed. */
+    dv_release(&wiz.dv);
+    wiz.dv.sb.owner = NULL;
     w2k_del_timer(wz_tick, NULL);
     w2k_del_timer(wz_blink, NULL);
     search_stop();
@@ -3671,10 +3743,14 @@ static void refresh(void *unused)
         set_discovery(a, pending_disc);
         pending_disc = -1;
     }
+    static int was_on = -1;
+    int is_on = a && a->powered;
+    if (is_on && was_on == 0) enforce_connectable();
+    was_on = is_on;
     if (sh.w) {
         dv_fill(&sh.dv, dev_known);
         hw_fill();
-        if (!sh.odirty) options_load();
+        options_load();
         sh_empty_text();
         w2k_win_dirty(sh.w);
     }
