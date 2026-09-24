@@ -128,14 +128,23 @@ MAP = {
     "ICO_PROTON":        "w2k_unknown_9",
 }
 
+def deepest(im, size):
+    """The entry of `size` with the most colours, as RGBA, or None. An ICO
+    carries a 16-colour, a 256-colour and sometimes a black-and-white image
+    of each size; PIL's getimage() hands back whichever entry its size sort
+    put first, which is the shallowest one in these files (the info and
+    warning icons came out 1-bit), so the entry is chosen here."""
+    cands = [(i, e) for i, e in enumerate(im.ico.entry) if e.dim == size]
+    if not cands: return None
+    i = max(cands, key=lambda t: t[1].color_depth)[0]
+    return im.ico.frame(i).convert("RGBA")
+
 def best(im, size):
     """Highest-depth image at `size`, or the nearest size scaled (nearest)."""
-    sizes = im.ico.sizes()
-    if size in sizes:
-        # PIL returns the highest bit depth for a size by default.
-        return im.ico.getimage(size).convert("RGBA")
-    src = min(sizes, key=lambda s: abs(s[0] - size[0]))
-    return im.ico.getimage(src).convert("RGBA").resize(size, Image.NEAREST)
+    got = deepest(im, size)
+    if got is not None: return got
+    src = min(im.ico.sizes(), key=lambda s: abs(s[0] - size[0]))
+    return deepest(im, src).resize(size, Image.NEAREST)
 
 def c_array(name, img):
     """Deflated RGBA. Raw, the set is 220 KB of .rodata in every binary and
