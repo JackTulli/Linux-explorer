@@ -81,15 +81,26 @@ int w2k_run_timers(void) { return timers_run(); }
 static int timers_run(void)
 {
     long now = w2k_now_ms();
+    for (int i = 0; i < ntimers; i++) {
+        if (now < timers[i].due) continue;
+        void (*fn)(void *) = timers[i].fn;
+        void *user = timers[i].user;
+        timers[i].due = now + timers[i].ms;
+        fn(user);
+        /* A callback that removed itself has had the last timer moved into
+         * its slot, not looked at yet: look at it now. It used to be
+         * passed over, and when it was overdue its wait came out below
+         * zero -- read as "no timers" -- and the loop slept until the next
+         * X event. */
+        if (i < ntimers && (timers[i].fn != fn || timers[i].user != user)) i--;
+    }
+    /* The wait, from all of them once the callbacks have added and
+     * removed what they will. */
     int wait = -1;
     for (int i = 0; i < ntimers; i++) {
-        if (now >= timers[i].due) {
-            timers[i].due = now + timers[i].ms;
-            timers[i].fn(timers[i].user);
-            if (i >= ntimers) break;              /* the callback removed timers */
-        }
-        int d = (int)(timers[i].due - now);
-        if (wait < 0 || d < wait) wait = d;
+        long d = timers[i].due - now;
+        if (d < 0) d = 0;
+        if (wait < 0 || d < wait) wait = (int)d;
     }
     return wait < 0 ? -1 : wait < 5 ? 5 : wait;
 }

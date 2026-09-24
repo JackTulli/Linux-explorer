@@ -898,7 +898,9 @@ int w2k_file_properties_page(W2kWin *over, const char *path, int page)
     snprintf(p.dir, sizeof p.dir, "%s", path);
     char *slash = strrchr(p.dir, '/');
     if (slash && slash != p.dir) { *slash = 0; snprintf(p.file, sizeof p.file, "%s", slash + 1); }
-    else if (slash)              { p.dir[1] = 0; snprintf(p.file, sizeof p.file, "%s", slash + 1); }
+    /* A folder at the top ("/usr"): the name is taken before the folder
+     * is cut back to "/", which it used to be read from, empty. */
+    else if (slash)              { snprintf(p.file, sizeof p.file, "%.255s", slash + 1); p.dir[1] = 0; }
     else                         { snprintf(p.file, sizeof p.file, "%s", path); snprintf(p.dir, sizeof p.dir, "."); }
     if (!p.file[0]) return 0;
     measure(&p);
