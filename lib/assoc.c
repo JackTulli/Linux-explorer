@@ -125,10 +125,22 @@ void w2k_assoc_set(const char *cls, const char *cmd)
 const char *w2k_assoc_class_for(const char *path)
 {
     struct stat st;
-    if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) return "folder";
+    int have = stat(path, &st) == 0;
+    if (have && S_ISDIR(st.st_mode)) return "folder";
 
     const char *dot = strrchr(path, '.');
     if (!dot) return "other";
+    /* .ts is TypeScript far more often than an MPEG transport stream, and
+     * Explorer calls it a source file: a text file went to VLC. A stream
+     * is told by its sync byte, 0x47 at the start of every 188-byte
+     * packet. */
+    if (!strcasecmp(dot, ".ts")) {
+        unsigned char pk[189];
+        FILE *f = have && S_ISREG(st.st_mode) ? fopen(path, "rb") : NULL;   /* never a FIFO */
+        size_t got = f ? fread(pk, 1, sizeof pk, f) : 0;
+        if (f) fclose(f);
+        return got == sizeof pk && pk[0] == 0x47 && pk[188] == 0x47 ? "video" : "text";
+    }
     static const struct { const char *ext, *cls; } map[] = {
         { ".png","image" }, { ".jpg","image" }, { ".jpeg","image" }, { ".webp","image" },
         { ".jpe","image" }, { ".bmp","image" }, { ".dib","image" },
@@ -137,7 +149,7 @@ const char *w2k_assoc_class_for(const char *path)
         { ".mp4","video" }, { ".mkv","video" }, { ".avi","video" },
         { ".mov","video" }, { ".webm","video" }, { ".wmv","video" },
         { ".mpg","video" }, { ".mpeg","video" }, { ".m4v","video" },
-        { ".flv","video" }, { ".ogv","video" }, { ".ts","video" },
+        { ".flv","video" }, { ".ogv","video" },
         { ".mp3","audio" }, { ".flac","audio" }, { ".ogg","audio" },
         { ".wav","audio" }, { ".m4a","audio" }, { ".opus","audio" },
         { ".wma","audio" }, { ".aac","audio" },
@@ -210,12 +222,25 @@ int w2k_assoc_apply_folder_default(void)
         mkdir(parent, 0755);
         mkdir(dir, 0755);
         snprintf(path, sizeof path, "%s/l2kexplorer.desktop", dir);
+        /* Quoted as the spec asks, then escaped as any value is: a folder
+         * with a space in its name split the program's path in two, and
+         * xdg-open then opened folders with nothing at all. */
+        char q[2100], esc[4300];
+        size_t o = 0;
+        q[o++] = '"';
+        for (const char *c = exe; *c && o + 3 < sizeof q; c++) {
+            if (*c == '"' || *c == '`' || *c == '$' || *c == '\\') q[o++] = '\\';
+            q[o++] = *c;
+        }
+        q[o++] = '"';
+        q[o] = 0;
+        w2k_desktop_escape(q, esc, sizeof esc, 1);
         FILE *f = fopen(path, "w");
         if (!f) return 0;
         fprintf(f, "[Desktop Entry]\nType=Application\nName=Windows Explorer\n"
                    "Comment=Browse files and folders\nExec=%s %%f\nIcon=system-file-manager\n"
                    "Terminal=false\nCategories=System;FileTools;FileManager;\n"
-                   "MimeType=inode/directory;x-directory/normal;\nNoDisplay=false\n", exe);
+                   "MimeType=inode/directory;x-directory/normal;\nNoDisplay=false\n", esc);
         fclose(f);
         snprintf(desktop, sizeof desktop, "l2kexplorer.desktop");
     } else {

@@ -82,6 +82,10 @@ void w2k_input_apply(void)
     {
         int ev, err;
         int secs = w2k_monitor_off_min > 0 ? w2k_monitor_off_min * 60 : 0;
+        /* The protocol holds 16 bits (the screen saver's are signed): 20
+         * hours in the scheme wrapped round to 108 minutes of DPMS. The
+         * longest that fits both, about 9 hours, instead. */
+        if (secs > 32767) secs = 32767;
         if (DPMSQueryExtension(w2k.dpy, &ev, &err) && DPMSCapable(w2k.dpy)) {
             if (secs > 0) {
                 DPMSEnable(w2k.dpy);

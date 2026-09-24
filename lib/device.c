@@ -77,7 +77,9 @@ static void fill_common(W2kDevice *d,const char *sysfs,const char *name)
     snprintf(p,sizeof p,"%s/driver",sysfs);
     ssize_t z=readlink(p,target,sizeof target-1);
     if(z>0){target[z]=0;base_name(target,d->driver,sizeof d->driver);}
-    if(!d->driver[0]){snprintf(p,sizeof p,"%s/driver_override",sysfs);readfile(p,d->driver,sizeof d->driver);}
+    /* driver_override reads "(null)" when nothing is set: that is no driver,
+     * not one called "(null)" for Driver Details to look up. */
+    if(!d->driver[0]){snprintf(p,sizeof p,"%s/driver_override",sysfs);readfile(p,d->driver,sizeof d->driver);if(!strcmp(d->driver,"(null)"))d->driver[0]=0;}
     if(d->driver[0]){
         char dk[PATH_MAX];snprintf(dk,sizeof dk,"/var/lib/dkms/%s",d->driver);if(exists(dk)){d->is_dkms=1;struct stat st;if(stat(dk,&st)==0){struct tm*t=localtime(&st.st_mtime);if(t)strftime(d->driver_date,sizeof d->driver_date,"%Y-%m-%d",t);}}
         d->disabled=module_blacklisted(d->driver); if(d->disabled)cp(d->status,sizeof d->status,"This device is disabled.");
@@ -319,7 +321,7 @@ static void scan_tty(W2kDeviceSet *s)
 
 static void scan_power_sensors(W2kDeviceSet *s)
 {
-    DIR*dp=opendir("/sys/class/power_supply");if(dp){struct dirent*e;int ci=-1;while((e=readdir(dp))){if(e->d_name[0]=='.')continue;char p[PATH_MAX],type[64],cap[64],status[64],model[256];snprintf(p,sizeof p,"/sys/class/power_supply/%s",e->d_name);read_attr(p,"type",type,sizeof type);read_attr(p,"capacity",cap,sizeof cap);read_attr(p,"status",status,sizeof status);read_attr(p,"model_name",model,sizeof model);if(ci<0)ci=addcat(s,"Batteries and power","kded5");if(ci<0)break;W2kDevice*d=adddev(s,ci);if(!d)break;snprintf(d->name,sizeof d->name,"%s",model[0]?model:e->d_name);snprintf(d->description,sizeof d->description,"%s%s%s%s",type[0]?type:"Power supply",cap[0]?" — ":"",cap[0]?cap:"",status[0]?status:"");cp(d->location,sizeof d->location,e->d_name);cp(d->subsystem,sizeof d->subsystem,"Power");cp(d->icon,sizeof d->icon,"kded5");}closedir(dp);}
+    DIR*dp=opendir("/sys/class/power_supply");if(dp){struct dirent*e;int ci=-1;while((e=readdir(dp))){if(e->d_name[0]=='.')continue;char p[PATH_MAX],type[64],cap[64],status[64],model[256];snprintf(p,sizeof p,"/sys/class/power_supply/%s",e->d_name);read_attr(p,"type",type,sizeof type);read_attr(p,"capacity",cap,sizeof cap);read_attr(p,"status",status,sizeof status);read_attr(p,"model_name",model,sizeof model);if(ci<0)ci=addcat(s,"Batteries and power","kded5");if(ci<0)break;W2kDevice*d=adddev(s,ci);if(!d)break;snprintf(d->name,sizeof d->name,"%s",model[0]?model:e->d_name);snprintf(d->description,sizeof d->description,"%s%s%s%s%s%s",type[0]?type:"Power supply",cap[0]?" — ":"",cap,cap[0]?"%":"",status[0]?(cap[0]?", ":" — "):"",status);cp(d->location,sizeof d->location,e->d_name);cp(d->subsystem,sizeof d->subsystem,"Power");cp(d->icon,sizeof d->icon,"kded5");}closedir(dp);}
     dp=opendir("/sys/class/hwmon");if(dp){struct dirent*e;int ci=-1;while((e=readdir(dp))){if(e->d_name[0]=='.')continue;char p[PATH_MAX],name[256];snprintf(p,sizeof p,"/sys/class/hwmon/%s",e->d_name);read_attr(p,"name",name,sizeof name);if(ci<0)ci=addcat(s,"Sensors and hardware monitoring","computer");if(ci<0)break;W2kDevice*d=adddev(s,ci);if(!d)break;snprintf(d->name,sizeof d->name,"%s",name[0]?name:e->d_name);snprintf(d->description,sizeof d->description,"Hardware monitoring sensor %s",e->d_name);cp(d->location,sizeof d->location,e->d_name);cp(d->subsystem,sizeof d->subsystem,"hwmon");cp(d->icon,sizeof d->icon,"computer");}closedir(dp);}
 }
 

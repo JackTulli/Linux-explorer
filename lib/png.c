@@ -234,7 +234,9 @@ int w2k_png_save(const char *path, const unsigned char *rgba, int w, int h)
     if (!bytes) return 0;
     FILE *f = fopen(path, "wb");
     int ok = f && fwrite(bytes, 1, n, f) == n;
-    if (f) fclose(f);
+    /* The last block is only written at fclose: a full disk there used to
+     * leave a short PNG behind a program saying it had saved. */
+    if (f && fclose(f) != 0) ok = 0;
     free(bytes);
     return ok;
 }

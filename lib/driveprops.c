@@ -287,6 +287,10 @@ static void job_paint(W2kWin *w, Drawable d)
 
 static int job_event(W2kWin *w, XEvent *e) { (void)w; (void)e; return 1; }
 
+/* The box stays while the job runs: closed early, it left the program
+ * frozen waiting for a job that nobody could see. */
+static int job_closing(W2kWin *w) { (void)w; return 0; }
+
 /* argv run to its end with the box up; its output and status back. */
 static int run_waiting(W2kWin *over, const char *text, char *const argv[], char *out, int n)
 {
@@ -310,12 +314,22 @@ static int run_waiting(W2kWin *over, const char *text, char *const argv[], char 
     w->user = &j;
     w->paint = job_paint;
     w->event = job_event;
+    w->closing = job_closing;
     w2k_win_center(w, over);
     if (over) XSetTransientForHint(w2k.dpy, w->win, over->win);
     w2k_add_timer(120, job_tick, &j);
     w2k_win_modal(w);
     w2k_del_timer(job_tick, &j);
-    if (!j.done) { int st; waitpid(pid, &st, 0); j.status = WIFEXITED(st) ? WEXITSTATUS(st) : 128; job_read(&j); }
+    if (!j.done) {
+        /* Stopped before the job was (the program is being closed): read
+         * its output to the end while waiting, or a chatty e2fsck fills the
+         * pipe and the two wait on each other for good. */
+        fcntl(p[0], F_SETFL, fcntl(p[0], F_GETFL) & ~O_NONBLOCK);
+        job_read(&j);
+        int st;
+        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) ;
+        j.status = WIFEXITED(st) ? WEXITSTATUS(st) : 128;
+    }
     close(p[0]);
     snprintf(out, (size_t)n, "%s", j.out);
     return j.status;

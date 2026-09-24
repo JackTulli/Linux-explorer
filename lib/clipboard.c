@@ -106,6 +106,10 @@ char *w2k_clipboard_get(void)
 {
     ensure_atoms();
     if (clip) return w2k_strdup(clip);          /* we own it: no round trip */
+    /* We own it with a picture, which is not text. Asking ourselves stalled
+     * every paste for the whole deadline: the request waits in our own
+     * queue, which the loop below does not answer. */
+    if (clip_png) return NULL;
 
     XConvertSelection(w2k.dpy, a_clipboard, w2k.a_utf8, a_prop, owner_win,
                       CurrentTime);

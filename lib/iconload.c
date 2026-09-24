@@ -75,6 +75,9 @@ static unsigned char *decode_dib(const unsigned char *p, unsigned long len,
     if (bpp <= 8 && ncol == 0) ncol = 1UL << bpp;
     if (bpp > 8) ncol = 0;
     if (hdr < 40 || hdr > len) return NULL;
+    /* A colour table longer than the entry itself is a broken file; on a
+     * 32-bit build ncol * 4 would wrap below and slip past the size check. */
+    if (ncol > len / 4) return NULL;
 
     const unsigned char *pal = p + hdr;
     const unsigned char *xor_ = pal + ncol * 4;

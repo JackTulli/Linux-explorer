@@ -87,13 +87,25 @@ int w2k_ime_filter(XEvent *e)
 /* The key's text, as UTF-8. Through an input context when the locale
  * allows one (that is where Cyrillic, Greek and dead keys come from);
  * otherwise Latin-1 and Unicode keysyms are converted by hand. */
-static int key_text(XKeyEvent *k, char *buf, int n, KeySym *ks)
+static int key_text(XKeyEvent *k, char *buf, int n, KeySym *ks, char **big)
 {
     ic_point_at(k->window);
     *ks = NoSymbol;                     /* an input method's commit carries none */
+    *big = NULL;
     if (ic) {
         Status st;
         int r = Xutf8LookupString(ic, k, buf, n - 1, ks, &st);
+        /* A commit longer than buf was thrown away whole. Xlib keeps it and
+         * says how long it is: asked again with room enough, it hands it
+         * over. */
+        if (st == XBufferOverflow && r > 0 && (*big = malloc((size_t)r + 1))) {
+            r = Xutf8LookupString(ic, k, *big, r, ks, &st);
+            if (r < 0 || st == XBufferOverflow || st == XLookupKeySym || st == XLookupNone)
+                r = 0;
+            (*big)[r] = 0;
+            buf[0] = 0;
+            return r;
+        }
         if (st == XBufferOverflow || st == XLookupKeySym || st == XLookupNone) r = 0;
         if (r < 0) r = 0;
         buf[r] = 0;
@@ -284,6 +296,10 @@ static void rebuild_lines(W2kEdit *e)
         int brk = fit;
         for (int k = fit; k > 0; k--)
             if (e->text[i + k - 1] == ' ' || e->text[i + k - 1] == '\t') { brk = k; break; }
+        /* Never inside a character: a long unbroken Cyrillic or CJK word
+         * was cut mid-letter, both halves drawn as boxes. */
+        int at = char_start(e, i + brk);
+        brk = at > i ? at - i : char_next(e, i) - i;
         i += brk;
     }
     if (e->nvl == 0) vl_push(e, 0);
@@ -598,8 +614,10 @@ void w2k_edit_draw(Drawable d, W2kEdit *e)
         }
 
         /* Caret */
+        /* Where a line wraps, the end of one row is the start of the next:
+         * the caret belongs to the lower row only, not both. */
         if (e->focused && e->caret_on && e->caret >= ls && e->caret <= le &&
-            !w2k_edit_has_sel(e)) {
+            row_for_offset(e, e->caret) == i && !w2k_edit_has_sel(e)) {
             int cx = x + measure(e, ls, e->caret - ls);
             w2k_fill(d, cx, y, 1, lh, C_WINDOWTEXT);
         }
@@ -692,7 +710,8 @@ int w2k_edit_press(W2kEdit *e, XButtonEvent *b)
     /* Double-click selects a word. */
     static Time last;
     static int lastoff = -1;
-    if (off == lastoff && (int)(b->time - last) < w2k_dblclk_ms) {
+    static const W2kEdit *laste;       /* the same box, not just the same offset */
+    if (e == laste && off == lastoff && (int)(b->time - last) < w2k_dblclk_ms) {
         int a = off, z = off;
         while (a > 0 && is_word(e->text[a - 1])) a--;
         while (z < e->len && is_word(e->text[z])) z++;
@@ -705,6 +724,7 @@ int w2k_edit_press(W2kEdit *e, XButtonEvent *b)
         if (!(b->state & ShiftMask)) e->sel = off;
         last = b->time;
         lastoff = off;
+        laste = e;
     }
     if (e->owner) w2k_win_dirty(e->owner);
     return 1;
@@ -742,7 +762,14 @@ int w2k_edit_key(W2kEdit *e, XKeyEvent *k)
 {
     char buf[512];                      /* room for what an input method commits */
     KeySym ks;
-    int n = key_text(k, buf, sizeof buf, &ks);
+    char *big;
+    int n = key_text(k, buf, sizeof buf, &ks, &big);
+    if (big) {                          /* a long commit: text only, no key */
+        int took = n > 0 && (unsigned char)big[0] >= 32 && !(k->state & ControlMask);
+        if (took) w2k_edit_insert(e, big);
+        free(big);
+        return took;
+    }
 
     int ctrl = (k->state & ControlMask) != 0;
     int shift = (k->state & ShiftMask) != 0;

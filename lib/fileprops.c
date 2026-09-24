@@ -37,6 +37,7 @@ typedef struct {
     W2kRect  ok, cancel, apply, ro_box, hid_box;
     W2kRect  perm_box[9];           /* owner/group/other × r/w/x */
     int      down;
+    int      changed;               /* Apply or Change Icon... did something */
 
     char     dir[1024];             /* the containing directory */
     char     file[256];             /* the name as it is on disk now */
@@ -389,6 +390,7 @@ static void change_icon(Props *p)
         return;
     }
     p->icon = w2k_shortcut_icon(full);
+    p->changed = 1;
     w2k_win_dirty(p->w);
 }
 
@@ -562,6 +564,7 @@ static int apply(Props *p)
             fail(p, "set permissions");
             return 0;
         }
+        p->changed = 1;
         p->was_mode = p->mode & 07777;
         p->was_ro = !(p->mode & S_IWUSR);
         p->readonly = p->was_ro;
@@ -594,6 +597,7 @@ static int apply(Props *p)
                 fail(p, "rename this shortcut");
                 return 0;
             }
+            p->changed = 1;
             snprintf(base, sizeof base, "%.240s.desktop", want);
         } else snprintf(base, sizeof base, "%s", plain);
     }
@@ -631,6 +635,7 @@ static int apply(Props *p)
             return 0;
         }
         if (had) w2k_compat_set(to, &moved);
+        p->changed = 1;
         snprintf(p->file, sizeof p->file, "%s", target);
         p->was_hidden = p->hidden;
         w2k_edit_set(p->name, want);
@@ -642,6 +647,11 @@ static int apply(Props *p)
         snprintf(full, sizeof full, "%s/%s", p->dir, p->file);
     }
     if (lstat(full, &p->st) == 0) {
+        /* A link shows what it points at, as measure() does: its own 0777
+         * turned every box on after an Apply. */
+        struct stat ts;
+        if (S_ISLNK(p->st.st_mode) && stat(full, &ts) == 0)
+            p->st.st_mode = (p->st.st_mode & ~(mode_t)07777) | (ts.st_mode & 07777);
         p->was_ro = !(p->st.st_mode & S_IWUSR);
         p->was_mode = p->st.st_mode & 07777;
         p->mode = p->was_mode;
@@ -662,6 +672,7 @@ static int apply(Props *p)
                 return 0;
             }
             p->was_cc = now;
+            p->changed = 1;
         }
     }
     return 1;
@@ -918,5 +929,7 @@ int w2k_file_properties_page(W2kWin *over, const char *path, int page)
     if (p.runner) w2k_combo_free(p.runner);
     if (p.winver) w2k_combo_free(p.winver);
     w2k_tabs_free(p.tabs);
-    return r == ID_OK;
+    /* Apply and then Cancel has still renamed or changed the item: the
+     * callers refresh on 1, and showed the old name until F5. */
+    return r == ID_OK || p.changed;
 }

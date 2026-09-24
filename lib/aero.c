@@ -356,8 +356,10 @@ int w2k_aero_corner_inset(int row, int bottom)
 {
     skins();
     int n = cor_h;                      /* the art is n rows of n-pixel corners */
-    if (!cor_rgba || row < 0 || row >= n) return 0;
     int cell = bottom ? 2 : 0;          /* TL and BL */
+    /* A corner sheet from ~/.w2k/skins narrower than the cell was read
+     * past its end. */
+    if (!cor_rgba || row < 0 || row >= n || cor_w < (cell + 1) * n) return 0;
     /* The curve never steps back out as it goes in: each row's cut is at
      * most the row's before. */
     int best = n;

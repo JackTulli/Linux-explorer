@@ -80,7 +80,9 @@ int w2k_power_read(W2kPower *p)
                 full = read_num(dir, "charge_full", -1);
                 rate = read_num(dir, "current_now", -1);
             }
-            if (pct < 0 && now >= 0 && full > 0) pct = now * 100 / full;
+            /* In 64 bits: a 50 Wh pack reads 50,000,000, and times 100 or
+             * 60 that wrapped negative where long is 32 bits (i386, armhf). */
+            if (pct < 0 && now >= 0 && full > 0) pct = (long)((long long)now * 100 / full);
             if (pct < 0) continue;                 /* nothing to show */
             if (pct > 100) pct = 100;
             p->present = 1;
@@ -96,7 +98,7 @@ int w2k_power_read(W2kPower *p)
             if (rate > 0 && now >= 0 && full > 0) {
                 long left = p->charging == 1 ? full - now : now;
                 if (left < 0) left = 0;
-                p->minutes_left = (int)(left * 60 / rate);
+                p->minutes_left = (int)((long long)left * 60 / rate);
             }
         } else if (!strcmp(type, "Mains") || !strcmp(type, "USB") ||
                    !strncmp(type, "ADP", 3)) {

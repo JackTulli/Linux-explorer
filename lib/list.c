@@ -619,9 +619,12 @@ int w2k_list_press(W2kList *l, XButtonEvent *b)
 
     if (b->button == Button1 || b->button == Button3) {
         if (i >= 0) {
+            /* Which list too: row 0 of one list and then row 0 of
+             * another, clicked quickly, opened the second one's item. */
             static Time last;
             static int lasti = -1;
-            int dbl = (i == lasti && (int)(b->time - last) < w2k_dblclk_ms &&
+            static const W2kList *lastl;
+            int dbl = (l == lastl && i == lasti && (int)(b->time - last) < w2k_dblclk_ms &&
                        b->button == Button1);
 
             l->defer_single = -1;
@@ -660,6 +663,7 @@ int w2k_list_press(W2kList *l, XButtonEvent *b)
             } else {
                 last = b->time;
                 lasti = i;
+                lastl = l;
                 /* Folder Options can put the view into single-click mode.
                  * The item opens when the button comes back up over it --
                  * pressing alone must stay a selection, or dragging a file
@@ -770,6 +774,12 @@ int w2k_list_key(W2kList *l, XKeyEvent *k)
         stride = v.h / l->row_h;
         if (stride < 1) stride = 1;
     }
+    /* Page Up and Page Down move a screenful. vsb.page counts rows of
+     * icons in Large Icons and is 1 in List, so they moved one row's
+     * worth of items there, or a single item. */
+    int page = l->vsb.page;
+    if (l->mode == LV_ICON) page = stride * l->vsb.page;
+    else if (l->mode == LV_LIST) page = stride * (v.w / LIST_CW > 1 ? v.w / LIST_CW : 1);
 
     switch (ks) {
     case XK_Down:  i = (l->mode == LV_ICON) ? i + stride : i + 1; break;
@@ -778,8 +788,8 @@ int w2k_list_key(W2kList *l, XKeyEvent *k)
     case XK_Left:  i = (l->mode == LV_ICON) ? i - 1 : i - stride; break;
     case XK_Home:  i = 0; break;
     case XK_End:   i = l->n - 1; break;
-    case XK_Next:  i += l->vsb.page; break;
-    case XK_Prior: i -= l->vsb.page; break;
+    case XK_Next:  i += page; break;
+    case XK_Prior: i -= page; break;
     case XK_Return: case XK_KP_Enter:
         if (l->sel >= 0 && l->on_activate) l->on_activate(l->user, l->sel);
         return 1;

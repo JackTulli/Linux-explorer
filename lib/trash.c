@@ -144,6 +144,19 @@ int w2k_trash_move(const char *path)
     return w2k_trash_move_named(path, NULL, 0);
 }
 
+/* A copy made across file systems: created with the file's own mode, as
+ * lib/fileops.c's copier does. fopen gave 0644 whatever it had been, so
+ * a script came back from the bin not executable and a private file
+ * readable by everyone. */
+static FILE *create_like(const char *path, mode_t mode)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode & 07777);
+    if (fd < 0) return NULL;
+    FILE *f = fdopen(fd, "wb");
+    if (!f) { int e = errno; close(fd); unlink(path); errno = e; }
+    return f;
+}
+
 int w2k_trash_move_named(const char *path, char *name_out, int nout)
 {
     if (!path || !*path) return -1;
@@ -170,7 +183,8 @@ int w2k_trash_move_named(const char *path, char *name_out, int nout)
         else        snprintf(name, sizeof name, "%.480s.%d", base, k);
         snprintf(target, sizeof target, "%s/%s", files, name);
         snprintf(meta, sizeof meta, "%s/%s.trashinfo", info, name);
-        if (lstat(target, &st) == 0) continue;
+        struct stat probe;                  /* st stays the item's own */
+        if (lstat(target, &probe) == 0) continue;
         mfd = open(meta, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
         if (mfd < 0 && errno != EEXIST) return -1;
     }
@@ -208,7 +222,7 @@ int w2k_trash_move_named(const char *path, char *name_out, int nout)
 
         FILE *in = fopen(path, "rb");
         if (!in) FAIL();
-        FILE *out = fopen(target, "wb");
+        FILE *out = create_like(target, st.st_mode);
         if (!out) { fclose(in); FAIL(); }
         char buf[65536];
         size_t got;
@@ -218,6 +232,7 @@ int w2k_trash_move_named(const char *path, char *name_out, int nout)
         if (ferror(in)) ok = 0;
         fclose(in);
         if (fclose(out) != 0) ok = 0;
+        if (ok) chmod(target, st.st_mode & 07777);
         if (!ok) { unlink(target); FAIL(); }
         if (unlink(path) != 0) { unlink(target); FAIL(); }
     }
@@ -263,7 +278,7 @@ int w2k_trash_restore(const char *name)
         if (lstat(from, &sf) != 0 || !S_ISREG(sf.st_mode)) { errno = EXDEV; return -1; }
         FILE *in = fopen(from, "rb");
         if (!in) return -1;
-        FILE *out = fopen(dest, "wb");
+        FILE *out = create_like(dest, sf.st_mode);
         if (!out) { fclose(in); return -1; }
         char buf[65536];
         size_t got;
@@ -273,8 +288,11 @@ int w2k_trash_restore(const char *name)
         if (ferror(in)) ok = 0;
         fclose(in);
         if (fclose(out) != 0) ok = 0;
+        if (ok) chmod(dest, sf.st_mode & 07777);
         if (!ok) { unlink(dest); return -1; }
-        unlink(from);
+        /* The bin's copy must go, or it stays there with no record once
+         * the .trashinfo is deleted: back out rather than leave both. */
+        if (unlink(from) != 0) { int e = errno; unlink(dest); errno = e; return -1; }
     }
     unlink(meta);
     return 0;

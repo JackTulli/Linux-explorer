@@ -316,8 +316,11 @@ int w2k_fs_drives(W2kDrive *out, int max)
         int ok = !strncmp(mnt, "/media/", 7) || !strncmp(mnt, "/run/media/", 11) ||
                  !strncmp(mnt, "/mnt/", 5);
         if (!ok) continue;
-        /* /media/<user> itself is a folder of mounts, not a mount. */
-        if (user && (!strcmp(mnt + 7, user) || (!strncmp(mnt, "/run/media/", 11) && !strcmp(mnt + 11, user)))) continue;
+        /* /media/<user> itself is a folder of mounts, not a mount. Each
+         * test under its own prefix: /mnt/a is shorter than "/media/", and
+         * what lay past its end once hid it from My Computer. */
+        if (user && ((!strncmp(mnt, "/media/", 7) && !strcmp(mnt + 7, user)) ||
+                     (!strncmp(mnt, "/run/media/", 11) && !strcmp(mnt + 11, user)))) continue;
         /* \\040 for a space, from the kernel */
         char *p = mnt, *q = mnt;
         while (*p) {
