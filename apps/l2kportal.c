@@ -10,7 +10,10 @@
  * paths chosen here into ones the sandbox can open.
  *
  * One dialog at a time: a second request waits for the first to be
- * answered, as a second Open on Windows waits behind a modal one.
+ * answered, as a second Open on Windows waits behind a modal one. Each
+ * request is a Request object at the path the front end gave it, whose
+ * Close -- the program cancelled, or quit with the dialog up -- takes the
+ * dialog down.
  *
  * W2K_PORTAL_TEST=open|save|folder shows the dialog without D-Bus and
  * prints the uri chosen, for trying it by hand. */
@@ -29,7 +32,10 @@
 #define OBJ_PATH "/org/freedesktop/portal/desktop"
 #define IFACE    "org.freedesktop.impl.portal.FileChooser"
 
+/* 2 is "ended some other way": a request closed by its caller, or a uri
+ * that would not fit, as the GTK back end answers them. */
 enum { RESP_OK = 0, RESP_CANCEL = 1, RESP_ERROR = 2 };
+#define REQ_IFACE "org.freedesktop.impl.portal.Request"
 
 #define MAXFILTER 8          /* the dialog's own limit */
 #define PATLEN    63         /* ...and its pattern's */
@@ -49,6 +55,22 @@ typedef struct {
     int  nfiles;
     int  refused;                      /* ...and how many were not plain names */
 } Req;
+
+/* A request read off the bus and waiting for, or in, its dialog. The
+ * strings point into the call, which is kept until it is answered. */
+typedef struct Pending {
+    struct Pending *next;
+    DBusMessage *m;
+    int  kind;
+    const char *handle, *title;
+    unsigned long xid;
+    int  registered;                   /* a Request object is at `handle` */
+    int  closed;                       /* ...and its Close has been called */
+    Req  r;
+} Pending;
+
+static Pending *queue, *running;
+static int bus_lost;
 
 /* ------------------------------------------------------------------ *
  * Filters
@@ -330,6 +352,9 @@ static int choose(int kind, Req *r, const char *title, unsigned long parent, cha
          * dialog itself; asking here too put the question twice. */
         if (!w2k_file_dialog_opts(NULL, kind == K_SAVE, out, n, o.folder ? NULL : r->filters, &o))
             return 0;
+        /* Closed by the program while the dialog was up: what was picked
+         * is nobody's, and nothing is asked again. */
+        if (running && running->closed) return 0;
         struct stat st;
         if (kind != K_OPEN || o.folder || stat(out, &st) == 0) return 1;
         /* Open of a name that is not there, typed: said, as Windows says
@@ -341,6 +366,51 @@ static int choose(int kind, Req *r, const char *title, unsigned long parent, cha
                  base ? base + 1 : out);
         w2k_msgbox(NULL, title && *title ? title : "Open", msg, MB_OK | MB_ICONWARNING);
     }
+}
+
+/* ------------------------------------------------------------------ *
+ * The queue
+ * ------------------------------------------------------------------ */
+/* Answered, taken off the bus and let go. Once: the front end has no
+ * use for two replies, and the second was to a message already freed. */
+static void finish(DBusConnection *c, Pending *p, unsigned response,
+                   char uris[][4200], int n, int writable)
+{
+    send_reply(c, p->m, response, uris, n, writable);
+    if (p->registered) dbus_connection_unregister_object_path(c, p->handle);
+    dbus_message_unref(p->m);
+    free(p);
+}
+
+/* Requests closed while they waited their turn: answered "ended some
+ * other way", as the GTK back end answers a Close, and dropped. Not done
+ * in the Close handler itself, which is the object being dropped. */
+static void reap(DBusConnection *c)
+{
+    for (Pending **pp = &queue; *pp;) {
+        Pending *p = *pp;
+        if (!p->closed) { pp = &p->next; continue; }
+        *pp = p->next;
+        finish(c, p, RESP_ERROR, NULL, 0, 0);
+    }
+}
+
+/* org.freedesktop.impl.portal.Request at the request's own handle: the
+ * front end calls Close when the program cancels the request or quits.
+ * The dialog used to stay up for a program that had gone, and what the
+ * user then picked was thrown away. */
+static DBusHandlerResult request_handle(DBusConnection *c, DBusMessage *m, void *user)
+{
+    Pending *p = user;
+    if (!dbus_message_is_method_call(m, REQ_IFACE, "Close")) return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    DBusMessage *rep = dbus_message_new_method_return(m);
+    if (rep) { dbus_connection_send(c, rep, NULL); dbus_message_unref(rep); }
+    p->closed = 1;
+    /* The one on the screen: its dialog, and any question box over it,
+     * unwinds at the next turn of the loop we are inside. The portal has
+     * nothing else up, so "everything of ours" is that dialog. */
+    if (p == running) w2k_win_abort = 1;
+    return DBUS_HANDLER_RESULT_HANDLED;
 }
 
 static DBusHandlerResult handle(DBusConnection *c, DBusMessage *m, void *user)
@@ -364,50 +434,84 @@ static DBusHandlerResult handle(DBusConnection *c, DBusMessage *m, void *user)
     }
     if (dbus_message_iter_get_arg_type(&it) != DBUS_TYPE_ARRAY) goto bad;
 
-    static Req r;
-    memset(&r, 0, sizeof r);
-    read_options(&it, &r);
-    unsigned long xid = 0;
-    if (!strncmp(parent, "x11:", 4)) xid = strtoul(parent + 4, NULL, 16);
+    Pending *p = calloc(1, sizeof *p);
+    if (!p) return DBUS_HANDLER_RESULT_NEED_MEMORY;
+    read_options(&it, &p->r);
+    p->m = dbus_message_ref(m);
+    p->kind = kind;
+    p->handle = handle_path;
+    p->title = title;
+    if (!strncmp(parent, "x11:", 4)) p->xid = strtoul(parent + 4, NULL, 16);
 
+    /* Names the program sent that were not plain names: nothing is saved
+     * for it, and no dialog asks the user to pick a folder for them. */
+    if (kind == K_SAVEFILES && (p->r.refused || !p->r.nfiles)) {
+        finish(c, p, RESP_CANCEL, NULL, 0, 0);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    /* Queued, not shown: this is inside the bus's dispatch, which cannot
+     * be entered again from under a dialog, and a dialog may be up. */
+    static const DBusObjectPathVTable req_vt = { .message_function = request_handle };
+    DBusError err;
+    dbus_error_init(&err);
+    p->registered = dbus_connection_try_register_object_path(c, handle_path, &req_vt, p, &err);
+    dbus_error_free(&err);
+    Pending **pp = &queue;
+    while (*pp) pp = &(*pp)->next;
+    *pp = p;
+    return DBUS_HANDLER_RESULT_HANDLED;
+
+bad:;
+    DBusMessage *err_rep = dbus_message_new_error(m, DBUS_ERROR_INVALID_ARGS, "Unexpected arguments");
+    if (err_rep) { dbus_connection_send(c, err_rep, NULL); dbus_message_unref(err_rep); }
+    return DBUS_HANDLER_RESULT_HANDLED;
+}
+
+/* The bus, while a dialog is up: read from the toolkit's loop, so that a
+ * Close arrives while there is a dialog to close and the next request
+ * lines up behind it. */
+static void bus_cb(void *user)
+{
+    DBusConnection *c = user;
+    if (!dbus_connection_read_write_dispatch(c, 0)) { bus_lost = 1; w2k_win_abort = 1; return; }
+    while (dbus_connection_dispatch(c) == DBUS_DISPATCH_DATA_REMAINS) {}
+    reap(c);
+}
+
+/* Show the dialog a request asks for and answer it. */
+static void run(DBusConnection *c, Pending *p)
+{
     static char uris[MAXFILES][4200];
     char path[4096];
     int n = 0, ok = 1;
-    /* Names the program sent that were not plain names: nothing is saved
-     * for it, and no dialog asks the user to pick a folder for them. */
-    if (kind == K_SAVEFILES && (r.refused || !r.nfiles)) {
-        send_reply(c, m, RESP_CANCEL, NULL, 0, 0);
-        return DBUS_HANDLER_RESULT_HANDLED;
-    }
-    if (!choose(kind, &r, title, xid, path, sizeof path)) {
-        send_reply(c, m, RESP_CANCEL, NULL, 0, 0);
-        return DBUS_HANDLER_RESULT_HANDLED;
-    }
-    if (kind == K_SAVEFILES) {
+    unsigned resp = RESP_CANCEL;
+    Req *r = &p->r;
+    running = p;
+    if (!choose(p->kind, r, p->title, p->xid, path, sizeof path)) goto out;
+    if (p->kind == K_SAVEFILES) {
         /* The caption of the dialog just closed: the program's title, or
          * the dialog's own. "" was "(Untitled)". */
-        const char *cap = title && *title ? title : "Select Folder";
+        const char *cap = p->title && *p->title ? p->title : "Select Folder";
         /* Asked about before anything is replaced, as Save As asks: the
          * names were the program's, the user never saw them. Something
          * there that is not a plain file is not replaced at all. */
         char there[1200] = "";
         int nthere = 0;
-        for (int i = 0; i < r.nfiles; i++) {
+        for (int i = 0; i < r->nfiles; i++) {
             char full[4400];
-            snprintf(full, sizeof full, "%s%s%s", path, strcmp(path, "/") ? "/" : "", r.files[i]);
+            snprintf(full, sizeof full, "%s%s%s", path, strcmp(path, "/") ? "/" : "", r->files[i]);
             struct stat st;
             if (lstat(full, &st) != 0) continue;
             if (!S_ISREG(st.st_mode)) {
                 char msg[700];
                 snprintf(msg, sizeof msg, "'%.300s' in that folder is not a file and cannot "
-                         "be replaced.", r.files[i]);
+                         "be replaced.", r->files[i]);
                 w2k_msgbox(NULL, cap, msg, MB_OK | MB_ICONERROR);
-                send_reply(c, m, RESP_CANCEL, NULL, 0, 0);
-                return DBUS_HANDLER_RESULT_HANDLED;
+                goto out;
             }
             if (nthere++ < 8) {
                 size_t l = strlen(there);
-                snprintf(there + l, sizeof there - l, "\n    %.100s", r.files[i]);
+                snprintf(there + l, sizeof there - l, "\n    %.100s", r->files[i]);
             }
         }
         if (nthere) {
@@ -415,24 +519,22 @@ static DBusHandlerResult handle(DBusConnection *c, DBusMessage *m, void *user)
             snprintf(msg, sizeof msg, "%s already exist%s in %.300s:\n%s%s\n\nDo you want to "
                      "replace %s?", nthere == 1 ? "This file" : "These files", nthere == 1 ? "s" : "",
                      path, there, nthere > 8 ? "\n    ..." : "", nthere == 1 ? "it" : "them");
-            if (w2k_msgbox(NULL, cap, msg, MB_YESNO | MB_ICONWARNING) != ID_YES) {
-                send_reply(c, m, RESP_CANCEL, NULL, 0, 0);
-                return DBUS_HANDLER_RESULT_HANDLED;
-            }
+            if (w2k_msgbox(NULL, cap, msg, MB_YESNO | MB_ICONWARNING) != ID_YES) goto out;
         }
-        for (int i = 0; i < r.nfiles && ok; i++) {
+        for (int i = 0; i < r->nfiles && ok; i++) {
             char full[4400];
-            snprintf(full, sizeof full, "%s%s%s", path, strcmp(path, "/") ? "/" : "", r.files[i]);
+            snprintf(full, sizeof full, "%s%s%s", path, strcmp(path, "/") ? "/" : "", r->files[i]);
             ok = file_uri(full, uris[n++], sizeof uris[0]);
         }
     } else ok = file_uri(path, uris[n++], sizeof uris[0]);
-    send_reply(c, m, ok ? RESP_OK : RESP_ERROR, uris, n, kind == K_OPEN);
-    return DBUS_HANDLER_RESULT_HANDLED;
-
-bad:;
-    DBusMessage *err = dbus_message_new_error(m, DBUS_ERROR_INVALID_ARGS, "Unexpected arguments");
-    if (err) { dbus_connection_send(c, err, NULL); dbus_message_unref(err); }
-    return DBUS_HANDLER_RESULT_HANDLED;
+    resp = ok ? RESP_OK : RESP_ERROR;
+out:
+    /* Closed from the bus meanwhile: the flag took the dialog, or the
+     * question box over it, down, and what was picked is nobody's. The
+     * next dialog must stay up. */
+    if (p->closed || bus_lost) { resp = RESP_ERROR; w2k_win_abort = 0; }
+    finish(c, p, resp, uris, n, p->kind == K_OPEN);
+    running = NULL;
 }
 
 /* ------------------------------------------------------------------ *
@@ -481,6 +583,17 @@ int main(int argc, char **argv)
     dbus_connection_get_unix_fd(c, &dfd);
     for (;;) {
         while (dbus_connection_dispatch(c) == DBUS_DISPATCH_DATA_REMAINS) {}
+        reap(c);
+        /* The requests read: one dialog at a time, the bus read from under
+         * it (a Close; more requests, which line up behind). */
+        w2k_add_fd(dfd, bus_cb, c);
+        while (queue && !bus_lost) {
+            Pending *p = queue;
+            queue = p->next;
+            run(c, p);
+        }
+        w2k_del_fd(dfd);
+        if (bus_lost) break;
         /* Between dialogs nothing of ours is on the screen; what X sends
          * is read and let go, bar a change of scheme. */
         while (XPending(w2k.dpy)) {
