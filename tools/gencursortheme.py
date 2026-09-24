@@ -57,9 +57,13 @@ NAMES = {
 
 
 def read_scheme(directory):
-    """Role -> filename, from the .crs file cursor packs ship with."""
+    """Role (lower case) -> filename, from the .crs file cursor packs ship
+    with. user.crs -- the one Mouse Properties' Browse... writes -- first,
+    then the set's own for the roles it leaves out: Browse... writes only the
+    ten the desktop draws, and user.crs read alone left the busy, help,
+    crosshair, up-arrow and pen pointers out of the theme.
+    Role names are matched in any case, as lib/cursor.c matches them."""
     out = {}
-    # user.crs -- the one Mouse Properties' Browse... writes -- first.
     entries = sorted(os.listdir(directory),
                      key=lambda e: (e.lower() != "user.crs", e))
     for entry in entries:
@@ -71,34 +75,52 @@ def read_scheme(directory):
             for line in handle:
                 line = line.strip().lstrip("﻿")
                 if line.startswith("[") and line.endswith("]"):
-                    role = line[1:-1]
+                    role = line[1:-1].strip().lower()
                 elif line.lower().startswith("path=") and role:
                     out.setdefault(role, line[5:].strip())
                     role = None
-        break
+        if entry.lower() != "user.crs":
+            break                       # the set's own scheme: one is enough
     return out
 
 
 def decode_cur(path):
-    """First image of a .cur as (width, height, xhot, yhot, [ARGB...])."""
+    """First image of a .cur as (width, height, xhot, yhot, [ARGB...]), or
+    None. Checked as lib/cursor.c checks it: a file the desktop accepts --
+    Browse... lets the user pick any of those -- must not stop the
+    installer here with an IndexError."""
     data = open(path, "rb").read()
-    if len(data) < 22 or struct.unpack_from("<H", data, 4)[0] < 1:
+    n = len(data)
+    if n < 22 or struct.unpack_from("<H", data, 4)[0] < 1:
         return None
-    w, h, ncol, _, xhot, yhot, _, off = struct.unpack_from("<BBBBHHII", data, 6)
+    w, h, ncol, _, xhot, yhot, size, off = struct.unpack_from("<BBBBHHII", data, 6)
     w, h = w or 256, h or 256
+    if size < 40 or off + size > n:
+        return None
     hdr = struct.unpack_from("<I", data, off)[0]
+    if hdr < 40:
+        return None
     bw, bh, _planes, bpp = struct.unpack_from("<iihh", data, off + 4)
     ncol = struct.unpack_from("<I", data, off + 32)[0]
-    w, h = bw, bh // 2 if bh == 2 * h else h
+    w, h = bw, bh // 2 if bh == 2 * h else bh
+    if not (0 < w <= 256 and 0 < h <= 256):
+        return None
     if bpp not in (1, 4, 8, 24, 32):
         return None
     if not ncol and bpp <= 8:
         ncol = 1 << bpp
+    if ncol > 256:
+        return None
     pal = off + hdr
     xor = pal + ncol * 4
     xs = ((w * bpp + 31) // 32) * 4
     ms = ((w + 31) // 32) * 4
     and_ = xor + xs * h
+    if and_ > n:
+        return None
+    have_mask = and_ + ms * h <= n
+    if xhot >= w: xhot = 0
+    if yhot >= h: yhot = 0
 
     px = [0] * (w * h)
     invert = [False] * (w * h)
@@ -118,9 +140,12 @@ def decode_cur(path):
                 b, g, r = data[row + x * step: row + x * step + 3]
                 a = data[row + x * 4 + 3] if bpp == 32 else 255
             else:
+                if idx >= ncol:
+                    idx = 0
                 b, g, r = data[pal + idx * 4: pal + idx * 4 + 3]
                 a = 255
-            mbit = (data[and_ + (h - 1 - y) * ms + (x >> 3)] >> (7 - (x & 7))) & 1
+            mbit = have_mask and \
+                (data[and_ + (h - 1 - y) * ms + (x >> 3)] >> (7 - (x & 7))) & 1
             if mbit:
                 # Masked: transparent, or "invert the screen" when the colour
                 # bit is set too -- which X cannot do, so it becomes black
@@ -177,13 +202,16 @@ def main():
     scheme = read_scheme(src)
     made = 0
     for role, names in NAMES.items():
-        filename = scheme.get(role)
+        filename = scheme.get(role.lower())
         if not filename:
             continue
         path = os.path.join(src, filename)
         if not os.path.exists(path):
             continue
-        image = decode_cur(path)
+        try:
+            image = decode_cur(path)
+        except (IndexError, ValueError, struct.error, OSError):
+            image = None
         if not image:
             print(f"  skipped {role}: cannot decode {filename}")
             continue

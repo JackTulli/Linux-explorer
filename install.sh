@@ -250,11 +250,15 @@ MENU
     case "$_n" in
         2) preset standard ;;
         3) preset light ;;
+        # Each answer sets its part both ways: a yes used to leave a part
+        # that --no-looks or W2K_SETUP=light had taken out still out. (An
+        # if, not &&: a last no would end the script under set -e.)
         4) SETUP=custom
-           ask_yn "The XP, Vista, Windows 7 (Aero) and Modern looks, with their wallpapers, sounds, icon sets and themes for other programs?" y || WANT_LOOKS=0
-           ask_yn "Every built-in program -- Paint, Imaging, Snipping Tool, Character Map, Device Manager, Disk Management?" y || WANT_APPS=basic
-           ask_yn "Bluetooth Devices and Wi-Fi?" y || WANT_WIRELESS=0
-           ask_yn "Windows programs, through Wine and Proton Manager?" y || WANT_WINDOWS=0 ;;
+           WANT_LOOKS=0 WANT_APPS=basic WANT_WIRELESS=0 WANT_WINDOWS=0
+           if ask_yn "The XP, Vista, Windows 7 (Aero) and Modern looks, with their wallpapers, sounds, icon sets and themes for other programs?" y; then WANT_LOOKS=1; fi
+           if ask_yn "Every built-in program -- Paint, Imaging, Snipping Tool, Character Map, Device Manager, Disk Management?" y; then WANT_APPS=all; fi
+           if ask_yn "Bluetooth Devices and Wi-Fi?" y; then WANT_WIRELESS=1; fi
+           if ask_yn "Windows programs, through Wine and Proton Manager?" y; then WANT_WINDOWS=1; fi ;;
         *) preset full ;;
     esac
 }

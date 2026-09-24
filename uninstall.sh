@@ -231,8 +231,14 @@ if [ "$DO_USER" = 1 ]; then
     say "Taking ${USER:-this user}'s settings off"
 
     # The pointer: ours goes, and anything it was put in front of comes back.
-    del "$HOME/.icons/Windows2000" "$HOME/.local/share/icons/Windows2000" \
-        "$HOME/.local/share/icons/default"
+    del "$HOME/.icons/Windows2000" "$HOME/.local/share/icons/Windows2000"
+    # install.sh made ~/.local/share/icons/default only as a link to
+    # ~/.icons/default, and only where there was none: a folder of the
+    # user's own there went too.
+    if [ -L "$HOME/.local/share/icons/default" ] &&
+       [ "$(readlink "$HOME/.local/share/icons/default")" = "$HOME/.icons/default" ]; then
+        del "$HOME/.local/share/icons/default"
+    fi
     restore "$HOME/.icons/default/index.theme"
 
     # GTK and Qt were pointed at the classic theme and the Windows 2000
@@ -242,6 +248,26 @@ if [ "$DO_USER" = 1 ]; then
     for q in qt5ct qt6ct; do
         restore "$HOME/.config/$q/$q.conf"
         del "$HOME/.config/$q/colors/Windows2000.conf"
+    done
+    # The scheme's colours, which the desktop hands GTK 3 and 4 at every
+    # logon: its own file, and the import it added to the user's gtk.css.
+    # Left behind, every GTK program kept the Windows 2000 colours after
+    # the uninstall. A gtk.css with nothing else in it was the desktop's.
+    cfg=${XDG_CONFIG_HOME:-$HOME/.config}
+    for g in gtk-3.0 gtk-4.0; do
+        del "$cfg/$g/w2k-colors.css"
+        css=$cfg/$g/gtk.css
+        if [ -f "$css" ] && grep -q 'w2k-colors\.css' "$css" 2>/dev/null; then
+            echo "  ~ $css (the desktop's colours taken out)"
+            if [ "$DRY" != 1 ]; then
+                tmp=$(mktemp)
+                grep -v -x -F -e "/* Linux 2000: the desktop's colours, kept in w2k-colors.css. */" \
+                    -e '@import url("w2k-colors.css");' "$css" > "$tmp" || true
+                if grep -q '[^[:space:]]' "$tmp"; then cat "$tmp" > "$css"; else rm -f "$css"; fi
+                rm -f "$tmp"
+            fi
+            n_gone=$((n_gone + 1))
+        fi
     done
 
     # Explorer as the folder handler, and the entry it wrote for itself.
@@ -275,9 +301,18 @@ if [ "$DO_USER" = 1 ]; then
         del "$HOME/.themes/Chicago95" "$HOME/.themes/Windows-7" \
             "$HOME/.themes/Windows Vista"
         for d in "$HOME"/.themes/"Windows XP"*; do del "$d"; done
+        # (Not ~/.icons/Chicago95: fetch-themes.sh never puts it there, so
+        # one there is the user's own.)
         del "$HOME/.local/share/icons/Chicago95" "$HOME/.local/share/icons/Windows XP" \
-            "$HOME/.local/share/icons/Windows-7" "$HOME/.icons/Chicago95"
+            "$HOME/.local/share/icons/Windows-7"
         del "$HOME/.config/Kvantum/Windows7Kvantum"
+        # And Kvantum's own setting, which the Windows 7 look pointed at it.
+        kv=$cfg/Kvantum/kvantum.kvconfig
+        if [ -f "$kv" ] && grep -qx 'theme=Windows7Kvantum' "$kv" 2>/dev/null; then
+            echo "  ~ $kv (the Windows 7 theme taken out)"
+            [ "$DRY" = 1 ] || sed -i '/^theme=Windows7Kvantum$/d' "$kv"
+            n_gone=$((n_gone + 1))
+        fi
     fi
 
     # Everything the desktop itself keeps: schemes, pinned items, cursors,

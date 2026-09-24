@@ -55,7 +55,9 @@ if command -v apt-get >/dev/null 2>&1; then
     apt-get update
     apt-get install -y git ca-certificates curl
 elif command -v dnf >/dev/null 2>&1; then dnf install -y git curl
-elif command -v pacman >/dev/null 2>&1; then pacman -Sy --needed --noconfirm git curl
+# -Syu, never -Sy: git and curl from a refreshed database on a system that
+# was not is the partial upgrade Arch warns about (install.sh says the same).
+elif command -v pacman >/dev/null 2>&1; then pacman -Syu --needed --noconfirm git curl
 elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive install git curl
 elif command -v apk >/dev/null 2>&1; then apk add git curl
 elif command -v xbps-install >/dev/null 2>&1; then xbps-install -Sy git curl
