@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <net/if.h>
 #include <signal.h>
 
 #define MAX_CONN 16
@@ -36,6 +37,7 @@ typedef struct {
     char desc[160];             /* the adapter, as Windows names it */
     int  wireless;
     int  up, carrier;
+    int  nm;                    /* NetworkManager's state for it (100 connected), -1 */
     long speed_mbps;            /* -1 when the driver does not say */
     unsigned long rx, tx;       /* packets */
     char ssid[80];              /* wireless: the network joined */
@@ -57,6 +59,7 @@ static struct {
     Conn          conn[MAX_CONN];
     int           nconn;
     int           have_nmcli;
+    int           ident_link;   /* the pane's Network Identification line, -1 */
 } nw;
 
 /* ------------------------------------------------------------------ *
@@ -307,11 +310,27 @@ static time_t connected_since(Conn *c)
     return time(NULL);
 }
 
+/* NetworkManager's state for the adapter: 20 unavailable (no cable),
+ * 30 disconnected, 100 connected, 120 failed... -1 when it does not say. */
+static int nm_state(const Conn *c)
+{
+    if (!nw.have_nmcli) return -1;
+    char *argv[] = { "nmcli", "-g", "GENERAL.STATE", "dev", "show", (char *)c->ifname, NULL };
+    char out[128];
+    if (run_capture(argv, out, sizeof out) != 0 || out[0] < '0' || out[0] > '9') return -1;
+    return atoi(out);
+}
+
 static void refresh_stats(Conn *c)
 {
     char p[300], v[64];
-    snprintf(p, sizeof p, "/sys/class/net/%s/operstate", c->ifname);
-    c->up = read_line(p, v, sizeof v) && !strcmp(v, "up");
+    /* Enabled is the adapter being up, cable or not: operstate says "down"
+     * for an unplugged cable, which showed as Disabled and offered an
+     * Enable that failed. NetworkManager's own disconnect leaves the link
+     * up, so its word counts too: disconnected is what Disable does. */
+    snprintf(p, sizeof p, "/sys/class/net/%s/flags", c->ifname);
+    c->up = read_line(p, v, sizeof v) && (strtoul(v, NULL, 16) & IFF_UP) &&
+            c->nm != 30 && c->nm != 110 && c->nm != 120;
     snprintf(p, sizeof p, "/sys/class/net/%s/carrier", c->ifname);
     c->carrier = read_line(p, v, sizeof v) && v[0] == '1';
     snprintf(p, sizeof p, "/sys/class/net/%s/speed", c->ifname);
@@ -364,6 +383,7 @@ static void scan_adapters(void)
         if (k == 1) snprintf(c->label, sizeof c->label, "%s", base);
         else        snprintf(c->label, sizeof c->label, "%s %d", base, k);
         describe(c);
+        c->nm = nm_state(c);
         refresh_stats(c);
         if (c->wireless) wireless_state(c);
     }
@@ -399,6 +419,7 @@ static void pane_fill(int idx)
 {
     W2kFolderWin *f = nw.fw;
     w2k_folderwin_pane_clear(f);
+    nw.ident_link = -1;
     if (idx == 0) {
         w2k_folderwin_pane_add(f, FW_BOLD, "Make New Connection");
         w2k_folderwin_pane_add(f, FW_BLANK, NULL);
@@ -446,6 +467,7 @@ static void pane_fill(int idx)
             "To see the status of a wireless connection and the networks in "
             "range, open its icon.");
         w2k_folderwin_pane_add(f, FW_BLANK, NULL);
+        nw.ident_link = f->nlines;
         w2k_folderwin_pane_add(f, FW_LINK, "Network Identification");
         char buf[40];
         snprintf(buf, sizeof buf, "%d object(s)", nw.nconn + 1);
@@ -495,6 +517,7 @@ static StatusDlg *sd_active;
  * ------------------------------------------------------------------ */
 typedef struct {
     StatusDlg *sd;                /* NULL once the dialog has closed */
+    Conn *c;                      /* the adapter it works on */
     pid_t pid;
     int   fd, len;
     char  out[4096];
@@ -503,7 +526,12 @@ typedef struct {
 } Job;
 static Job job = { .pid = -1, .fd = -1 };
 
-static int job_busy(const StatusDlg *sd) { return job.pid > 0 && job.sd == sd; }
+/* A job whose dialog has closed still holds the buttons of the next one:
+ * they used to look ready and do nothing, as only one runs at a time. */
+static int job_busy(const StatusDlg *sd) { return job.pid > 0 && (job.sd == sd || !job.sd); }
+
+static void job_orphaned(const Job *j, int rc);
+static void report(W2kWin *over, const char *title, const char *out);
 
 static void job_io(void *u)
 {
@@ -529,6 +557,7 @@ static void job_io(void *u)
     job.fd = -1;
     if (j.sd && j.done) j.done(j.sd, rc, j.out);
     if (j.sd) w2k_win_dirty(j.sd->win);
+    else job_orphaned(&j, rc);
 }
 
 /* Start argv beside the dialog; `input`, when given, is written to its
@@ -537,14 +566,18 @@ static void job_io(void *u)
 static int job_start(StatusDlg *sd, char *const argv[], const char *input, const char *what,
                      void (*done)(StatusDlg *, int, const char *))
 {
-    if (job.pid > 0) return 0;
+    if (job.pid > 0) {
+        report(sd->win, sd->c->label, "Another operation is still in progress. Try again when it has finished.");
+        return 0;
+    }
     int out[2], in[2] = { -1, -1 };
-    if (pipe(out) < 0) return 0;
-    if (input && pipe(in) < 0) { close(out[0]); close(out[1]); return 0; }
+    if (pipe(out) < 0) { report(sd->win, sd->c->label, NULL); return 0; }
+    if (input && pipe(in) < 0) { close(out[0]); close(out[1]); report(sd->win, sd->c->label, NULL); return 0; }
     pid_t p = fork();
     if (p < 0) {
         close(out[0]); close(out[1]);
         if (input) { close(in[0]); close(in[1]); }
+        report(sd->win, sd->c->label, NULL);
         return 0;
     }
     if (p == 0) {
@@ -568,6 +601,7 @@ static int job_start(StatusDlg *sd, char *const argv[], const char *input, const
     }
     memset(&job, 0, sizeof job);
     job.sd = sd;
+    job.c = sd->c;
     job.pid = p;
     job.fd = out[0];
     job.done = done;
@@ -770,7 +804,7 @@ static void status_tick(void *u)
 static void report(W2kWin *over, const char *title, const char *out)
 {
     char msg[1200];
-    snprintf(msg, sizeof msg, "%s", out && out[0] ? out : "The command failed.");
+    snprintf(msg, sizeof msg, "%.*s", (int)sizeof msg - 1, out && out[0] ? out : "The command failed.");
     w2k_msgbox(over, title, msg, MB_OK | MB_ICONERROR);
 }
 
@@ -778,11 +812,28 @@ static void report(W2kWin *over, const char *title, const char *out)
 static void conn_done(StatusDlg *sd, int rc, const char *out)
 {
     if (rc != 0) report(sd->win, sd->c->label, out);
+    sd->c->nm = nm_state(sd->c);
     refresh_stats(sd->c);
     if (sd->c->wireless) wireless_state(sd->c);
     sd->c->since = connected_since(sd->c);
     if (sd->scanned) nets_scan(sd, 0);
     sd->dirty_conn = 1;
+}
+
+/* A job that outlived its dialog: what it came to still reaches the user
+ * and the folder. A failed connect (a wrong key) used to go unsaid, and
+ * the folder kept showing the adapter as it was before. */
+static void job_orphaned(const Job *j, int rc)
+{
+    if (sd_active) w2k_win_dirty(sd_active->win);       /* its buttons are free again */
+    if (!j->c || j->done != conn_done) return;          /* a scan: nobody is waiting for it */
+    if (rc != 0) report(sd_active ? sd_active->win : nw.win, j->c->label, j->out);
+    j->c->nm = nm_state(j->c);
+    refresh_stats(j->c);
+    if (j->c->wireless) wireless_state(j->c);
+    j->c->since = connected_since(j->c);
+    pane_fill(nw.fw->list->sel);
+    w2k_win_dirty(nw.win);
 }
 
 static void do_toggle(StatusDlg *sd)
@@ -866,6 +917,13 @@ static int status_event(W2kWin *w, XEvent *e)
     case ButtonPress: {
         int x = e->xbutton.x, y = e->xbutton.y;
         if (w2k_tabs_press(sd->tabs, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        /* Only the left button presses a button: a wheel notch over
+         * Disable (a press and a release on the spot) used to take the
+         * network down, and one over Connect joined the network. */
+        if (e->xbutton.button != Button1) {
+            if (sd->tabs->sel == 1 && w2k_list_press(sd->nets, &e->xbutton)) w2k_win_dirty(w);
+            return 1;
+        }
         if (sd->tabs->sel == 0) {
             if (w2k_rect_hit(&sd->props, x, y)) sd->down = 1;
             else if (w2k_rect_hit(&sd->disable, x, y)) sd->down = 2;
@@ -882,6 +940,10 @@ static int status_event(W2kWin *w, XEvent *e)
         return 1;
     }
     case ButtonRelease: {
+        if (e->xbutton.button != Button1) {
+            if (sd->tabs->sel == 1) w2k_list_release(sd->nets, &e->xbutton);
+            return 1;
+        }
         int b = sd->down, x = e->xbutton.x, y = e->xbutton.y;
         sd->down = 0;
         if (sd->tabs->sel == 1) w2k_list_release(sd->nets, &e->xbutton);
@@ -912,6 +974,23 @@ static int status_event(W2kWin *w, XEvent *e)
             w2k_win_dirty(w);
             return 1;
         }
+        /* The underlined letters: the buttons could only be clicked. With
+         * the network list to type in, the Alt key is wanted on its page;
+         * of two buttons sharing a letter, the first that can be used. */
+        if (e->xkey.state & ControlMask) return 1;
+        if (sd->tabs->sel == 1 && !(e->xkey.state & Mod1Mask)) return 1;
+        int busy = job_busy(sd);
+        if (sd->tabs->sel == 0) {
+            if (ks == XK_p) do_properties(sd);
+            else if (ks == (sd->c->up ? XK_d : XK_e)) { if (!busy) do_toggle(sd); }
+            else if (ks == XK_c) w2k_win_close(w, ID_OK);
+        } else {
+            if (ks == XK_r) { if (!busy) nets_scan(sd, 1); }
+            else if (ks == XK_c && !busy && sd->nets->sel >= 0) do_connect(sd);
+            else if (ks == XK_i) { if (!busy && sd->c->ssid[0]) do_disconnect(sd); }
+            else if (ks == XK_c) w2k_win_close(w, ID_OK);
+        }
+        w2k_win_dirty(w);
         return 1;
     }
     }
@@ -923,6 +1002,7 @@ static void open_status(Conn *c)
     StatusDlg sd = { 0 };
     sd.c = c;
     c->since = connected_since(c);
+    c->nm = nm_state(c);
     refresh_stats(c);
     if (c->wireless) wireless_state(c);
 
@@ -969,6 +1049,9 @@ static void open_status(Conn *c)
                     PropModeReplace, (unsigned char *)&t, 1);
 
     w2k_add_timer(1000, status_tick, &sd);
+    /* Reopened while its last job still runs: this dialog shows it, and
+     * gets what it comes to. */
+    if (job.pid > 0 && !job.sd && job.c == c) job.sd = &sd;
     sd_active = &sd;
     w2k_win_modal(w);
     sd_active = NULL;
@@ -1033,6 +1116,9 @@ static void network_identification(void)
 static void command(void *u, int id)
 {
     (void)u;
+    /* A pane link arrives as FW_LAST + its line: the link is the ninth
+     * line, and clicking it used to do nothing (FW_LAST + 0 was asked). */
+    if (nw.ident_link >= 0 && id == FW_LAST + nw.ident_link) { network_identification(); return; }
     switch (id) {
     case FW_OPEN:       open_item(nw.fw->list->sel); break;
     case FW_REFRESH:    rescan(); break;
@@ -1041,7 +1127,6 @@ static void command(void *u, int id)
         if (i > 0 && i <= nw.nconn) open_status(&nw.conn[i - 1]);
         break;
     }
-    case FW_LAST + 0:   network_identification(); break;
     case FW_LAST + 10:  network_identification(); break;
     }
 }
@@ -1086,7 +1171,11 @@ static int event(W2kWin *w, XEvent *e)
     if (e->type == ButtonPress && e->xbutton.button == 3) {
         int i = w2k_list_hit(nw.fw->list, e->xbutton.x, e->xbutton.y);
         if (i > 0) {
-            nw.fw->list->sel = i;
+            /* The one row clicked is the selection: the row left-clicked
+             * before used to stay highlighted beside it. */
+            W2kList *l = nw.fw->list;
+            for (int k = 0; k < l->n; k++) l->items[k].selected = k == i;
+            l->sel = i;
             pane_fill(i);
             W2kMenu *m = w2k_menu_new();
             w2k_menu_item(m, FW_OPEN, "&Status", NULL, ICO_NONE);
