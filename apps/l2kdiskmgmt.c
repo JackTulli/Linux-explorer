@@ -53,8 +53,10 @@ typedef struct {
     int rm, ro, rom, logsec;
     int index;                            /* Disk 0, 1... and CD-ROM 0, 1... apart */
     int wholefs;                          /* a file system straight on the disk */
-    char fstype[32], label[80], mount[256];
+    char fstype[32], label[80], mount[256], uuid[64];
     unsigned long long avail;
+    int busy;                             /* the running system uses that file system */
+    char why[200];
     Part part[MAX_PARTS];
     int nparts;
 } Disk;
@@ -212,6 +214,24 @@ static void set_busy(Part *p, const char *why)
     snprintf(p->why, sizeof p->why, "%s", why);
 }
 
+/* A disk with a file system straight on it (a VM's or a cloud volume's
+ * /dev/vdb), which is looked after as a partition is. */
+static Disk *wholefs_by_path(const char *path)
+{
+    char real[PATH_MAX];
+    if (!realpath(path, real)) return NULL;
+    for (int i = 0; i < ndisks; i++)
+        if (disks[i].wholefs && !disks[i].rom && !strcmp(disks[i].path, real)) return &disks[i];
+    return NULL;
+}
+
+static void set_disk_busy(Disk *d, const char *why)
+{
+    if (d->busy) return;
+    d->busy = 1;
+    snprintf(d->why, sizeof d->why, "%s", why);
+}
+
 /* What the running system has of each partition. "Busy" was a mount at /,
  * /boot or /usr, read from lsblk's single mount point, so the EFI System
  * Partition at /boot/efi, the second disk of a btrfs RAID or a ZFS pool
@@ -223,15 +243,19 @@ static void set_busy(Part *p, const char *why)
  *   - held open exclusively with no mount at all (a RAID, btrfs or ZFS
  *     member), as far as root can tell;
  *   - and, protected as Windows protects them, the EFI System, Microsoft
- *     Reserved, BIOS boot and recovery partitions of a fixed disk. */
+ *     Reserved, BIOS boot and recovery partitions of a fixed disk.
+ * A file system straight on a disk is asked the same: it was never
+ * looked at, and one mounted at /data from fstab was unmounted and
+ * formatted where the same on a partition was refused. */
 static void in_use(void)
 {
     const char *fake = getenv("W2K_FAKE_LSBLK");
     if (fake && *fake) return;           /* a picture's disks are not this machine's */
     char *line = NULL;
     size_t cap = 0;
-    static int any_mount[MAX_DISKS][MAX_PARTS];
+    static int any_mount[MAX_DISKS][MAX_PARTS], disk_mount[MAX_DISKS];
     memset(any_mount, 0, sizeof any_mount);
+    memset(disk_mount, 0, sizeof disk_mount);
     FILE *f = fopen("/proc/self/mountinfo", "r");
     while (f && getline(&line, &cap, f) > 0) {
         /* id parent maj:min root mountpoint options... - type source super */
@@ -243,17 +267,20 @@ static void in_use(void)
         unoctal(mp);
         unoctal(src);
         Part *p = part_by_path(src);
-        if (!p) continue;
+        Disk *wd = p ? NULL : wholefs_by_path(src);
+        if (!p && !wd) continue;
         int di = -1, pj = -1;
-        for (int i = 0; i < ndisks && di < 0; i++)
+        for (int i = 0; p && i < ndisks && di < 0; i++)
             if (p >= disks[i].part && p < disks[i].part + MAX_PARTS) { di = i; pj = (int)(p - disks[i].part); }
         if (di >= 0) any_mount[di][pj] = 1;
+        if (wd) disk_mount[wd - disks] = 1;
         if (!strncmp(mp, "/media/", 7) || !strncmp(mp, "/run/media/", 11) ||
             !strcmp(mp, "/mnt") || !strncmp(mp, "/mnt/", 5))
             continue;                    /* the user's: Format and Delete unmount it */
         char why[200];
         snprintf(why, sizeof why, "It is mounted at %.150s, as part of the running system.", mp);
-        set_busy(p, why);
+        if (p) set_busy(p, why);
+        else set_disk_busy(wd, why);
     }
     if (f) fclose(f);
     f = fopen("/proc/swaps", "r");
@@ -262,7 +289,9 @@ static void in_use(void)
         if (line[0] != '/' || sscanf(line, "%1023s", dev) != 1) continue;
         unoctal(dev);
         Part *p = part_by_path(dev);
+        Disk *wd = p ? NULL : wholefs_by_path(dev);
         if (p) set_busy(p, "It is in use as the page file (swap).");
+        else if (wd) set_disk_busy(wd, "It is in use as the page file (swap).");
     }
     if (f) fclose(f);
     f = fopen("/etc/fstab", "r");
@@ -285,9 +314,27 @@ static void in_use(void)
                             : spec[0] == '/' && part_by_path(spec) == p;
                 if (hit) set_busy(p, "It is listed in /etc/fstab, among the file systems the computer mounts when it starts.");
             }
+        for (int i = 0; i < ndisks; i++) {
+            Disk *d = &disks[i];
+            if (!d->wholefs || d->rom) continue;
+            int hit = v ? (!strcasecmp(spec, "UUID") && d->uuid[0] && !strcasecmp(v, d->uuid)) ||
+                          (!strcasecmp(spec, "LABEL") && d->label[0] && !strcmp(v, d->label))
+                        : spec[0] == '/' && wholefs_by_path(spec) == d;
+            if (hit) set_disk_busy(d, "It is listed in /etc/fstab, among the file systems the computer mounts when it starts.");
+        }
     }
     if (f) fclose(f);
     free(line);
+    for (int i = 0; i < ndisks; i++) {
+        Disk *d = &disks[i];
+        if (d->wholefs && !d->rom && !d->busy && !disk_mount[i] && geteuid() == 0) {
+            int fd = open(d->path, O_RDONLY | O_EXCL | O_CLOEXEC | O_NONBLOCK);
+            if (fd >= 0) close(fd);
+            else if (errno == EBUSY)
+                set_disk_busy(d, "The system is using it: it belongs to a RAID array, a btrfs or ZFS pool, "
+                                 "or is held open.");
+        }
+    }
     for (int i = 0; i < ndisks; i++)
         for (int j = 0; j < disks[i].nparts; j++) {
             Part *p = &disks[i].part[j];
@@ -316,6 +363,32 @@ static void in_use(void)
                 if (what) { p->protect = 1; snprintf(p->why, sizeof p->why, "%s", what); }
             }
         }
+}
+
+/* An extended partition's real length in bytes, as udev read it from the
+ * partition table (in 512-byte sectors, whatever the disk's own), or 0.
+ * The kernel's device for it is two sectors long whatever it holds, and
+ * the table itself is only root's to read. */
+static unsigned long long table_size(const Part *p)
+{
+    char path[128], b[64];
+    snprintf(path, sizeof path, "/sys/class/block/%s/dev", p->name);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    int got = fgets(b, sizeof b, f) != NULL;
+    fclose(f);
+    if (!got) return 0;
+    b[strcspn(b, "\r\n")] = 0;
+    snprintf(path, sizeof path, "/run/udev/data/b%s", b);
+    if (!(f = fopen(path, "r"))) return 0;
+    unsigned long long off = ~0ull, size = 0;
+    char line[256];
+    while (fgets(line, sizeof line, f)) {
+        if (!strncmp(line, "E:ID_PART_ENTRY_OFFSET=", 23)) off = ull(line + 23);
+        else if (!strncmp(line, "E:ID_PART_ENTRY_SIZE=", 21)) size = ull(line + 21);
+    }
+    fclose(f);
+    return off == p->start ? size * 512 : 0;     /* only while it is this one */
 }
 
 static void scan(void)
@@ -369,6 +442,7 @@ static void scan(void)
                 d->wholefs = 1;
                 snprintf(d->fstype, sizeof d->fstype, "%s", fstype);
                 pair(line, "LABEL", d->label, sizeof d->label);
+                pair(line, "UUID", d->uuid, sizeof d->uuid);
                 snprintf(d->mount, sizeof d->mount, "%s", mount);
                 d->avail = has_av ? ull(av) : ~0ull;
             }
@@ -394,6 +468,10 @@ static void scan(void)
             p->avail = has_av ? ull(av) : ~0ull;
             p->number = part_number(name);
             p->extended = is_extended_type(p->parttype);
+            if (p->extended && !(fake && *fake)) {
+                unsigned long long t = table_size(p);
+                if (t) p->size = t;
+            }
             p->logical = !strcmp(d->pttype, "dos") && p->number >= 5;
             p->active = !strcmp(p->flags, "0x80");
         } else {
@@ -532,15 +610,23 @@ static void build_regions(void)
             if (b > pos + MIN_GAP) region_add(i, -1, pos, b - pos, 0);
             if (p->extended) {
                 /* The container. The kernel shows an extended partition
-                 * as two sectors, so its extent is taken from the logical
-                 * drives inside it (and from the next primary, or the
-                 * disk's end, when it is empty). */
-                unsigned long long eend = b + MIN_GAP;
+                 * as two sectors (4 KB at most); its real extent is the
+                 * table's, which scan() had from udev. Without it, the
+                 * extent is taken from the logical drives inside it, and
+                 * from the next primary or the disk's end only when it
+                 * holds none. That guess was made for every extended
+                 * partition, so space past its end was drawn as its free
+                 * space, and a logical drive asked for there came out a
+                 * primary partition or failed. */
+                int known = p->size > 4096;
+                unsigned long long eend = known ? b + p->size : b + MIN_GAP;
+                int nlog = 0;
                 for (int k = 0; k < d->nparts; k++) {
                     Part *q = &d->part[k];
-                    if (!q->logical) continue;
+                    if (!q->logical || q->start * sec < b) continue;
                     unsigned long long qe = q->start * sec + q->size;
-                    if (q->start * sec >= b && qe > eend) eend = qe;
+                    nlog++;
+                    if (qe > eend) eend = qe;
                 }
                 unsigned long long limit = d->size;
                 for (int k = 0; k < d->nparts; k++) {
@@ -549,7 +635,7 @@ static void build_regions(void)
                     unsigned long long qb = q->start * sec;
                     if (qb > b && qb < limit) limit = qb;
                 }
-                if (eend < limit && p->size <= 4096) eend = limit;   /* empty: to the next one */
+                if (!known && !nlog && eend < limit) eend = limit;   /* empty: to the next one */
                 p->size = eend - b;
                 unsigned long long epos = b + MIN_GAP;
                 for (int k = 0; k < d->nparts; k++) {
@@ -671,6 +757,11 @@ typedef struct {
 static void job_reap(Job *j)
 {
     if (j->done) return;
+    /* Asked before reading, so that everything a finished script wrote --
+     * its last line, the reason it failed -- is read before the pipe is
+     * closed, not lost when it ended between the read and the wait. */
+    int st;
+    pid_t r = waitpid(j->pid, &st, WNOHANG);
     for (;;) {
         char buf[512];
         ssize_t n = read(j->fd, buf, sizeof buf);
@@ -679,8 +770,6 @@ static void job_reap(Job *j)
         if (room > 0) { if (n > room) n = room; memcpy(j->out + j->len, buf, (size_t)n); j->len += (int)n; }
     }
     j->out[j->len] = 0;
-    int st;
-    pid_t r = waitpid(j->pid, &st, WNOHANG);
     if (r == j->pid) {
         j->done = 1;
         j->status = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + (WIFSIGNALED(st) ? WTERMSIG(st) : 0);
@@ -702,6 +791,14 @@ static int busy_event(W2kWin *w, XEvent *e)
 {
     (void)w; (void)e;
     return 1;                                  /* nothing to click, no Escape */
+}
+
+/* Nor the title bar's close button: closed, the box went and the program
+ * stood frozen, unpainted, until the format or whatever it was ended. */
+static int busy_closing(W2kWin *w)
+{
+    (void)w;
+    return 0;
 }
 
 static void busy_tick(void *u)
@@ -741,6 +838,7 @@ static int run_root(W2kWin *over, const char *what, const char *script, char *ou
     w->user = &j;
     w->paint = busy_paint;
     w->event = busy_event;
+    w->closing = busy_closing;
     j.dlg = w;
     w2k_win_center(w, over);
     if (over) XSetTransientForHint(w2k.dpy, w->win, over->win);
@@ -833,18 +931,25 @@ typedef struct {
     int sel_region;                            /* selected region, -1 */
     int sel_disk;                              /* selected disk label, -1 */
     int graph_focus;
+    int dlist_focus;                           /* the Disk List has the keyboard */
     int split;                                 /* the top pane's height */
 } App;
 static App app;
 
-/* Say why a volume cannot be changed from here; 1 when it cannot. */
+/* Say why a volume cannot be changed from here. */
+static void refuse(const char *title, const char *verb, const char *why)
+{
+    char msg[400];
+    snprintf(msg, sizeof msg, "This volume cannot be %s from here.\n\n%s", verb,
+             why[0] ? why : "The system is using it.");
+    w2k_msgbox(app.win, title, msg, MB_OK | MB_ICONWARNING);
+}
+
+/* The same for a partition; 1 when it cannot be. */
 static int refused(const char *title, const Part *p, const char *verb, int protected_too)
 {
     if (!p || !(p->busy || (protected_too && p->protect))) return 0;
-    char msg[400];
-    snprintf(msg, sizeof msg, "This volume cannot be %s from here.\n\n%s", verb,
-             p->why[0] ? p->why : "The system is using it.");
-    w2k_msgbox(app.win, title, msg, MB_OK | MB_ICONWARNING);
+    refuse(title, verb, p->why);
     return 1;
 }
 
@@ -1149,11 +1254,27 @@ static Part *region_part(DRegion *r)
     return &d->part[r->part];
 }
 
+/* The extended partition a stretch of free space lies in, or NULL. The
+ * container has no region of its own, so its free space is where it is
+ * deleted from, as in the snap-in: emptied of logical drives it was
+ * stuck, and its space could never become a primary partition. */
+static Part *extended_of(const DRegion *r)
+{
+    if (!r || r->part != -1 || !r->inext) return NULL;
+    Disk *d = &disks[r->disk];
+    for (int j = 0; j < d->nparts; j++) {
+        Part *p = &d->part[j];
+        if (p->extended && r->start >= p->start * 512 && r->start < p->start * 512 + p->size) return p;
+    }
+    return NULL;
+}
+
 static void select_region(int idx)
 {
     app.sel_region = idx;
     app.sel_disk = -1;
     app.graph_focus = 1;
+    app.dlist_focus = 0;
     /* The volume list follows. */
     DRegion *r = sel_region();
     for (int i = 0; i < app.list->n; i++) app.list->items[i].selected = 0;
@@ -1176,6 +1297,7 @@ static void on_list_select(void *u, int idx)
     if (idx < 0 || idx >= app.list->n) return;
     Vol *v = app.list->items[idx].data;
     app.graph_focus = 0;
+    app.dlist_focus = 0;
     app.sel_region = -1;
     if (v && v->disk >= 0)
         for (int r = 0; r < nregions; r++)
@@ -1715,6 +1837,7 @@ static void do_delete(DRegion *rg)
 {
     Disk *d = &disks[rg->disk];
     Part *p = region_part(rg);
+    if (!p) p = extended_of(rg);
     if (!p || refused("Delete Volume", p, "deleted", 1)) return;
     if (p->extended)
         for (int j = 0; j < d->nparts; j++)
@@ -1726,6 +1849,7 @@ static void do_delete(DRegion *rg)
      * stay at its place in the list, on whatever partition was there. */
     char nm[80], ask[400];
     part_volname(d, rg->disk, p, nm, sizeof nm);
+    if (p->extended) snprintf(nm, sizeof nm, "the extended partition");
     snprintf(ask, sizeof ask, "All data on %s (%s) will be lost. Do you want to continue?", nm, p->path);
     if (w2k_msgbox(app.win, "Delete partition", ask, MB_YESNO | MB_ICONWARNING) != ID_YES)
         return;
@@ -1803,14 +1927,19 @@ static void do_mount(const char *dev, const char *name, const char *mount)
 /* Returns 1 when the disk now has a partition table. */
 static int do_init(Disk *d)
 {
-    for (int j = 0; j < d->nparts; j++)
-        if (d->part[j].busy) {
-            char msg[400];
-            snprintf(msg, sizeof msg, "A volume on this disk, %s, is in use by the system, so the disk "
-                     "cannot be initialized from here.\n\n%s", d->part[j].path, d->part[j].why);
-            w2k_msgbox(app.win, "Initialize Disk", msg, MB_OK | MB_ICONWARNING);
-            return 0;
-        }
+    /* The partitions Format and Delete refuse -- an EFI System Partition
+     * the computer starts from, too -- and a file system straight on the
+     * disk that the system uses: Initialize wiped them all at once. */
+    const char *inuse = d->busy ? d->path : NULL, *why = d->why;
+    for (int j = 0; j < d->nparts && !inuse; j++)
+        if (d->part[j].busy || d->part[j].protect) { inuse = d->part[j].path; why = d->part[j].why; }
+    if (inuse) {
+        char msg[400];
+        snprintf(msg, sizeof msg, "A volume on this disk, %s, is in use by the system, so the disk "
+                 "cannot be initialized from here.\n\n%s", inuse, why);
+        w2k_msgbox(app.win, "Initialize Disk", msg, MB_OK | MB_ICONWARNING);
+        return 0;
+    }
     Dlg g = { 0 };
     int y = 14;
     char t[200];
@@ -1957,10 +2086,13 @@ static void open_in_explorer(const char *mount, int explore)
         }
     }
     w2k_shell_quote(exp, qx, sizeof qx);
-    /* Explorer is the user's program, not the administrator's. */
+    /* Explorer is the user's program, not the administrator's -- and
+     * without the cache and settings folders elevate() pointed at /root,
+     * which it and everything opened from it could not write to. */
     if (elevated_user[0]) {
         w2k_shell_quote(elevated_user, qu, sizeof qu);
-        snprintf(cmd, sizeof cmd, "runuser -u %s -- %s %s >/dev/null 2>&1 &", qu, qx, q);
+        snprintf(cmd, sizeof cmd, "runuser -u %s -- env -u XDG_CONFIG_HOME -u XDG_CACHE_HOME %s %s >/dev/null 2>&1 &",
+                 qu, qx, q);
     } else
         snprintf(cmd, sizeof cmd, "%s %s >/dev/null 2>&1 &", qx, q);
     if (system(cmd) < 0) { /* nothing to say */ }
@@ -2008,8 +2140,8 @@ static void command(void *u, int id)
     case ID_SETTINGS:
         w2k_msgbox(app.win, "Settings", "The colours of the legend are the ones the snap-in uses; there is nothing to set.", MB_OK | MB_ICONINFO);
         return;
-    case ID_TOP_VOLUMES: app.top_pane = PANE_VOLUMES; layout(app.win); w2k_win_dirty(app.win); return;
-    case ID_TOP_DISKS:   app.top_pane = PANE_DISKS; layout(app.win); w2k_win_dirty(app.win); return;
+    case ID_TOP_VOLUMES: app.top_pane = PANE_VOLUMES; if (app.bottom_pane == PANE_VOLUMES) app.bottom_pane = PANE_DISKS; layout(app.win); w2k_win_dirty(app.win); return;
+    case ID_TOP_DISKS:   app.top_pane = PANE_DISKS; if (app.bottom_pane == PANE_DISKS) app.bottom_pane = PANE_VOLUMES; layout(app.win); w2k_win_dirty(app.win); return;
     case ID_BOTTOM_GRAPH:   app.bottom_pane = PANE_GRAPH; layout(app.win); w2k_win_dirty(app.win); return;
     case ID_BOTTOM_VOLUMES: app.bottom_pane = PANE_VOLUMES; if (app.top_pane == PANE_VOLUMES) app.top_pane = PANE_DISKS; layout(app.win); w2k_win_dirty(app.win); return;
     case ID_BOTTOM_DISKS:   app.bottom_pane = PANE_DISKS; if (app.top_pane == PANE_DISKS) app.top_pane = PANE_VOLUMES; layout(app.win); w2k_win_dirty(app.win); return;
@@ -2038,6 +2170,7 @@ static void command(void *u, int id)
             do_format(p->path, nm, p->label, p->mount[0], &disks[rg->disk], p);
         } else if (rg && rg->part >= 0 && disks[rg->disk].wholefs) {
             Disk *d = &disks[rg->disk];
+            if (d->busy) { refuse("Format", "formatted", d->why); return; }
             do_format(d->path, d->label[0] ? d->label : d->name, d->label, d->mount[0], d, NULL);
         } else if (v && v->disk < 0)
             w2k_msgbox(app.win, "Format", "Dynamic volumes (LVM, encrypted) are managed by their own tools.", MB_OK | MB_ICONINFO);
@@ -2050,17 +2183,22 @@ static void command(void *u, int id)
         return;
     case ID_CREATE:  if (rg && rg->part == -1) do_create(rg); return;
     case ID_INIT:    if (app.sel_disk >= 0) do_init(&disks[app.sel_disk]); return;
-    case ID_EJECT:
-        if (app.sel_disk >= 0) {
+    case ID_EJECT: {
+        /* From the disk's label, or from the empty drive's own region in
+         * the picture, which clears the disk selection: Eject there did
+         * nothing. */
+        int di = app.sel_disk >= 0 ? app.sel_disk : rg && disks[rg->disk].rom ? rg->disk : -1;
+        if (di >= 0) {
             char qd[256], script[800], out[4096], chk[400];
-            w2k_shell_quote(disks[app.sel_disk].path, qd, sizeof qd);
-            guard(&disks[app.sel_disk], NULL, chk, sizeof chk);
+            w2k_shell_quote(disks[di].path, qd, sizeof qd);
+            guard(&disks[di], NULL, chk, sizeof chk);
             snprintf(script, sizeof script, "%seject %s", chk, qd);
             int st = run_root(app.win, "Ejecting...", script, out, sizeof out);
             if (st != 0) report(app.win, "Eject", st, out);
             refresh();
         }
         return;
+    }
     case ID_EXTEND: case ID_SHRINK: case ID_MIRROR: case ID_DYNAMIC: case ID_GPT:
         return;
     }
@@ -2098,6 +2236,7 @@ static W2kMenu *build_tasks(void)
     }
     if (rg && rg->part == -1) {
         w2k_menu_item(m, ID_CREATE, rg->inext ? "Create &Logical Drive..." : "&Create Partition...", NULL, ICO_NONE);
+        if (extended_of(rg)) w2k_menu_item(m, ID_DELETE, "&Delete Partition...", NULL, ICO_NONE);
         w2k_menu_sep(m);
         w2k_menu_item(m, ID_PROPERTIES, "P&roperties", NULL, ICO_NONE); w2k_menu_disable(m);
         w2k_menu_sep(m);
@@ -2122,7 +2261,8 @@ static W2kMenu *build_tasks(void)
     w2k_menu_item(m, ID_MOUNT, mounted ? "&Change Drive Letter and Path..." : "&Change Drive Letter and Path...", NULL, ICO_NONE);
     if (!has_fs || (v && v->rom)) w2k_menu_disable(m);
     w2k_menu_item(m, ID_FORMAT, "&Format...", NULL, ICO_NONE);
-    if ((p && (p->extended || p->busy || p->protect)) || (v && (v->rom || v->disk < 0))) w2k_menu_disable(m);
+    if ((p && (p->extended || p->busy || p->protect)) || (v && (v->rom || v->disk < 0)) ||
+        (v && v->disk >= 0 && disks[v->disk].wholefs && disks[v->disk].busy)) w2k_menu_disable(m);
     w2k_menu_sep(m);
     w2k_menu_item(m, ID_EXTEND, "E&xtend Volume...", NULL, ICO_NONE); w2k_menu_disable(m);
     w2k_menu_item(m, ID_SHRINK, "&Shrink Volume...", NULL, ICO_NONE); w2k_menu_disable(m);
@@ -2188,6 +2328,33 @@ static void context_menu(int rx, int ry)
 }
 
 /* ---- events ---- */
+/* Tab and F6: the keyboard to the other pane, as in the snap-in. There
+ * was no way from the volume list to the picture but the mouse. */
+static void pane_focus_next(void)
+{
+    if (app.bottom_pane == PANE_NONE) return;
+    int on = app.dlist_focus ? PANE_DISKS : app.graph_focus ? PANE_GRAPH : PANE_VOLUMES;
+    int to = app.top_pane == on ? app.bottom_pane : app.top_pane;
+    if (to == PANE_VOLUMES) {
+        W2kList *l = app.list;
+        app.graph_focus = app.dlist_focus = 0;
+        l->focused = 1;
+        if (l->sel < 0 && l->n) { l->sel = 0; l->items[0].selected = 1; }
+        on_list_select(NULL, l->sel);
+    } else if (to == PANE_DISKS) {
+        W2kList *l = app.dlist;
+        app.dlist_focus = 1;
+        l->focused = 1;
+        if (l->sel < 0 && l->n) { l->sel = 0; l->items[0].selected = 1; }
+        if (l->sel >= 0) { app.sel_disk = l->sel; app.sel_region = -1; app.graph_focus = 1; }
+    } else if (to == PANE_GRAPH) {
+        app.dlist_focus = 0;
+        if (app.sel_region >= 0) select_region(app.sel_region);
+        else if (app.sel_disk >= 0) app.graph_focus = 1;
+        else if (nregions) select_region(0);
+    }
+}
+
 static int event(W2kWin *w, XEvent *e)
 {
     switch (e->type) {
@@ -2200,6 +2367,7 @@ static int event(W2kWin *w, XEvent *e)
         W2kList *hit = w2k_rect_hit(&app.top, x, y) ? top : (bot && w2k_rect_hit(&app.bottom, x, y)) ? bot : NULL;
         if (hit) {
             app.graph_focus = 0;
+            app.dlist_focus = hit == app.dlist;
             if (hit == app.list) {
                 if (w2k_list_press(app.list, &e->xbutton)) { }
                 on_list_select(NULL, app.list->sel);
@@ -2225,6 +2393,7 @@ static int event(W2kWin *w, XEvent *e)
             }
             int dl;
             int r = region_at(x, y, &dl);
+            app.dlist_focus = 0;
             if (r >= 0) select_region(r);
             else if (dl >= 0) { app.sel_disk = dl; app.sel_region = -1; app.graph_focus = 1; for (int i = 0; i < app.list->n; i++) app.list->items[i].selected = 0; app.list->sel = -1; }
             else { app.sel_region = -1; app.sel_disk = -1; }
@@ -2258,8 +2427,15 @@ static int event(W2kWin *w, XEvent *e)
             context_menu(rx, ry);
             return 1;
         }
+        if (ks == XK_Tab || ks == XK_ISO_Left_Tab || ks == XK_F6) { pane_focus_next(); w2k_win_dirty(w); return 1; }
+        /* The Disk List's arrows, which went nowhere. */
+        if (app.dlist_focus && w2k_list_key(app.dlist, &e->xkey)) {
+            if (app.dlist->sel >= 0) { app.sel_disk = app.dlist->sel; app.sel_region = -1; app.graph_focus = 1; }
+            w2k_win_dirty(w);
+            return 1;
+        }
         if (!app.graph_focus && w2k_list_key(app.list, &e->xkey)) { on_list_select(NULL, app.list->sel); w2k_win_dirty(w); return 1; }
-        if (app.graph_focus && (ks == XK_Left || ks == XK_Right)) {
+        if (app.graph_focus && !app.dlist_focus && (ks == XK_Left || ks == XK_Right)) {
             int cur = app.sel_region, next = cur;
             if (cur < 0 && nregions) next = 0;
             else if (ks == XK_Right && cur + 1 < nregions) next = cur + 1;
