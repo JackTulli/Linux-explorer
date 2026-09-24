@@ -243,7 +243,13 @@ static unsigned long long folders_signature(void)
     if (xdh && *xdh) snprintf(path, sizeof path, "%s/applications", xdh);
     else if (home)   snprintf(path, sizeof path, "%s/.local/share/applications", home);
     else path[0] = 0;
-    if (path[0]) { h = sig_mix(h, path); strcat(path, "/wine"); h = sig_tree(h, path, 0); }
+    if (path[0]) {
+        h = sig_mix(h, path);
+        /* Appended in place, a very long XDG_DATA_HOME ran off the buffer. */
+        char wine[2048];
+        snprintf(wine, sizeof wine, "%.2042s/wine", path);
+        h = sig_tree(h, wine, 0);
+    }
     if (home) {
         snprintf(path, sizeof path, "%s/.local/share/flatpak/exports/share/applications", home);
         h = sig_mix(h, path);
@@ -436,7 +442,10 @@ static W2kMenu *group_menu(int group, int flatpak, int wine)
             if (pass == 0 && !used) { hidden++; continue; }
             if (pass == 1 && (used || (!expand && hidden >= PERSONAL_MIN_HIDDEN))) continue;
             if (!m) m = w2k_menu_new();
-            w2k_menu_item(m, PROG_BASE + i, apps[i].name, NULL,
+            /* A name is data: "Sound & Video" is not a mnemonic. */
+            char label[256];
+            w2k_menu_escape(apps[i].name, label, sizeof label);
+            w2k_menu_item(m, PROG_BASE + i, label, NULL,
                           app_icon(&apps[i]));
             shown++;
         }
@@ -447,7 +456,9 @@ static W2kMenu *group_menu(int group, int flatpak, int wine)
         for (int i = 0; i < napps; i++) {
             if (apps[i].flatpak != flatpak || apps[i].wine != wine) continue;
             if (!flatpak && !wine && apps[i].group != group) continue;
-            w2k_menu_item(m, PROG_BASE + i, apps[i].name, NULL,
+            char label[256];
+            w2k_menu_escape(apps[i].name, label, sizeof label);
+            w2k_menu_item(m, PROG_BASE + i, label, NULL,
                           app_icon(&apps[i]));
         }
         return m;

@@ -513,7 +513,9 @@ static void layout(void)
     bat_x = bat.present ? vol_x - tgap - 16 : vol_x;
     notify_w = tray_width();
     notify_x = bat_x - (notify_w ? notify_w + tgap : 0);
-    tray_layout(notify_x, (TASKBAR_H - BTN_H) / 2 + (BTN_H < TASKBAR_ROW ? 1 : 0) + (BTN_H - 16) / 2 + (seven ? 1 : 0), 16);
+    /* In the first row with the speaker and the well: centred in a bar of
+     * two or more rows, they hung out of the well's bottom edge. */
+    tray_layout(notify_x, BTN_TOP + (BTN_H - 16) / 2 + (seven ? 1 : 0), 16);
 
     ntasks = 0;
     for (Client *c = clients; c && ntasks < 64; c = c->next)
@@ -1491,6 +1493,7 @@ static void hover_clear(void)
     hover_ql = -1;
     hover_since = 0;
     if (tip_up) { w2k_tooltip_hide(); tip_up = 0; }
+    tip_kind = 0;
 }
 
 int taskbar_event(XEvent *e)
@@ -1560,6 +1563,9 @@ int taskbar_event(XEvent *e)
 
     /* Hovering a task button, and dragging one to a new position. */
     if (e->type == MotionNotify && e->xmotion.window == tb) {
+        /* Off the clock or the battery: their tooltip goes with them. It
+         * stayed up over the empty bar until a task button or a click. */
+        if (tip_up && tip_kind) hover_clear();
         /* The themed Start button has a hot state of its own. */
         int over_start = start_button_hit(e->xmotion.x, e->xmotion.y);
         if (over_start != start_hot) {

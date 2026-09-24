@@ -1045,6 +1045,13 @@ static void new_shortcut(void)
                     name, name, sizeof name, ICO_APP))
         return;
 
+    /* The name is the file's too: a '/' in it made a path of it. */
+    if (!name[0] || strchr(name, '/')) {
+        w2k_msgbox(NULL, "Create Shortcut", "That name cannot be used.",
+                   MB_OK | MB_ICONERROR);
+        return;
+    }
+
     char dir[1024], full[1400];
     desktop_dir(dir, sizeof dir);
     snprintf(full, sizeof full, "%s/%s.desktop", dir, name);
@@ -1054,8 +1061,13 @@ static void new_shortcut(void)
                    MB_OK | MB_ICONERROR);
         return;
     }
+    /* Escaped for the .desktop format, which reads '%' as a field code
+     * and '\\' as an escape: "date +%H" ran as "date +". */
+    char ename[600], ecmd[1100];
+    w2k_desktop_escape(name, ename, sizeof ename, 0);
+    w2k_desktop_escape(cmd, ecmd, sizeof ecmd, 1);
     fprintf(f, "[Desktop Entry]\nType=Application\nName=%s\nExec=%s\n"
-               "Terminal=false\n", name, cmd);
+               "Terminal=false\n", ename, ecmd);
     fclose(f);
     chmod(full, 0755);
     refresh_now();
@@ -1504,8 +1516,10 @@ int desktop_event(XEvent *e)
         drag_moved = 0;
     }
 
+    /* The speed Mouse Properties sets, as everywhere else: a fixed 400 ms
+     * here left a slow double-click opening nothing on the desktop. */
     if (idx >= 0 && idx == last_click_idx &&
-        e->xbutton.time - last_click < 400) {
+        (int)(e->xbutton.time - last_click) < w2k_dblclk_ms) {
         last_click = 0;
         last_click_idx = -1;
         desktop_open(idx);

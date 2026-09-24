@@ -28,7 +28,7 @@
 
 static Window manager;               /* owns the selection            */
 static Window parent;                /* the taskbar                   */
-static struct { Window win; int mapped; } icons[MAX_TRAY];
+static struct { Window win; int mapped, ignore_unmap; } icons[MAX_TRAY];
 static int nicons;
 static Atom a_tray_sel, a_tray_opcode, a_tray_orientation, a_xembed,
             a_xembed_info, a_manager;
@@ -104,6 +104,11 @@ static void dock(Window w)
 
     icons[nicons].win = w;
     icons[nicons].mapped = 0;
+    /* Reparenting a window that is already up unmaps it first, and that
+     * unmap is ours, not the program taking its icon away: it used to
+     * undock the icon the moment it docked. (One the window manager has
+     * framed is unmanaged by that same unmap, and is left as it was.) */
+    icons[nicons].ignore_unmap = wa.map_state != IsUnmapped && !client_find(w);
     nicons++;
 
     XSelectInput(w2k.dpy, w, StructureNotifyMask | PropertyChangeMask);
@@ -192,6 +197,10 @@ int tray_event(XEvent *e)
     case UnmapNotify: {
         int i = tray_find(e->xunmap.window);
         if (i < 0) return 0;
+        /* Only the icon's own report counts: its old parent's (the root's)
+         * copy of the same unmap is not a second one. */
+        if (e->xunmap.event != e->xunmap.window) return 0;
+        if (icons[i].ignore_unmap) { icons[i].ignore_unmap = 0; return 1; }
         /* A tray icon that unmaps itself is gone: reparent it back to the
          * root so the application still owns a live window. */
         icons[i].mapped = 0;

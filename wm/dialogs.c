@@ -1011,7 +1011,18 @@ void wm_run_dialog(void)
                 /* The Windows names -- taskmgr, calc, winver, desk.cpl,
                  * cmd -- run what they run there. */
                 const W2kAlias *a = w2k_alias_find(word);
-                if (a) wm_run_alias(a);
+                /* What follows the name goes to the program, as it does in
+                 * Windows: "notepad /etc/hosts" opened an empty Notepad.
+                 * An alias that already names a page of its own
+                 * ("l2kcontrol mouse") keeps it, and the terminal takes
+                 * no file. */
+                const char *rest = cmd + strcspn(cmd, " \t");
+                if (a && rest[strspn(rest, " \t")] && strcmp(a->cmd, "@terminal") &&
+                    !strchr(a->cmd, ' ')) {
+                    char line[2300];
+                    snprintf(line, sizeof line, "%s%s", a->cmd, rest);
+                    wm_spawn(line);
+                } else if (a) wm_run_alias(a);
                 else   wm_spawn(cmd);
             }
         }

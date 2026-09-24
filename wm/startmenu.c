@@ -102,11 +102,14 @@ enum { CM_PIN_START = 1, CM_PIN_QL, CM_UNPIN, CM_RENAME, CM_ICON };
 static int pinned_ctx(int which, const Pin *p, int x, int y)
 {
     /* The nested menu is not itself right-clickable, and its keys are its
-     * own mnemonics, not the start of a search. */
+     * own mnemonics, not the start of a search. Closing it is not closing
+     * the Start menu either: the Start button stayed pressed. */
     int (*saved)(int, int, int) = w2k_menu_on_context;
     char *saved_typed = w2k_menu_typeahead;
+    void (*saved_closed)(void) = w2k_menu_closed;
     w2k_menu_on_context = NULL;
     w2k_menu_typeahead = NULL;
+    w2k_menu_closed = NULL;
 
     W2kMenu *m = w2k_menu_new();
     w2k_menu_item(m, CM_RENAME, "Rena&me...", NULL, ICO_NONE);
@@ -117,6 +120,7 @@ static int pinned_ctx(int which, const Pin *p, int x, int y)
     w2k_menu_free(m);
     w2k_menu_on_context = saved;
     w2k_menu_typeahead = saved_typed;
+    w2k_menu_closed = saved_closed;
 
     switch (id) {
     case CM_RENAME: {
@@ -150,8 +154,10 @@ static int program_ctx(const char *cmd, const char *label, const char *icon,
     int on_tb = pins_contains(PIN_TASKBAR, cmd);
     int (*saved)(int, int, int) = w2k_menu_on_context;
     char *saved_typed = w2k_menu_typeahead;
+    void (*saved_closed)(void) = w2k_menu_closed;
     w2k_menu_on_context = NULL;
     w2k_menu_typeahead = NULL;
+    w2k_menu_closed = NULL;
 
     W2kMenu *m = w2k_menu_new();
     w2k_menu_item(m, CM_PIN_START,
@@ -166,6 +172,7 @@ static int program_ctx(const char *cmd, const char *label, const char *icon,
     w2k_menu_free(m);
     w2k_menu_on_context = saved;
     w2k_menu_typeahead = saved_typed;
+    w2k_menu_closed = saved_closed;
 
     if (id == CM_PIN_START)   pins_add(PIN_START, cmd, label, icon);
     else if (id == CM_PIN_QL) pins_add(PIN_TASKBAR, cmd, label, icon);
@@ -328,9 +335,11 @@ void startmenu_open(void)
      * right-clicking a pinned entry edits it. */
     Pin pinned[PIN_MAX];
     int npinned = pins_load(PIN_START, pinned, PIN_MAX);
-    for (int i = 0; i < npinned; i++)
-        w2k_menu_item(m, SM_PIN_BASE + i, pinned[i].label, NULL,
-                      pin_icon(&pinned[i]));
+    for (int i = 0; i < npinned; i++) {
+        char label[256];
+        w2k_menu_escape(pinned[i].label, label, sizeof label);
+        w2k_menu_item(m, SM_PIN_BASE + i, label, NULL, pin_icon(&pinned[i]));
+    }
     if (npinned) w2k_menu_sep(m);
     w2k_menu_sub(m, "&Programs",  ICO_PROGRAMS,  progs);
     w2k_menu_sub(m, "&Documents", ICO_DOCUMENTS, docs);

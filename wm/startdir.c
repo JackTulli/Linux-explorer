@@ -124,7 +124,11 @@ static int add_dir(W2kMenu *m, const char *dir, int depth, int skip_startup)
         snprintf(sub, sizeof sub, "%s/%s", dir, dirs[i]);
         W2kMenu *child = w2k_menu_new();
         if (add_dir(child, sub, depth + 1, 0)) {
-            w2k_menu_sub(m, dirs[i], ICO_FOLDER, child);
+            /* Folder and shortcut names are data, not mnemonics: an '&'
+             * in one vanished and underlined the next letter. */
+            char label[512];
+            w2k_menu_escape(dirs[i], label, sizeof label);
+            w2k_menu_sub(m, label, ICO_FOLDER, child);
             added = 1;
         } else {
             w2k_menu_free(child);
@@ -138,7 +142,9 @@ static int add_dir(W2kMenu *m, const char *dir, int depth, int skip_startup)
                        icon, sizeof icon) && nentries < MAX_ENTRIES) {
             snprintf(entries[nentries].cmd, sizeof entries[nentries].cmd,
                      "%s", cmd);
-            w2k_menu_item(m, STARTDIR_BASE + nentries, name, NULL,
+            char label[256];
+            w2k_menu_escape(name, label, sizeof label);
+            w2k_menu_item(m, STARTDIR_BASE + nentries, label, NULL,
                           icon[0] ? w2k_icon_by_name(icon) : ICO_APP);
             nentries++;
             added = 1;

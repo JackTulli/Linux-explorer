@@ -132,9 +132,10 @@ int startsearch_run(SearchState *s, int i)
     case SR_RECENT: {
         const char *f = r->cmd[0] ? r->cmd : NULL;
         if (!f) return 0;
-        char q[2200], open[2300];
-        w2k_shell_quote(f, q, sizeof q);
-        snprintf(open, sizeof open, "xdg-open %s", q);
+        /* The desktop's own associations, as Start > Documents uses: with
+         * xdg-open the same file opened in another program from here. */
+        char open[2300];
+        w2k_assoc_command(f, open, sizeof open);
         wm_spawn(open);
         return 1;
     }

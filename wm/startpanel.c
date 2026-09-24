@@ -433,7 +433,11 @@ static void draw_row(Drawable d, const Row *r, int x, int y, int w, int rh,
     char buf[128];
     w2k_ellipsis(font, r->label, w - (tx - x) - 14, buf, sizeof buf);
     int ty = y + (rh - fh) / 2 - (luna && !r->big ? 1 : 0);
-    if (luna && !hot && !r->big && bg != w2k_rgb(255, 255, 255))
+    /* A pin's label is the user's or the program's own name, not a
+     * mnemonic: an '&' in it vanished and underlined the next letter. */
+    if (r->id >= SM_PIN_BASE && r->id < SM_PIN_BASE + PIN_MAX)
+        w2k_text(d, font, tx, ty, buf, col);
+    else if (luna && !hot && !r->big && bg != w2k_rgb(255, 255, 255))
         w2k_text_mnemonic_rgb(d, font, tx, ty, buf, 8, 29, 67, 1); /* the blue column's navy */
     else
         w2k_text_mnemonic(d, font, tx, ty, buf, col, 1);
@@ -1081,8 +1085,23 @@ static int footer_hit(int x, int y, int *idx)
     return 0;
 }
 
-/* What is under the pointer: column 0 left, 1 right, 2 footer. */
+static int hit_rows(int x, int y, int *col, int *row);
+
+/* While the search is up it covers the left column's rows: a click in a
+ * gap around the box or below the results launched the pinned program
+ * hidden underneath. */
 static int hit_test(int x, int y, int *col, int *row)
+{
+    int hit = hit_rows(x, y, col, row);
+    if (hit && searching && *col == 0 && *row < nleft) {
+        *col = *row = -1;
+        return 0;
+    }
+    return hit;
+}
+
+/* What is under the pointer: column 0 left, 1 right, 2 footer. */
+static int hit_rows(int x, int y, int *col, int *row)
 {
     int body_y = HEADER_H, body_h = panel_h - HEADER_H - FOOTER_H;
     int ap_y = body_y + body_h - ALLPROG_H;
@@ -1170,10 +1189,15 @@ int startpanel_run(int bx, int by)
     const W2kMonitor *m = w2k_monitor_at(bx, by);
     int pw = w2k_px(PANEL_W), ph = w2k_px(panel_h);   /* on the screen */
     panel_x = m->x + 0;
+    /* Beside a bar on a side, not across it (on the left) or at the far
+     * edge of the screen from it (on the right). */
+    if (w2k_taskbar_edge == TB_LEFT)  panel_x = m->x + taskbar_thickness();
+    if (w2k_taskbar_edge == TB_RIGHT) panel_x = m->x + m->w - taskbar_thickness() - pw;
     panel_y = by - ph;
     if (w2k_taskbar_edge == TB_TOP) panel_y = by;
     if (panel_y < m->y) panel_y = m->y;
     if (panel_x + pw > m->x + m->w) panel_x = m->x + m->w - pw;
+    if (panel_x < m->x) panel_x = m->x;
 
     XSetWindowAttributes a = {
         .override_redirect = True,

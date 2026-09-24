@@ -64,7 +64,14 @@ static int wrap_text(const char *text, int width, char lines[MAXLINES][128])
             fit = i + 1;
             if (p[i] == ' ') last_space = i + 1;
         }
-        if (!fit) break;
+        if (!fit) {
+            /* A blank line between paragraphs: everything after it used
+             * to be dropped. Only a character too wide to fit ends it. */
+            if (*p != '\n') break;
+            lines[n++][0] = 0;
+            p++;
+            continue;
+        }
         if (p[fit] && p[fit] != '\n' && last_space) fit = last_space;
         snprintf(lines[n], 128, "%.*s", fit, p);
         /* trim the trailing space the break left */
@@ -234,7 +241,9 @@ void balloon_queue(const char *title, const char *text, int icon, int ms, unsign
         /* Replacing the one on screen: repaint it in place. */
         snprintf(cur.title, sizeof cur.title, "%s", title);
         snprintf(cur.text, sizeof cur.text, "%s", text);
-        cur.icon = icon;
+        /* Its own timeout too: the replacement ran out on the old one's. */
+        cur.icon = w2k_icon_valid(icon) ? icon : ICO_INFO;
+        cur.ms = ms;
         w2k_font_forget(balloon);   /* the Xft surface is keyed by the drawable */
     XDestroyWindow(w2k.dpy, balloon);
         balloon = 0;
@@ -249,7 +258,7 @@ void balloon_queue(const char *title, const char *text, int icon, int ms, unsign
         if (queue[i].id == id) {
             snprintf(queue[i].title, sizeof queue[i].title, "%s", title);
             snprintf(queue[i].text, sizeof queue[i].text, "%s", text);
-            queue[i].icon = icon;
+            queue[i].icon = w2k_icon_valid(icon) ? icon : ICO_INFO;
             queue[i].ms = ms;
             return;
         }
