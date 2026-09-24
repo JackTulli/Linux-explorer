@@ -42,10 +42,18 @@ static int snap_zone_at(int px, int py)
     return SNAP_NONE;
 }
 
+/* A window of one fixed size, a full-screen one and a bare one keep
+ * their size: Win+Left made a fixed dialog half the screen, and a
+ * full-screen video a half-screen one that still hid the taskbar. */
+static int snap_ok(const Client *c)
+{
+    return !c->fullscreen && c->decorate && c->resizable;
+}
+
 /* Put the window where the zone says. */
 static void snap_apply(Client *c, int zone, int px, int py)
 {
-    if (zone == SNAP_NONE) return;
+    if (zone == SNAP_NONE || !snap_ok(c)) return;
     if (zone == SNAP_MAX) { client_maximize(c, 1); return; }
 
     int wx, wy, ww, wh;
@@ -62,7 +70,12 @@ static void snap_apply(Client *c, int zone, int px, int py)
      * neither dragged nor resized. */
     if (c->maximized) { c->maximized = 0; client_publish_state(c); }
     else { c->rx = c->x; c->ry = c->y; c->rw = c->w; c->rh = c->h; }
-    client_move_resize(c, x + b, y + b + cap, w - 2 * b, h - 2 * b - cap);
+    /* Within the sizes the window allows, still against its edge. */
+    int cw = w - 2 * b, ch = h - 2 * b - cap;
+    client_constrain(c, &cw, &ch);
+    if (zone == SNAP_RIGHT)  x = wx + ww - (cw + 2 * b);
+    if (zone == SNAP_BOTTOM) y = wy + wh - (ch + 2 * b + cap);
+    client_move_resize(c, x + b, y + b + cap, cw, ch);
 }
 
 /* Where this drag puts the client rectangle, without applying it: the live
@@ -207,6 +220,17 @@ static void drag_loop(Client *c, int mode, int px, int py, int keyboard)
 
     int done = 0, gone = 0, cancel = 0, snap = SNAP_NONE, rel_x = px, rel_y = py;
     Window cw = c->win;
+    if (!keyboard) {
+        /* A program hands its drag over (_NET_WM_MOVERESIZE) while its
+         * button is down; a quick flick can be over before the grab, and
+         * the release went to the program: the window then followed the
+         * pointer, no button held, until the next click. */
+        Window r, ch;
+        int rx, ry, wx, wy;
+        unsigned m = 0;
+        XQueryPointer(w2k.dpy, w2k.root, &r, &ch, &rx, &ry, &wx, &wy, &m);
+        if (!(m & (Button1Mask | Button2Mask | Button3Mask))) done = 1;
+    }
     long last = 0;
     while (!done && running) {
         XEvent e;
@@ -248,8 +272,9 @@ static void drag_loop(Client *c, int mode, int px, int py, int keyboard)
                 } else
                     drag_apply(c, &d, rel_x, rel_y);
                 /* Dropping against an edge snaps: top fills the monitor,
-                 * the sides take half of it. Done below, once. */
-                if (d.mode == 0) snap = snap_zone_at(rel_x, rel_y);
+                 * the sides take half of it. Done below, once. One
+                 * that cannot snap lands where it was dropped. */
+                if (d.mode == 0 && snap_ok(c)) snap = snap_zone_at(rel_x, rel_y);
                 done = 1;
             }
             break;
@@ -284,6 +309,14 @@ static void drag_loop(Client *c, int mode, int px, int py, int keyboard)
             break;
         }
         default:
+            /* The program ending the drag it handed over: its own
+             * _NET_WM_MOVERESIZE_CANCEL, sent when it saw the release. */
+            if (e.type == ClientMessage && e.xclient.window == cw &&
+                e.xclient.message_type == w2k.a_net_wm_moveresize &&
+                e.xclient.data.l[2] == 11) {
+                done = 1;
+                break;
+            }
             /* Everything else -- exposes of the windows we are dragging over,
              * map requests, title changes -- goes to the normal dispatcher so
              * the desktop keeps working mid-drag. The window being dragged
@@ -338,6 +371,17 @@ void do_resize(Client *c, XButtonEvent *e, int ht)
 /* ------------------------------------------------------------------ *
  * The system menu (the icon at the far left of the caption)
  * ------------------------------------------------------------------ */
+/* What Minimize puts down: a dialog has no task button to come back
+ * from, so it goes down with the window that owns it and comes back with
+ * it. Minimize did nothing on a resizable one -- a file chooser, say.
+ * NULL when no window with a task button owns it. */
+static Client *minimize_target(Client *c)
+{
+    for (int i = 0; c && c->skip_taskbar && i < 8; i++)
+        c = c->transient_for ? client_find(c->transient_for) : NULL;
+    return c;
+}
+
 void sysmenu_popup(Client *c, int x, int y)
 {
     W2kMenu *m = w2k_menu_new();
@@ -349,6 +393,7 @@ void sysmenu_popup(Client *c, int x, int y)
     w2k_menu_item(m, SC_SIZE, "&Size", NULL, ICO_NONE);
     if (c->maximized || !c->resizable) w2k_menu_disable(m);
     w2k_menu_item(m, SC_MINIMIZE, "Mi&nimize", NULL, ICO_NONE);
+    if (!minimize_target(c)) w2k_menu_disable(m);
     w2k_menu_item(m, SC_MAXIMIZE, "Ma&ximize", NULL, ICO_NONE);
     if (c->maximized || !c->resizable) w2k_menu_disable(m);
     w2k_menu_sep(m);
@@ -376,7 +421,7 @@ void sysmenu_popup(Client *c, int x, int y)
         XQueryPointer(w2k.dpy, w2k.root, &r, &ch, &rx, &ry, &wx, &wy, &mask);
         drag_loop(c, HT_BOTTOMRIGHT, rx, ry, 1);
         break;
-    case SC_MINIMIZE: client_minimize(c); break;
+    case SC_MINIMIZE: client_minimize(minimize_target(c)); break;
     case SC_MAXIMIZE: client_maximize(c, 1); break;
     case SC_CLOSE:    client_close(c); break;
     }
@@ -465,7 +510,25 @@ void alt_tab(int backwards)
     XGrabKeyboard(w2k.dpy, w2k.root, False, GrabModeAsync, GrabModeAsync,
                   CurrentTime);
 
-    for (int done = 0; !done && running; ) {
+    /* Alt may already be up: a quick Alt+Tab while the shell was busy
+     * let go of it before the grab, the release went to the program, and
+     * the box stayed up holding the keyboard until Alt was pressed and
+     * released again. Then the switch is to the one already chosen. */
+    int done = 0;
+    XModifierKeymap *mm = XGetModifierMapping(w2k.dpy);
+    if (mm) {
+        char keys[32];
+        XQueryKeymap(w2k.dpy, keys);
+        int alt = 0;
+        for (int i = 0; i < mm->max_keypermod; i++) {
+            KeyCode kc = mm->modifiermap[Mod1MapIndex * mm->max_keypermod + i];
+            if (kc && (keys[kc / 8] & (1 << (kc % 8)))) alt = 1;
+        }
+        XFreeModifiermap(mm);
+        if (!alt) done = 1;
+    }
+
+    while (!done && running) {
         XEvent e;
         XNextEvent(w2k.dpy, &e);
         if (e.type == KeyPress) {
@@ -546,7 +609,17 @@ static void media_key(KeySym ks)
         volume_toggle_mute();
     } else {
         int v = volume_level();
-        if (v < 0) v = 50;
+        /* Not read yet -- the sound server came up after the bar did.
+         * Ask now; if it still will not say, step from wherever it
+         * really is: made up as half, the first key press jumped a
+         * quiet speaker to 55%. */
+        if (v < 0) { volume_poll(); v = volume_level(); }
+        if (v < 0) {
+            int up = ks == XF86XK_AudioRaiseVolume;
+            wm_spawn(up ? "{ pactl set-sink-volume @DEFAULT_SINK@ +5% || amixer -q set Master 5%+; } >/dev/null 2>&1"
+                        : "{ pactl set-sink-volume @DEFAULT_SINK@ -5% || amixer -q set Master 5%-; } >/dev/null 2>&1");
+            return;
+        }
         const int step = 5;
         v = ks == XF86XK_AudioRaiseVolume ? (v / step + 1) * step
                                           : ((v + step - 1) / step - 1) * step;
@@ -593,6 +666,19 @@ void grab_keys(void)
     XFree(map);
 }
 
+/* The windows the last Win+D put down: pressed again, it brings back
+ * those and no others. It brought back every minimised window, the ones
+ * the user had put away before included. */
+static Window desk_hid[256];
+static int desk_nhid;
+
+static int desk_was_hidden(const Client *c)
+{
+    for (int i = 0; i < desk_nhid; i++)
+        if (desk_hid[i] == c->win) return 1;
+    return 0;
+}
+
 /* Win+D, the Quick Launch icon and the Windows 7 sliver: everything down,
  * or everything back, quietly -- one sound, one restack, one repaint of
  * the bar, where each window used to take its own flight and sound (a
@@ -606,14 +692,25 @@ void wm_show_desktop(void)
         if (!c->minimized && !c->skip_taskbar) { any = 1; break; }
     w2k_sound_play(any ? SND_MINIMIZE : SND_RESTOREUP);
     if (any) {
-        for (Client *c = clients; c; c = c->next)
-            if (!c->skip_taskbar) client_minimize_quiet(c);
+        desk_nhid = 0;
+        for (Client *c = clients; c; c = c->next) {
+            if (c->skip_taskbar || c->minimized) continue;
+            client_minimize_quiet(c);
+            if (c->minimized && desk_nhid < 256) desk_hid[desk_nhid++] = c->win;
+        }
     } else {
         Client *order[256];
         int n = 0;
         for (Client *c = stack; c && n < 256; c = c->snext) order[n++] = c;
+        /* Nothing of the last Win+D still down -- or no Win+D yet: then
+         * everything comes back, as it always did. */
+        int ours = 0;
+        for (int i = 0; i < n; i++)
+            if (order[i]->minimized && desk_was_hidden(order[i])) ours = 1;
         for (int i = n - 1; i >= 0; i--)
-            if (!order[i]->skip_taskbar) client_restore_quiet(order[i]);
+            if (!order[i]->skip_taskbar && (!ours || desk_was_hidden(order[i])))
+                client_restore_quiet(order[i]);
+        desk_nhid = 0;
         for (Client *c = stack; c; c = c->snext)
             if (!c->minimized && c->mapped && !c->skip_taskbar) { client_focus(c); break; }
     }
@@ -653,13 +750,15 @@ void handle_key(XKeyEvent *e)
         super_used = 0;
         return;
     }
+    /* Before the media keys: Win+Volume Up changed the volume and then
+     * opened the Start menu when the Windows key came up. */
+    if (mod & Mod4Mask) super_used = 1;
     if (ks == XF86XK_AudioRaiseVolume || ks == XF86XK_AudioLowerVolume ||
         ks == XF86XK_AudioMute || ks == XF86XK_AudioPlay ||
         ks == XF86XK_AudioPause || ks == XF86XK_AudioStop) {
         media_key(ks);
         return;
     }
-    if (mod & Mod4Mask) super_used = 1;
     if ((mod & Mod4Mask) && focused &&
         (ks == XK_Left || ks == XK_Right || ks == XK_Up || ks == XK_Down)) {
         int cx = focused->x + focused->w / 2, cy = focused->y + focused->h / 2;

@@ -126,6 +126,11 @@ void wm_spawn(const char *cmd)
     if (w2k.dpy) close(ConnectionNumber(w2k.dpy));
     setsid();
     signal(SIGCHLD, SIG_DFL);
+    /* The speaker's "pactl subscribe" has the shell ignore SIGPIPE, and
+     * an ignored signal stays ignored across exec: every program started
+     * from here got it that way, and "yes | head" in a terminal printed
+     * "Broken pipe" errors instead of stopping quietly. */
+    signal(SIGPIPE, SIG_DFL);
     execlp("/bin/sh", "sh", "-c", cmd, (char *)NULL);
     fprintf(stderr, "l2kwm: cannot run \"%s\": %s\n", cmd, strerror(errno));
     _exit(127);
@@ -432,11 +437,20 @@ static void handle_clientmessage(XClientMessageEvent *e)
      * say which of x, y, width and height were supplied. */
     if (e->message_type == w2k.a_net_moveresize_window && c) {
         long flags = e->data.l[0];
-        int x = (flags & (1 << 8))  ? (int)e->data.l[1] : c->x;
-        int y = (flags & (1 << 9))  ? (int)e->data.l[2] : c->y;
+        if (c->maximized) client_maximize(c, 0);
+        /* The position is the frame's corner, as in a ConfigureRequest,
+         * not the client's: taken as the client's, Tile put the top
+         * window's caption above the screen, where it could not be
+         * dragged. */
+        int st = (flags & 0xff) == StaticGravity ||
+                 ((flags & 0xff) == 0 && c->static_gravity);
+        int b = st ? 0 : client_border(c);
+        int cap = st ? 0 : client_caption_h(c);
+        int x = (flags & (1 << 8))  ? (int)e->data.l[1] + b : c->x;
+        int y = (flags & (1 << 9))  ? (int)e->data.l[2] + b + cap : c->y;
         int cw = (flags & (1 << 10)) ? (int)e->data.l[3] : c->w;
         int ch = (flags & (1 << 11)) ? (int)e->data.l[4] : c->h;
-        if (c->maximized) client_maximize(c, 0);
+        client_constrain(c, &cw, &ch);
         client_restore(c);
         client_move_resize(c, x, y, cw, ch);
         return;

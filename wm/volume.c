@@ -27,6 +27,9 @@ static FILE *sub;                    /* "pactl subscribe", while it lives */
 static int   sub_fd = -1;
 static int have_pactl = -1;          /* -1 = not yet looked   */
 static int have_amixer = -1;
+static pid_t set_pid;                /* the level being set, while it runs */
+static long  set_at;                 /* ...since when                         */
+static int set_pending = -1;         /* the newest level asked for meanwhile */
 
 static int tool_exists(const char *name)
 {
@@ -92,6 +95,64 @@ static void sub_close(void)
     sub_retry_at = now + sub_backoff;
 }
 
+/* One level change at a time. A volume key held down asked for a new
+ * level at every repeat, each in its own pactl, and they reached the
+ * server in any order: the level could end a step or two from where the
+ * repeats stopped. Now the newest request waits for the one running and
+ * goes when it is done; the ones between are skipped. */
+static int set_busy(void)
+{
+    /* A mixer that hangs is not waited on for ever. */
+    if (set_pid > 0 && (kill(set_pid, 0) != 0 || w2k_now_ms() - set_at > 3000))
+        set_pid = 0;
+    return set_pid > 0;
+}
+
+static void set_run(int pct)
+{
+    char cmd[160];
+    if (have_pactl > 0)
+        snprintf(cmd, sizeof cmd,
+                 "pactl set-sink-volume @DEFAULT_SINK@ %d%% >/dev/null 2>&1", pct);
+    else
+        snprintf(cmd, sizeof cmd,
+                 "amixer -q set Master %d%% >/dev/null 2>&1", pct);
+    pid_t pid = fork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        /* As wm_spawn does it. */
+        if (w2k.dpy) close(ConnectionNumber(w2k.dpy));
+        setsid();
+        signal(SIGCHLD, SIG_DFL);
+        signal(SIGPIPE, SIG_DFL);
+        execlp("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+    set_pid = pid;
+    set_at = w2k_now_ms();
+}
+
+static void set_tick(void *u);
+
+static void set_flush(void)
+{
+    if (set_pending < 0) return;
+    if (set_busy()) {                 /* again shortly, from the main loop */
+        w2k_add_timer(20, set_tick, NULL);
+        return;
+    }
+    int pct = set_pending;
+    set_pending = -1;
+    set_run(pct);
+}
+
+static void set_tick(void *u)
+{
+    (void)u;
+    set_flush();
+    if (set_pending < 0) w2k_del_timer(set_tick, NULL);
+}
+
 /* The fd to watch, or -1 when there is nothing to subscribe to. */
 int volume_fd(void)
 {
@@ -142,7 +203,10 @@ void volume_poll(void)
                         "pactl get-sink-mute @DEFAULT_SINK@; } 2>/dev/null",
                         buf, sizeof buf)) {
             const char *pc = strchr(buf, '%');
-            if (pc) {
+            /* Not while a change of ours is on its way: the event from
+             * the step before would pull the level back, and the next
+             * repeat step from there. */
+            if (pc && !set_busy() && set_pending < 0) {
                 const char *s = pc;
                 while (s > buf && s[-1] >= '0' && s[-1] <= '9') s--;
                 vol_level = atoi(s);
@@ -154,7 +218,7 @@ void volume_poll(void)
     }
     if (run_capture("amixer get Master 2>/dev/null", buf, sizeof buf)) {
         const char *pc = strchr(buf, '%');
-        if (pc) {
+        if (pc && !set_busy() && set_pending < 0) {
             const char *s = pc;
             while (s > buf && s[-1] >= '0' && s[-1] <= '9') s--;
             vol_level = atoi(s);
@@ -170,18 +234,12 @@ void volume_set(int pct)
 {
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
-    char cmd[160];
-    if (have_pactl > 0)
-        snprintf(cmd, sizeof cmd,
-                 "pactl set-sink-volume @DEFAULT_SINK@ %d%% >/dev/null 2>&1", pct);
-    else
-        snprintf(cmd, sizeof cmd,
-                 "amixer -q set Master %d%% >/dev/null 2>&1", pct);
     /* In the background, the level shown at once: a volume key held down
      * used to stall the whole shell for a pactl round trip per repeat. The
      * sink's own change event then confirms it. */
     vol_level = pct;
-    wm_spawn(cmd);
+    set_pending = pct;
+    set_flush();
 }
 
 /* Play, pause and stop for whatever is playing: playerctl if it is
@@ -339,6 +397,12 @@ void volume_popup(int bx, int by)
     long last_set = 0;
     popup_paint(win);
     while (!done && running) {
+        /* The level the slider was let go at may be waiting for the one
+         * before it; this loop runs no timers, so see it out here. */
+        while (set_pending >= 0 && !XPending(w2k.dpy)) {
+            usleep(10000);
+            set_flush();
+        }
         XEvent e;
         XNextEvent(w2k.dpy, &e);
         switch (e.type) {

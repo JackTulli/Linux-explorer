@@ -18,6 +18,18 @@ typedef struct { int x, y, w, h; } Rect;
  * raw mode, where only line thicknesses, fonts, icons and skins scale. */
 #define P(v) w2k_px(v)
 
+/* Where the caption icon sits, from the caption's top left corner: the
+ * painter draws it here and the system menu is found here. The click
+ * used to be looked for at one pixel in whatever the look, and on the
+ * themed frames most of the icon then started a move instead. */
+static void caption_icon_at(const Rect *cap, int *x, int *y)
+{
+    int seven = W2K_THEME_IS7(frame_theme());
+    int modern = frame_theme() == THEME_MODERN;
+    *x = P(frame_theme() == THEME_CLASSIC ? 1 : seven ? 10 : modern ? 9 : 6);
+    *y = frame_theme() == THEME_AERO ? P(10) : seven ? P(11) : (cap->h - P(16)) / 2;
+}
+
 static void caption_layout(Client *c, Rect *cap, Rect *sys,
                            Rect *mn, Rect *mx, Rect *cl)
 {
@@ -62,7 +74,9 @@ static void caption_layout(Client *c, Rect *cap, Rect *sys,
     /* A dialog has no system menu, and so no icon at the left of its
      * caption: the Windows 2000 Run and Open dialogs show their title
      * against the left edge. */
-    sys->x = cap->x + P(1); sys->y = cap->y + P(1); sys->w = c->is_dialog ? 0 : P(16);
+    int ix, iy;
+    caption_icon_at(cap, &ix, &iy);
+    sys->x = cap->x + ix; sys->y = cap->y + iy; sys->w = c->is_dialog ? 0 : P(16);
     sys->h = P(16);
     if (sys->h > cap->h - P(2)) { sys->y = cap->y; sys->h = cap->h; }
     w2k_scale_raw = raw;
@@ -163,13 +177,14 @@ static void frame_draw_raw(Client *c, Drawable d)
      * and the title, in the regular UI face, six past it. */
     int seven = W2K_THEME_IS7(frame_theme());
     int modern = frame_theme() == THEME_MODERN;
-    int inset = P(frame_theme() == THEME_CLASSIC ? 1 : seven ? 10 : modern ? 9 : 6);
+    int inset, iy;
+    caption_icon_at(&cap, &inset, &iy);
     int tx = inset + P(1);
     if (c->icon >= 0 && !c->is_dialog) {
         /* Measured off the artwork: the icon at (10,11), the title at 30.
          * Windows 11 sets the icon eight pixels in and the title eight
          * past it. */
-        w2k_icon_draw(pm, inset, frame_theme() == THEME_AERO ? P(10) : seven ? P(11) : (cap.h - P(16)) / 2, c->icon);
+        w2k_icon_draw(pm, inset, iy, c->icon);
         tx = frame_theme() == THEME_CLASSIC ? inset + P(16 + 3)
            : modern ? inset + P(16 + 8) : P(seven ? 30 : 27);
     }
@@ -418,9 +433,11 @@ int frame_hittest(Client *c, int fx, int fy)
     if (in_rect(&cl, fx, fy)) return HT_CLOSE;
     if (in_rect(&mx, fx, fy)) return HT_MAXBUTTON;
     if (in_rect(&mn, fx, fy)) return HT_MINBUTTON;
-    if (in_rect(&sys, fx, fy)) return HT_SYSMENU;
-    if (in_rect(&cap, fx, fy)) return HT_CAPTION;
 
+    /* The sizing border before the caption: the themed captions reach
+     * the frame's edge, over the top border and the sides beside them,
+     * and XP, Vista, 7 and Aero windows could not be sized from the top
+     * or its corners -- a drag there moved them. */
     if (c->resizable && !c->maximized && !c->fullscreen) {
         int L = fx < b, R = fx >= fw - b, T = fy < b, B = fy >= fh - b;
         int nearL = fx < CORNER_GRAB, nearR = fx >= fw - CORNER_GRAB;
@@ -435,6 +452,8 @@ int frame_hittest(Client *c, int fx, int fy)
         if (T) return HT_TOP;
         if (B) return HT_BOTTOM;
     }
+    if (in_rect(&sys, fx, fy)) return HT_SYSMENU;
+    if (in_rect(&cap, fx, fy)) return HT_CAPTION;
     if (fx < b || fy < b || fx >= fw - b || fy >= fh - b) return HT_NOWHERE;
     return HT_CLIENT;
 }
@@ -499,6 +518,17 @@ void frame_button_press(Client *c, XButtonEvent *e)
     }
 }
 
+/* What the Minimize button puts down: a dialog has no task button to
+ * come back from, so it goes down with the window that owns it and comes
+ * back with it. The button did nothing on a resizable one -- a file
+ * chooser's, say. */
+static Client *minimize_target(Client *c)
+{
+    for (int i = 0; c && c->skip_taskbar && i < 8; i++)
+        c = c->transient_for ? client_find(c->transient_for) : NULL;
+    return c;
+}
+
 void frame_button_release(Client *c, XButtonEvent *e)
 {
     if (!c->btn_down) return;
@@ -510,7 +540,7 @@ void frame_button_release(Client *c, XButtonEvent *e)
     if (ht != which) return;         /* released off the button: cancelled */
     switch (which) {
     case HT_CLOSE:     client_close(c); break;
-    case HT_MINBUTTON: client_minimize(c); break;
+    case HT_MINBUTTON: client_minimize(minimize_target(c)); break;
     case HT_MAXBUTTON: client_maximize(c, !c->maximized); break;
     }
 }
