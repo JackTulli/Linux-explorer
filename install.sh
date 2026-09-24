@@ -459,6 +459,9 @@ fi
 # ------------------------------------------------------------------
 # 2. Build and install
 # ------------------------------------------------------------------
+# On every core at once, as Windows Update builds: one file at a time,
+# a first install took eight times as long on a sixteen-thread machine.
+J="-j$(nproc 2>/dev/null || echo 2)"
 if [ "$DO_BUILD" = 1 ]; then
     say "Building"
     # A build that fails in a tree with older work in it is usually
@@ -472,10 +475,10 @@ if [ "$DO_BUILD" = 1 ]; then
     # (-k): one optional program, the scaler say, used to end the whole
     # install with nothing in; what did build goes in, and only the shell
     # itself missing is the end.
-    if ! run make -C "$HERE" -s PREFIX="$PREFIX"; then
+    if ! run make -C "$HERE" -s "$J" PREFIX="$PREFIX"; then
         say "That failed; building again from nothing"
         run make -C "$HERE" -s clean
-        run make -C "$HERE" -s -k PREFIX="$PREFIX" || true
+        run make -C "$HERE" -s "$J" -k PREFIX="$PREFIX" || true
     fi
     # A link that failed can leave the program behind with nothing in it.
     # make then counts it as built and never tries again, and the machine
@@ -488,7 +491,7 @@ if [ "$DO_BUILD" = 1 ]; then
     if [ -n "$empty" ] && [ "$DRY" != 1 ]; then
         say "An earlier build left empty programs ($empty ); building again from nothing"
         run make -C "$HERE" -s clean
-        run make -C "$HERE" -s -k PREFIX="$PREFIX" || true
+        run make -C "$HERE" -s "$J" -k PREFIX="$PREFIX" || true
     fi
     for b in l2kwm l2kexplorer; do
         if [ "$DRY" != 1 ] && [ ! -s "$HERE/bin/$b" ]; then
@@ -583,7 +586,7 @@ if [ "$DO_BUILD" = 1 ]; then
            { [ ! -s "$PREFIX/bin/l2kdm" ] || ! "$PREFIX/bin/l2kdm" --check 2>/dev/null; }; then
             say "The logon screen came out without PAM; building again from nothing"
             run make -C "$HERE" -s clean
-            run make -C "$HERE" -s -k PREFIX="$PREFIX" || true
+            run make -C "$HERE" -s "$J" -k PREFIX="$PREFIX" || true
             as_root make -C "$HERE" -s install PREFIX="$PREFIX" \
                 INSTALL_BINS="$bins" INSTALL_LOOKS="$WANT_LOOKS" INSTALL_SOUNDS="$sounds"
         fi
