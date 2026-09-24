@@ -2212,6 +2212,12 @@ static int on_event(W2kWin *w, XEvent *e)
             /* A right click picks the background colour, as in Paint. */
             int *c = (e->xbutton.button == Button3) ? pt.bg : pt.fg;
             pick_px(dx, dy, &c[0], &c[1], &c[2], &c[3]);
+            /* A spot no visible layer covers came back as white with no
+             * alpha at all: the swatch showed white, and the pencil, brush,
+             * shapes and text then drew nothing, with no sign why. Take it
+             * as the opaque white the canvas shows there, as Paint's empty
+             * canvas is white; a partly covered spot keeps its real alpha. */
+            if (c[3] == 0) c[3] = 255;
             w2k_win_dirty(w);
             return 1;
         }
