@@ -14,6 +14,8 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <signal.h>
@@ -77,16 +79,6 @@ static int in_path(const char *prog)
     }
     free(copy);
     return found;
-}
-
-static void read_first_line(const char *cmd, char *out, int n)
-{
-    out[0] = 0;
-    FILE *p = popen(cmd, "r");
-    if (!p) return;
-    if (!fgets(out, n, p)) out[0] = 0;
-    pclose(p);
-    out[strcspn(out, "\r\n")] = 0;
 }
 
 static void gather(void)
@@ -154,14 +146,97 @@ static int version_newer(const char *a, const char *b)
     return a3 > b3;
 }
 
-static void check_release(void)
+/* ---- A check runs beside the window ----------------------------------- */
+/* Each check's commands run in a child of their own and the answer comes
+ * back through the event loop. They used to run under popen from the
+ * click itself: the window was painted once, "Checking...", and then
+ * took no expose and no click for as long as curl or the package manager
+ * took -- minutes, when dnf had metadata to fetch -- so it sat blank when
+ * uncovered and looked hung. */
+typedef struct {
+    pid_t pid;                          /* -1 when nothing runs */
+    int   fd, len;
+    char  out[8192];
+    void (*done)(const char *out);
+} Check;
+static Check rel_job = { .pid = -1, .fd = -1 }, sys_job = { .pid = -1, .fd = -1 };
+
+static int checking(const Check *c) { return c->pid > 0; }
+
+static void check_io(void *u)
 {
-    snprintf(up.checked_msg, sizeof up.checked_msg, "Checking...");
+    Check *c = u;
+    for (;;) {
+        char b[512];
+        ssize_t r = read(c->fd, b, sizeof b);
+        if (r > 0) {
+            /* The rest of a long answer is read and dropped, never left
+             * in the pipe for the child to block on. */
+            int take = (int)r;
+            if (take > (int)sizeof c->out - 1 - c->len) take = (int)sizeof c->out - 1 - c->len;
+            if (take > 0) { memcpy(c->out + c->len, b, (size_t)take); c->len += take; c->out[c->len] = 0; }
+            continue;
+        }
+        if (r < 0 && (errno == EAGAIN || errno == EINTR)) return;    /* more to come */
+        break;                                                      /* the end */
+    }
+    w2k_del_fd(c->fd);
+    close(c->fd);
+    while (waitpid(c->pid, NULL, 0) < 0 && errno == EINTR)
+        ;
+    c->pid = -1;
+    c->fd = -1;
+    c->done(c->out);
     w2k_win_dirty(up.win);
-    w2k_win_repaint_now(up.win);
-    char out[8192] = "";
-    FILE *p = popen("curl -s -m 15 https://api.github.com/repos/JackTulli/Linux-explorer/releases/latest 2>/dev/null", "r");
-    if (p) { size_t n = fread(out, 1, sizeof out - 1, p); out[n] = 0; pclose(p); }
+}
+
+/* Run `cmd` under sh with its output on a pipe the loop watches; `done`
+ * gets the output once the child has ended. 0 when it could not start. */
+static int check_start(Check *c, const char *cmd, void (*done)(const char *))
+{
+    int p[2];
+    if (pipe(p) < 0) return 0;
+    pid_t pid = fork();
+    if (pid < 0) { close(p[0]); close(p[1]); return 0; }
+    if (pid == 0) {
+        setpgid(0, 0);                  /* closing the window stops curl and the pipeline too */
+        int nul = open("/dev/null", O_RDONLY);
+        if (nul >= 0) { dup2(nul, 0); close(nul); }
+        dup2(p[1], 1);
+        close(p[0]);
+        close(p[1]);
+        signal(SIGPIPE, SIG_DFL);
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+    setpgid(pid, pid);
+    close(p[1]);
+    c->pid = pid;
+    c->fd = p[0];
+    c->len = 0;
+    c->out[0] = 0;
+    c->done = done;
+    fcntl(p[0], F_SETFL, O_NONBLOCK);
+    w2k_add_fd(p[0], check_io, c);
+    return 1;
+}
+
+/* The window is going: a check still out is stopped, and its answer,
+ * which nobody is left to read, never comes back through the loop. */
+static void check_stop(Check *c)
+{
+    if (!checking(c)) return;
+    w2k_del_fd(c->fd);
+    close(c->fd);
+    kill(-c->pid, SIGTERM);
+    while (waitpid(c->pid, NULL, 0) < 0 && errno == EINTR)
+        ;
+    c->pid = -1;
+    c->fd = -1;
+}
+
+static void release_done(const char *out)
+{
     const char *t = strstr(out, "\"tag_name\"");
     t = t ? strchr(t + 10, '"') : NULL;
     if (!t) {
@@ -185,45 +260,30 @@ static void check_release(void)
                  "The latest release is %s. Your desktop is up to date.", up.latest);
 }
 
-static int count_cmd(const char *cmd)
+static void check_release(void)
 {
-    char out[32];
-    read_first_line(cmd, out, sizeof out);
-    return atoi(out);
+    if (checking(&rel_job)) return;     /* the answer is on its way; the button is grey */
+    snprintf(up.checked_msg, sizeof up.checked_msg, "Checking...");
+    w2k_win_dirty(up.win);
+    if (!check_start(&rel_job, "curl -s -m 15 https://api.github.com/repos/JackTulli/Linux-explorer/releases/latest 2>/dev/null",
+                     release_done))
+        release_done("");
 }
 
-static void check_system(void)
+/* One "kind count" line per kind the child counted; a kind it did not
+ * print, or printed nothing for, has none. */
+static void system_done(const char *out)
 {
-    snprintf(up.sys_msg, sizeof up.sys_msg, "Checking...");
-    w2k_win_dirty(up.win);
-    w2k_win_repaint_now(up.win);
     up.n_pkg = up.n_flatpak = up.n_snap = 0;
-    up.pkg_uncounted = 0;
-    const char *m = up.pkgmgr;
-    if (!strcmp(m, "apt-get"))
-        up.n_pkg = count_cmd("apt list --upgradable 2>/dev/null | grep -c 'upgradable from'");
-    else if (!strcmp(m, "dnf"))
-        up.n_pkg = count_cmd("dnf -q check-update 2>/dev/null | grep -c '^[A-Za-z0-9]'");
-    else if (!strcmp(m, "yum"))         /* no dnf, so asking dnf counted none */
-        up.n_pkg = count_cmd("yum -q check-update 2>/dev/null | grep -c '^[A-Za-z0-9]'");
-    else if (!strcmp(m, "pacman"))
-        up.n_pkg = count_cmd("pacman -Qu 2>/dev/null | wc -l");
-    else if (!strcmp(m, "zypper"))
-        up.n_pkg = count_cmd("zypper -q lu 2>/dev/null | grep -c '^v '");
-    else if (!strcmp(m, "apk"))
-        up.n_pkg = count_cmd("apk list -u 2>/dev/null | wc -l");
-    else if (!strcmp(m, "xbps-install"))
-        up.n_pkg = count_cmd("xbps-install -un 2>/dev/null | wc -l");
-    else if (m[0])
-        up.pkg_uncounted = 1;           /* emerge: no count without a sync */
-    /* One column only: the default ones (name, version) make flatpak parse
-     * the remote's whole appstream catalogue, a second of frozen window
-     * for a count of lines that is the same either way. */
-    if (up.have_flatpak)
-        up.n_flatpak = count_cmd("flatpak remote-ls --updates --columns=application 2>/dev/null | wc -l");
-    if (up.have_snap)
-        up.n_snap = count_cmd("snap refresh --list 2>/dev/null | tail -n +2 | wc -l");
+    for (const char *l = out; *l; ) {
+        if (!strncmp(l, "pkg ", 4)) up.n_pkg = atoi(l + 4);
+        else if (!strncmp(l, "flatpak ", 8)) up.n_flatpak = atoi(l + 8);
+        else if (!strncmp(l, "snap ", 5)) up.n_snap = atoi(l + 5);
+        l += strcspn(l, "\n");
+        if (*l) l++;
+    }
     up.counts_known = 1;
+    const char *m = up.pkgmgr;
     int total = up.n_pkg + up.n_flatpak + up.n_snap;
     /* Every kind that has some: three Flatpaks used to read "3 updates
      * available: 0 packages." */
@@ -249,6 +309,49 @@ static void check_system(void)
     else
         snprintf(up.sys_msg, sizeof up.sys_msg,
                  "No updates are listed as of the package manager's last refresh.");
+}
+
+static void check_system(void)
+{
+    if (checking(&sys_job)) return;
+    snprintf(up.sys_msg, sizeof up.sys_msg, "Checking...");
+    w2k_win_dirty(up.win);
+    up.pkg_uncounted = 0;
+    const char *m = up.pkgmgr, *pkg = NULL;
+    if (!strcmp(m, "apt-get"))
+        pkg = "apt list --upgradable 2>/dev/null | grep -c 'upgradable from'";
+    else if (!strcmp(m, "dnf"))
+        pkg = "dnf -q check-update 2>/dev/null | grep -c '^[A-Za-z0-9]'";
+    else if (!strcmp(m, "yum"))         /* no dnf, so asking dnf counted none */
+        pkg = "yum -q check-update 2>/dev/null | grep -c '^[A-Za-z0-9]'";
+    else if (!strcmp(m, "pacman"))
+        pkg = "pacman -Qu 2>/dev/null | wc -l";
+    else if (!strcmp(m, "zypper"))
+        pkg = "zypper -q lu 2>/dev/null | grep -c '^v '";
+    else if (!strcmp(m, "apk"))
+        pkg = "apk list -u 2>/dev/null | wc -l";
+    else if (!strcmp(m, "xbps-install"))
+        pkg = "xbps-install -un 2>/dev/null | wc -l";
+    else if (m[0])
+        up.pkg_uncounted = 1;           /* emerge: no count without a sync */
+    /* One script for the lot, a line of "kind count" from each. */
+    char cmd[600] = "";
+    if (pkg) {
+        strncat(cmd, "echo pkg $(", sizeof cmd - strlen(cmd) - 1);
+        strncat(cmd, pkg, sizeof cmd - strlen(cmd) - 1);
+        strncat(cmd, ")\n", sizeof cmd - strlen(cmd) - 1);
+    }
+    /* One column only: the default ones (name, version) make flatpak parse
+     * the remote's whole appstream catalogue, a second more of Checking...
+     * for a count of lines that is the same either way. */
+    if (up.have_flatpak)
+        strncat(cmd, "echo flatpak $(flatpak remote-ls --updates --columns=application 2>/dev/null | wc -l)\n",
+                sizeof cmd - strlen(cmd) - 1);
+    if (up.have_snap)
+        strncat(cmd, "echo snap $(snap refresh --list 2>/dev/null | tail -n +2 | wc -l)\n",
+                sizeof cmd - strlen(cmd) - 1);
+    if (!cmd[0] || !check_start(&sys_job, cmd, system_done))
+        system_done("");                /* nothing to count, or no child: the answer is none */
 }
 
 /* ---- Running an install in a terminal --------------------------------- */
@@ -573,14 +676,19 @@ static void paint(W2kWin *w, Drawable d)
             y += para(d, x, y, maxw, buf);
         }
         y += 10;
+        /* Grey while a check is out: the buttons answer again with it. */
         up.check = (W2kRect){ x, y, 120, 23 };
-        w2k_draw_pushbutton(d, &up.check, "&Check for updates", up.down == BTN_CHECK ? BS_PRESSED : 0);
+        w2k_draw_pushbutton(d, &up.check, "&Check for updates",
+                            (checking(&rel_job) ? BS_DISABLED : 0) |
+                            (up.down == BTN_CHECK ? BS_PRESSED : 0));
         y += 32;
         if (up.checked_msg[0]) y += para(d, x, y, maxw, up.checked_msg) + 8;
         if (up.newer) {
             up.install = (W2kRect){ x, y, 120, 23 };
             snprintf(buf, sizeof buf, "&Install %s", up.latest);
-            w2k_draw_pushbutton(d, &up.install, buf, up.down == BTN_INSTALL ? BS_PRESSED : 0);
+            w2k_draw_pushbutton(d, &up.install, buf,
+                                (checking(&rel_job) ? BS_DISABLED : 0) |
+                                (up.down == BTN_INSTALL ? BS_PRESSED : 0));
             y += 32;
             y += para(d, x, y, maxw,
                       up.source[0] ?
@@ -622,10 +730,13 @@ static void paint(W2kWin *w, Drawable d)
                  up.have_snap ? "installed" : "not installed");
         w2k_text(d, F_UI, x, y, buf, C_WINDOWTEXT); y += 13 + 10;
         up.sys_check = (W2kRect){ x, y, 120, 23 };
-        w2k_draw_pushbutton(d, &up.sys_check, "&Check for updates", up.down == BTN_SYS_CHECK ? BS_PRESSED : 0);
+        w2k_draw_pushbutton(d, &up.sys_check, "&Check for updates",
+                            (checking(&sys_job) ? BS_DISABLED : 0) |
+                            (up.down == BTN_SYS_CHECK ? BS_PRESSED : 0));
         up.sys_install = (W2kRect){ x + 128, y, 120, 23 };
         w2k_draw_pushbutton(d, &up.sys_install, "&Install updates",
                             (up.pkgmgr[0] || up.have_flatpak || up.have_snap ? 0 : BS_DISABLED) |
+                            (checking(&sys_job) ? BS_DISABLED : 0) |
                             (up.down == BTN_SYS_INSTALL ? BS_PRESSED : 0));
         y += 32;
         if (up.sys_msg[0]) y += para(d, x, y, maxw, up.sys_msg) + 4;
@@ -696,13 +807,14 @@ static int event(W2kWin *w, XEvent *e)
             }
         for (int i = 0; i < up.nlinks; i++)
             if (w2k_rect_hit(&up.links[i].r, x, y)) { follow_link(i); return 1; }
+        /* A grey button, while its check is out, does not press. */
         if (up.section == SEC_WELCOME) {
-            if (w2k_rect_hit(&up.check, x, y)) up.down = BTN_CHECK;
-            else if (up.newer && w2k_rect_hit(&up.install, x, y)) up.down = BTN_INSTALL;
+            if (w2k_rect_hit(&up.check, x, y)) { if (!checking(&rel_job)) up.down = BTN_CHECK; }
+            else if (up.newer && w2k_rect_hit(&up.install, x, y)) { if (!checking(&rel_job)) up.down = BTN_INSTALL; }
             else if (w2k_rect_hit(&up.remove, x, y)) up.down = BTN_REMOVE;
         } else if (up.section == SEC_PRODUCT) {
-            if (w2k_rect_hit(&up.sys_check, x, y)) up.down = BTN_SYS_CHECK;
-            else if (w2k_rect_hit(&up.sys_install, x, y)) up.down = BTN_SYS_INSTALL;
+            if (w2k_rect_hit(&up.sys_check, x, y)) { if (!checking(&sys_job)) up.down = BTN_SYS_CHECK; }
+            else if (w2k_rect_hit(&up.sys_install, x, y)) { if (!checking(&sys_job)) up.down = BTN_SYS_INSTALL; }
         }
         w2k_win_dirty(w);
         return 1;
@@ -735,12 +847,13 @@ static int event(W2kWin *w, XEvent *e)
         if (e->xkey.state & Mod1Mask) {
             if (up.section == SEC_WELCOME) {
                 if (ks == XK_c) check_release();
-                else if (ks == XK_i && up.newer) install_release();
+                else if (ks == XK_i && up.newer && !checking(&rel_job)) install_release();
                 else if (ks == XK_r) remove_everything();
                 else return 1;
             } else if (up.section == SEC_PRODUCT) {
                 if (ks == XK_c) check_system();
-                else if (ks == XK_i && (up.pkgmgr[0] || up.have_flatpak || up.have_snap)) install_system();
+                else if (ks == XK_i && (up.pkgmgr[0] || up.have_flatpak || up.have_snap)
+                         && !checking(&sys_job)) install_system();
                 else return 1;
             } else return 1;
             w2k_win_dirty(w);
@@ -770,6 +883,10 @@ int main(int argc, char **argv)
     w2k_win_center(up.win, NULL);
     w2k_win_show(up.win);
     w2k_run();
+    /* A check still out when the window closes (Escape or the close box)
+     * is stopped with it, not left counting for nobody. */
+    check_stop(&rel_job);
+    check_stop(&sys_job);
     w2k_face_close(up.big);
     w2k_face_close(up.head);
     w2k_fini();
