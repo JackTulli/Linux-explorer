@@ -44,49 +44,92 @@ static int cat_icon(const char *name) { return icon_for(name); }
 static void set_status(const char *s) { if (dm.status) { w2k_status_set(dm.status,0,s); w2k_win_dirty(dm.win); } }
 static W2kDevice *node_dev(W2kTreeNode *n) { return n && n->data ? (W2kDevice*)n->data : NULL; }
 
+/* Is `name` in the list of collapsed categories, "\nname\n..."? */
+static int was_shut(const char *shut, const char *name)
+{
+    char key[W2K_DEV_STR + 2];
+    snprintf(key, sizeof key, "\n%s\n", name);
+    return strstr(shut, key) != NULL;
+}
+
 static void tree_build(void) {
+    /* The categories the user collapsed stay collapsed: every rescan -- one
+     * a second while uevents come in -- used to open them all again. */
+    char shut[4096] = "\n"; size_t len = 1; int host_shut = 0;
+    W2kTreeNode *old = dm.tree->root->child;
+    if (old) {
+        host_shut = !old->expanded;
+        for (W2kTreeNode *c = old->child; c; c = c->sibling)
+            if (!c->expanded && len + strlen(c->text) + 2 < sizeof shut)
+                len += (size_t)snprintf(shut + len, sizeof shut - len, "%s\n", c->text);
+    }
     w2k_tree_clear_children(&*dm.tree, NULL);
     W2kTreeNode *host = w2k_tree_add(dm.tree,NULL,dm.devices.host,ICO_MYCOMPUTER,ICO_MYCOMPUTER,NULL);
-    host->expanded=1; host->has_kids=1;
+    host->expanded=!host_shut; host->has_kids=1;
     W2kTreeNode *cc=w2k_tree_add(dm.tree,host,"Computer",ICO_MYCOMPUTER,ICO_MYCOMPUTER,NULL);
-    cc->expanded=1; cc->has_kids=1;
+    cc->expanded=!was_shut(shut,"Computer"); cc->has_kids=1;
     w2k_tree_add(dm.tree,cc,dm.machine.name,ICO_MYCOMPUTER,ICO_MYCOMPUTER,&dm.machine);
     for(size_t i=0;i<dm.devices.count;i++) {
         W2kDeviceCategory *c=&dm.devices.cats[i];
-        if(!strcmp(c->name,"__disabled__") && !dm.show_hidden) continue;
+        /* "Disabled devices" lists the drivers Disable blacklisted, and it
+         * is where they are enabled again: its entries are always shown.
+         * They are all disabled, so the rule below hid every one, and the
+         * category came up empty -- and a disabled card is hidden from its
+         * own category too, so there was nowhere left to click Enable. */
+        int blacklist=!strcmp(c->name,"Disabled devices");
         /* No data on a category: node_dev() takes a node's data for a device,
          * and a category read as one gave a sheet of neighbouring memory --
          * and a Disable that ran pkexec to blacklist a nonsense module. */
         W2kTreeNode *cn=w2k_tree_add(dm.tree,host,c->name,cat_icon(c->icon),cat_icon(c->icon),NULL);
-        cn->expanded=1; cn->has_kids=c->count>0;
+        cn->expanded=!was_shut(shut,c->name); cn->has_kids=0;
         for(size_t j=0;j<c->count;j++) {
             W2kDevice *d=&c->devices[j];
-            if(d->disabled && !dm.show_hidden) continue;
+            if(d->disabled && !blacklist && !dm.show_hidden) continue;
             int ico=icon_for(d->icon[0]?d->icon:c->icon);
             W2kTreeNode *dn=w2k_tree_add(dm.tree,cn,d->name,ico,ico,d);
-            dn->has_kids=0;
+            dn->has_kids=0; cn->has_kids=1;
         }
     }
     w2k_tree_select(dm.tree,host);
     w2k_tree_layout(dm.tree);
 }
-/* The node for the device at a sysfs path, to keep the selection across a
- * rescan (a battery or backlight event used to throw it back to the top). */
-static W2kTreeNode *find_path(W2kTreeNode *n, const char *path)
+/* What was selected, to find it again after a rescan (a battery or
+ * backlight event used to throw the selection back to the top). */
+typedef struct {
+    char path[sizeof ((W2kDevice *)0)->sysfs_path];
+    char cat[W2K_DEV_STR], name[W2K_DEV_STR], loc[W2K_DEV_STR];
+} Kept;
+
+/* The node for the kept device: by its sysfs path, or -- only PCI devices
+ * and disks have one; batteries, USB, input and the rest do not -- by its
+ * category, name and location. */
+static W2kTreeNode *find_kept(W2kTreeNode *n, const Kept *k)
 {
     for (; n; n = n->sibling) {
         W2kDevice *d = n->data;
-        if (d && d->sysfs_path[0] && !strcmp(d->sysfs_path, path)) return n;
-        W2kTreeNode *k = find_path(n->child, path);
-        if (k) return k;
+        if (d && (k->path[0] ? !strcmp(d->sysfs_path, k->path)
+                             : !d->sysfs_path[0] && n->parent && n->parent->text &&
+                               !strcmp(n->parent->text, k->cat) &&
+                               !strcmp(d->name, k->name) && !strcmp(d->location, k->loc)))
+            return n;
+        W2kTreeNode *f = find_kept(n->child, k);
+        if (f) return f;
     }
     return NULL;
 }
 
 static void scan(void) {
-    char keep[sizeof ((W2kDevice *)0)->sysfs_path] = "";
-    if (dm.tree && dm.tree->sel && dm.tree->sel->data)
-        snprintf(keep, sizeof keep, "%s", ((W2kDevice *)dm.tree->sel->data)->sysfs_path);
+    Kept keep = { "", "", "", "" };
+    int kept = 0;
+    if (dm.tree && dm.tree->sel && dm.tree->sel->data) {
+        W2kTreeNode *s = dm.tree->sel;
+        W2kDevice *d = s->data;
+        snprintf(keep.path, sizeof keep.path, "%s", d->sysfs_path);
+        snprintf(keep.cat, sizeof keep.cat, "%s", s->parent && s->parent->text ? s->parent->text : "");
+        snprintf(keep.name, sizeof keep.name, "%s", d->name);
+        snprintf(keep.loc, sizeof keep.loc, "%s", d->location);
+        kept = 1;
+    }
     int top = dm.tree ? dm.tree->top : 0;
     dm.busy=1; set_status("Scanning for hardware...");
     w2k_devices_scan(&dm.devices);
@@ -106,8 +149,8 @@ static void scan(void) {
     snprintf(dm.machine.location,sizeof dm.machine.location,"ACPI x64-based PC");
     snprintf(dm.machine.subsystem,sizeof dm.machine.subsystem,"Computer / DMI");
     tree_build();
-    if (keep[0]) {
-        W2kTreeNode *n = find_path(dm.tree->root->child, keep);
+    if (kept) {
+        W2kTreeNode *n = find_kept(dm.tree->root->child, &keep);
         if (n) { w2k_tree_select(dm.tree, n); dm.tree->top = top; w2k_tree_layout(dm.tree); }
     }
     char s[160]; size_t total=0; for(size_t i=0;i<dm.devices.count;i++) total+=dm.devices.cats[i].count; snprintf(s,sizeof s,"%zu categories, %zu devices — sysfs / procfs",dm.devices.count,total); set_status(s);
@@ -127,12 +170,18 @@ static void show_properties(W2kDevice*d);
 static void on_tree_activate(void *u,W2kTreeNode*n){(void)u;W2kDevice*d=node_dev(n);if(d)show_properties(d);}
 
 static W2kMenu *file_menu(void *u){(void)u;W2kMenu*m=w2k_menu_new();w2k_menu_item(m,ID_SCAN,"Scan for hardware changes","F5",ICO_NONE);w2k_menu_sep(m);w2k_menu_item(m,ID_EXIT,"E&xit","Alt+F4",ICO_NONE);return m;}
-static W2kMenu *action_menu(void *u){(void)u;W2kMenu*m=w2k_menu_new();w2k_menu_item(m,ID_PROPERTIES,"&Properties","Enter",ICO_PROPERTIES);w2k_menu_item(m,ID_UPDATE,"&Update Driver...",NULL,ICO_WINUPDATE);w2k_menu_item(m,ID_ENABLE,"&Enable Device",NULL,ICO_NONE);w2k_menu_item(m,ID_DISABLE,"&Disable Device",NULL,ICO_NONE);w2k_menu_item(m,ID_UNINSTALL,"&Uninstall Device",NULL,ICO_DELETE);w2k_menu_item(m,ID_DETAILS,"Driver &Details...",NULL,ICO_FILE_SYS);return m;}
+static W2kDevice *selected(void);
+static int can_disable(const W2kDevice *d);
+static W2kMenu *action_menu(void *u){(void)u;W2kDevice*d=selected();W2kMenu*m=w2k_menu_new();w2k_menu_item(m,ID_PROPERTIES,"&Properties","Enter",ICO_PROPERTIES);w2k_menu_item(m,ID_UPDATE,"&Update Driver...",NULL,ICO_WINUPDATE);w2k_menu_item(m,ID_ENABLE,"&Enable Device",NULL,ICO_NONE);if(d&&!can_disable(d))w2k_menu_disable(m);w2k_menu_item(m,ID_DISABLE,"&Disable Device",NULL,ICO_NONE);if(d&&!can_disable(d))w2k_menu_disable(m);w2k_menu_item(m,ID_UNINSTALL,"&Uninstall Device",NULL,ICO_DELETE);w2k_menu_item(m,ID_DETAILS,"Driver &Details...",NULL,ICO_FILE_SYS);return m;}
 static W2kMenu *view_menu(void *u){(void)u;W2kMenu*m=w2k_menu_new();w2k_menu_item(m,ID_SCAN,"&Refresh","F5",ICO_NONE);w2k_menu_item(m,ID_HIDDEN,"&Show hidden devices",NULL,ICO_NONE);w2k_menu_check(m,dm.show_hidden);W2kMenu*sub=w2k_menu_new();w2k_menu_item(sub,ID_BYTYPE,"Devices by &type",NULL,ICO_NONE);w2k_menu_radio(sub,1);w2k_menu_item(sub,ID_BYCONNECTION,"Devices by &connection",NULL,ICO_NONE);w2k_menu_radio(sub,0);w2k_menu_sub(m,"Arrange devices",ICO_NONE,sub);return m;}
 static W2kMenu *help_menu(void *u){(void)u;W2kMenu*m=w2k_menu_new();w2k_menu_item(m,ID_ABOUT,"&About Device Manager",NULL,ICO_INFO);return m;}
 static void build_menus(void){w2k_menubar_clear(dm.mb);w2k_menubar_add(dm.mb,"&File",file_menu);w2k_menubar_add(dm.mb,"&Action",action_menu);w2k_menubar_add(dm.mb,"&View",view_menu);w2k_menubar_add(dm.mb,"&Help",help_menu);}
 
 static W2kDevice *selected(void){return node_dev(dm.tree->sel);}
+/* The Computer entry is the machine itself, not a device with a driver of
+ * its own: its "acpi" is only a label, and Disable put "blacklist acpi"
+ * into /etc/modprobe.d and said it had worked. */
+static int can_disable(const W2kDevice *d){return d && d!=&dm.machine;}
 
 /* Disabling works by driver -- the module is unloaded and kept from
  * loading -- so every device it drives stops with it. Said first, and
@@ -179,8 +228,8 @@ static void command(void *u,int id){(void)u;W2kDevice*d=selected();char err[1024
     case ID_SCAN:scan();break;
     case ID_PROPERTIES:if(d)show_properties(d);break;
     case ID_DETAILS:if(d)show_properties(d);break;   /* the sheet reads modinfo itself */
-    case ID_ENABLE: if(d && d->disabled){ if(w2k_device_set_enabled(d,1,err,sizeof err)==0) scan(); else w2k_notify("Device Manager",err); } break;
-    case ID_DISABLE: if(d && !d->disabled && confirm_disable(dm.win,d)){ if(w2k_device_set_enabled(d,0,err,sizeof err)==0) scan(); else w2k_notify("Device Manager",err); } break;
+    case ID_ENABLE: if(can_disable(d) && d->disabled){ if(w2k_device_set_enabled(d,1,err,sizeof err)==0) scan(); else w2k_notify("Device Manager",err); } break;
+    case ID_DISABLE: if(can_disable(d) && !d->disabled && confirm_disable(dm.win,d)){ if(w2k_device_set_enabled(d,0,err,sizeof err)==0) scan(); else w2k_notify("Device Manager",err); } break;
     case ID_UNINSTALL:if(d&&d->is_dkms&&confirm_uninstall(dm.win)){if(w2k_device_uninstall_dkms(d,err,sizeof err)==0)scan();else w2k_notify("Device Manager",err);}break;
     case ID_UPDATE:if(d)update_driver_wizard(d);break;
     case ID_HIDDEN:dm.show_hidden=!dm.show_hidden;tree_build();build_menus();w2k_win_dirty(dm.win);break;
@@ -191,7 +240,7 @@ static void command(void *u,int id){(void)u;W2kDevice*d=selected();char err[1024
 
 static void layout(W2kWin*w){dm.mb->r=(W2kRect){0,0,w->w,MENUBAR_H};int bot=w->h-STATUS_H;dm.status->r=(W2kRect){0,bot,w->w,STATUS_H};dm.tree->r=(W2kRect){4,MENUBAR_H+2,w->w-8,bot-MENUBAR_H-4};w2k_tree_layout(dm.tree);}
 static void paint(W2kWin*w,Drawable d){w2k_menubar_draw(d,dm.mb);w2k_tree_draw(d,dm.tree);w2k_status_draw(d,dm.status);}
-static void context_menu(int rx,int ry){W2kDevice*d=selected();if(!d)return;W2kMenu*m=w2k_menu_new();w2k_menu_item(m,ID_PROPERTIES,"&Properties","Enter",ICO_PROPERTIES);w2k_menu_item(m,ID_UPDATE,"&Update Driver...",NULL,ICO_WINUPDATE);w2k_menu_item(m,d->disabled?ID_ENABLE:ID_DISABLE,d->disabled?"&Enable Device":"&Disable Device",NULL,ICO_NONE);if(d->is_dkms)w2k_menu_item(m,ID_UNINSTALL,"&Uninstall Device",NULL,ICO_DELETE);int id=w2k_menu_popup(m,rx,ry,MPOP_LEFT);w2k_menu_free(m);if(id)command(NULL,id);}
+static void context_menu(int rx,int ry){W2kDevice*d=selected();if(!d)return;W2kMenu*m=w2k_menu_new();w2k_menu_item(m,ID_PROPERTIES,"&Properties","Enter",ICO_PROPERTIES);w2k_menu_item(m,ID_UPDATE,"&Update Driver...",NULL,ICO_WINUPDATE);if(can_disable(d))w2k_menu_item(m,d->disabled?ID_ENABLE:ID_DISABLE,d->disabled?"&Enable Device":"&Disable Device",NULL,ICO_NONE);if(d->is_dkms)w2k_menu_item(m,ID_UNINSTALL,"&Uninstall Device",NULL,ICO_DELETE);int id=w2k_menu_popup(m,rx,ry,MPOP_LEFT);w2k_menu_free(m);if(id)command(NULL,id);}
 static int event(W2kWin*w,XEvent*e){switch(e->type){case ButtonPress:if(e->xbutton.button==Button3 && w2k_rect_hit(&dm.tree->r,e->xbutton.x,e->xbutton.y)){
             /* The row under the pointer is what the menu is for: it used to
              * be whatever was selected before -- right-click B, Disable, and
@@ -208,11 +257,15 @@ static int event(W2kWin*w,XEvent*e){switch(e->type){case ButtonPress:if(e->xbutt
 /* ---------- Native Update Driver wizard ---------- */
 typedef struct { W2kWin *win; W2kDevice *dev; W2kRect automatic, browse, cancel; int down; } UpdateDlg;
 static void update_paint(W2kWin*w,Drawable d){UpdateDlg*p=w->user;int y=18;w2k_text(d,F_UI_BOLD,20,y,"How do you want to search for driver software?",C_WINDOWTEXT);y+=34;w2k_draw_pushbutton(d,&p->automatic,"Search automatically for updated driver software",p->down==1?BS_PRESSED:0);y+=34;w2k_text(d,F_UI,34,y,"Search using the system's installed software updater.",C_WINDOWTEXT);y+=38;w2k_draw_pushbutton(d,&p->browse,"Browse my computer for driver software",p->down==2?BS_PRESSED:0);y+=34;w2k_text(d,F_UI,34,y,"Install a DKMS driver from a local source directory.",C_WINDOWTEXT);w2k_draw_pushbutton(d,&p->cancel,"Cancel",p->down==3?BS_PRESSED:0);}
-static int update_event(W2kWin*w,XEvent*e){UpdateDlg*p=w->user;if(e->type==ButtonPress){if(e->xbutton.button!=Button1)return 1;if(w2k_rect_hit(&p->automatic,e->xbutton.x,e->xbutton.y))p->down=1;else if(w2k_rect_hit(&p->browse,e->xbutton.x,e->xbutton.y))p->down=2;else if(w2k_rect_hit(&p->cancel,e->xbutton.x,e->xbutton.y))p->down=3;else return 0;w2k_win_dirty(w);return 1;}if(e->type==ButtonRelease&&p->down){int d=p->down;p->down=0;w2k_win_dirty(w);const W2kRect*r=d==1?&p->automatic:d==2?&p->browse:&p->cancel;if(!w2k_rect_hit(r,e->xbutton.x,e->xbutton.y))return 1;if(d==3){w2k_win_close(w,0);return 1;}if(d==1){char err[1024];if(w2k_device_update_driver(p->dev,err,sizeof err)!=0)w2k_notify("Update Driver",err);w2k_win_close(w,0);return 1;}if(d==2){char path[1024];if(w2k_file_dialog(w,0,path,sizeof path)){char *slash=strrchr(path,'/');if(slash)*slash=0;char err[1024];if(w2k_device_install_dkms(path,err,sizeof err)!=0)w2k_notify("Driver installation failed",err);else w2k_notify("Update Driver","The DKMS driver was installed successfully. Rescan hardware with F5.");}return 1;}}if(e->type==KeyPress&&XLookupKeysym(&e->xkey,0)==XK_Escape){w2k_win_close(w,0);return 1;}return 0;}
+static int update_event(W2kWin*w,XEvent*e){UpdateDlg*p=w->user;if(e->type==ButtonPress){if(e->xbutton.button!=Button1)return 1;if(w2k_rect_hit(&p->automatic,e->xbutton.x,e->xbutton.y))p->down=1;else if(w2k_rect_hit(&p->browse,e->xbutton.x,e->xbutton.y))p->down=2;else if(w2k_rect_hit(&p->cancel,e->xbutton.x,e->xbutton.y))p->down=3;else return 0;w2k_win_dirty(w);return 1;}if(e->type==ButtonRelease&&p->down){int d=p->down;p->down=0;w2k_win_dirty(w);const W2kRect*r=d==1?&p->automatic:d==2?&p->browse:&p->cancel;if(!w2k_rect_hit(r,e->xbutton.x,e->xbutton.y))return 1;if(d==3){w2k_win_close(w,0);return 1;}if(d==1){char err[1024];if(w2k_device_update_driver(p->dev,err,sizeof err)!=0)w2k_notify("Update Driver",err);w2k_win_close(w,0);return 1;}if(d==2){char path[1024]="";if(w2k_file_dialog(w,0,path,sizeof path)){char *slash=strrchr(path,'/');if(slash)*slash=0;char err[1024];if(w2k_device_install_dkms(path,err,sizeof err)!=0)w2k_notify("Driver installation failed",err);else w2k_notify("Update Driver","The DKMS driver was installed successfully. Rescan hardware with F5.");}return 1;}}if(e->type==KeyPress&&XLookupKeysym(&e->xkey,0)==XK_Escape){w2k_win_close(w,0);return 1;}return 0;}
 static void update_driver_wizard(W2kDevice*dev){if(!dev)return;UpdateDlg*p=calloc(1,sizeof*p);if(!p)return;p->dev=dev;p->win=w2k_win_new("Update Driver Software","l2kdevmgmt-update",520,260,0);p->win->user=p;p->win->paint=update_paint;p->win->event=update_event;p->automatic=(W2kRect){20,48,480,25};p->browse=(W2kRect){20,123,480,25};p->cancel=(W2kRect){420,220,76,23};w2k_win_center(p->win,dm.win);w2k_win_modal(p->win);free(p);}
 
 /* ---------- Native property sheet ---------- */
-typedef struct {W2kWin*win;W2kTabs*tabs;W2kDevice*d;W2kRect ok,details,update,enable,uninstall;int down;int tab;} Props;
+typedef struct {W2kWin*win;W2kTabs*tabs;W2kDevice*d;W2kRect ok,details,update,enable,uninstall;int down;int tab;
+    /* The Resources tab's text, read once for this sheet. It was kept in
+     * statics keyed on the device's address, which a rescan frees and
+     * reuses: another device's sheet showed the first one's resources. */
+    char res[4096]; int res_done;} Props;
 /* The sheet's buttons, as p->down names them: pressed with the left
  * button, done when it comes up still over them -- like any button. */
 enum { PB_NONE, PB_OK, PB_DETAILS, PB_UPDATE, PB_ENABLE, PB_UNINSTALL };
@@ -222,14 +275,13 @@ static void props_paint(W2kWin*w,Drawable d){Props*p=w->user;w2k_tabs_draw(d,p->
     if(p->tab==0){draw_pair(d,y,"Device status:",q->status);y+=22;draw_pair(d,y,"Manufacturer:",q->manufacturer);y+=22;draw_pair(d,y,"Location:",q->location);y+=22;draw_pair(d,y,"Driver:",q->driver);y+=22;draw_pair(d,y,"Driver version:",q->driver_version);y+=22;draw_pair(d,y,"Driver author:",q->driver_author);y+=22;draw_pair(d,y,"Subsystem:",q->subsystem);y+=22;draw_pair(d,y,"Vendor ID:",q->vendor_id);y+=22;draw_pair(d,y,"Device ID:",q->device_id);y+=22;draw_pair(d,y,"Modalias:",q->modalias);}
     else if(p->tab==1){draw_pair(d,y,"Driver:",q->driver);y+=22;draw_pair(d,y,"Version:",q->driver_version);y+=22;draw_pair(d,y,"Date:",q->driver_date);y+=22;draw_pair(d,y,"Provider / author:",q->driver_author);y+=30;w2k_draw_pushbutton(d,&p->details,"Driver Details...",0);w2k_draw_pushbutton(d,&p->update,"Update Driver...",0);
         p->enable=(W2kRect){c.x+272,c.y+95,105,23};
-        w2k_draw_pushbutton(d,&p->enable,q->disabled?"Enable Device":"Disable Device",q->disabled?0:0);
+        if(can_disable(q))w2k_draw_pushbutton(d,&p->enable,q->disabled?"Enable Device":"Disable Device",q->disabled?0:0);
         if(q->is_dkms){p->uninstall=(W2kRect){c.x+384,c.y+95,110,23};w2k_draw_pushbutton(d,&p->uninstall,"Uninstall...",0);}}
     else if(p->tab==2){snprintf(b,sizeof b,"sysfs path: %.480s",q->sysfs_path);w2k_text(d,F_UI,16,y,b,C_WINDOWTEXT);y+=24;draw_pair(d,y,"Name:",q->name);y+=22;draw_pair(d,y,"Raw location:",q->raw_location);y+=22;draw_pair(d,y,"Subsystem:",q->subsystem);y+=22;draw_pair(d,y,"Vendor ID:",q->vendor_id);y+=22;draw_pair(d,y,"Device ID:",q->device_id);y+=22;draw_pair(d,y,"Modalias:",q->modalias);}
     else {w2k_text(d,F_UI,16,y,"Resource information",C_WINDOWTEXT);y+=24;
         /* Read when the tab is first shown, not on every expose. */
-        static char out[4096]; static W2kDevice *res_for; static int res_done;
-        if(res_for!=q||!res_done){w2k_device_resources(q,out,sizeof out);res_for=q;res_done=1;}
-        char work[4096]; snprintf(work,sizeof work,"%s",out); char *out_p=work;for(char*line=strtok(out_p,"\n");line&&y<c.y+c.h-30;line=strtok(NULL,"\n")){w2k_text(d,F_FIXED,16,y,line,C_WINDOWTEXT);y+=15;}}
+        if(!p->res_done){w2k_device_resources(q,p->res,sizeof p->res);p->res_done=1;}
+        char work[4096]; snprintf(work,sizeof work,"%s",p->res); char *out_p=work;for(char*line=strtok(out_p,"\n");line&&y<c.y+c.h-30;line=strtok(NULL,"\n")){w2k_text(d,F_FIXED,16,y,line,C_WINDOWTEXT);y+=15;}}
     w2k_draw_pushbutton(d,&p->ok,"OK",BS_DEFAULT|(p->down==PB_OK?BS_PRESSED:0));}
 static void props_layout(W2kWin*w){Props*p=w->user;p->tabs->r=(W2kRect){8,MENUBAR_H+4,w->w-16,w->h-MENUBAR_H-12};W2kRect c=w2k_tabs_client(p->tabs);p->ok=(W2kRect){w->w-92,w->h-34,76,23};p->details=(W2kRect){c.x+16,c.y+95,120,23};p->update=(W2kRect){c.x+144,c.y+95,120,23};}
 static void driver_paint(W2kWin *x, Drawable d) {
@@ -263,7 +315,7 @@ static void show_modinfo_dialog(Props*p) {
     free(text);
 }
 static void uevent_tick(void *u);
-static int props_button_at(Props*p,int x,int y){if(w2k_rect_hit(&p->ok,x,y))return PB_OK;if(p->tab!=1)return PB_NONE;if(w2k_rect_hit(&p->details,x,y))return PB_DETAILS;if(w2k_rect_hit(&p->update,x,y))return PB_UPDATE;if(w2k_rect_hit(&p->enable,x,y))return PB_ENABLE;if(p->d->is_dkms&&w2k_rect_hit(&p->uninstall,x,y))return PB_UNINSTALL;return PB_NONE;}
+static int props_button_at(Props*p,int x,int y){if(w2k_rect_hit(&p->ok,x,y))return PB_OK;if(p->tab!=1)return PB_NONE;if(w2k_rect_hit(&p->details,x,y))return PB_DETAILS;if(w2k_rect_hit(&p->update,x,y))return PB_UPDATE;if(can_disable(p->d)&&w2k_rect_hit(&p->enable,x,y))return PB_ENABLE;if(p->d->is_dkms&&w2k_rect_hit(&p->uninstall,x,y))return PB_UNINSTALL;return PB_NONE;}
 static int props_event(W2kWin*w,XEvent*e){Props*p=w->user;if(e->type==ButtonPress){if(w2k_tabs_press(p->tabs,&e->xbutton)){w2k_win_dirty(w);return 1;}if(e->xbutton.button!=Button1)return 1;p->down=props_button_at(p,e->xbutton.x,e->xbutton.y);w2k_win_dirty(w);return 1;}
     else if(e->type==ButtonRelease){int b=p->down;p->down=PB_NONE;w2k_win_dirty(w);if(e->xbutton.button!=Button1||!b||props_button_at(p,e->xbutton.x,e->xbutton.y)!=b)return 1;
         if(b==PB_OK){w2k_win_close(w,0);return 1;}

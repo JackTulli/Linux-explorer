@@ -5,6 +5,7 @@
  * and the performance figures come from /proc. */
 #include "w2kui.h"
 #include <dirent.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -361,9 +362,14 @@ static int is_task_window(Window w)
 static void refresh_apps(void)
 {
     /* The selection follows the window, not the row: the list is rebuilt
-     * every tick and windows come and go above it. */
+     * every tick and windows come and go above it. Every selected task is
+     * kept, and which of them has the focus. */
     Window oldwin = tm.apps->sel >= 0 && tm.apps->sel < tm.napps
                   ? tm.appwin[tm.apps->sel] : None;
+    Window oldsel[128];
+    int noldsel = 0;
+    for (int i = 0; i < tm.napps && i < tm.apps->n; i++)
+        if (tm.apps->items[i].selected) oldsel[noldsel++] = tm.appwin[i];
     int vpos = tm.apps->vsb.pos, hpos = tm.apps->hsb.pos;
     w2k_list_clear(tm.apps);
     tm.napps = 0;
@@ -389,12 +395,13 @@ static void refresh_apps(void)
         XFree(data);
     }
     tm.apps->sel = -1;
-    for (int i = 0; oldwin && i < tm.napps; i++)
-        if (tm.appwin[i] == oldwin) {
-            tm.apps->sel = i;
-            tm.apps->items[i].selected = 1;
-            break;
-        }
+    for (int i = 0; i < tm.napps; i++)
+        for (int k = 0; k < noldsel; k++)
+            if (tm.appwin[i] == oldsel[k]) {
+                tm.apps->items[i].selected = 1;
+                if (tm.apps->sel < 0 || tm.appwin[i] == oldwin) tm.apps->sel = i;
+                break;
+            }
     /* Where it was scrolled to: clearing the list put it back at the top,
      * every second, under the pointer of whoever was scrolling it. */
     tm.apps->vsb.pos = vpos;
@@ -867,10 +874,14 @@ static void arrange(int how)
 
     if (how == ID_CASCADE) {
         int step = 24, cw = aw * 2 / 3, ch = ah * 2 / 3;
+        /* Start again from the top left once the pile runs off. It used
+         * to go back only for the first window past the edge: every one
+         * after it was put in the corner too, all on top of each other. */
+        int per = 1 + ((aw - cw) / step < (ah - ch) / step ? (aw - cw) / step
+                                                           : (ah - ch) / step);
+        if (per < 1) per = 1;
         for (int i = 0; i < n; i++) {
-            int off = step * i;
-            /* Start again from the top left once the pile runs off. */
-            if (off + cw > aw || off + ch > ah) off = 0;
+            int off = step * (i % per);
             send_place(ws[i], ax + off, ay + off, cw, ch);
         }
         return;
@@ -929,8 +940,8 @@ static void command(void *user, int id)
         break;
     }
     case ID_ENDTASK:
-        if (tm.apps->sel >= 0 && tm.apps->sel < tm.napps)
-            send_close(tm.appwin[tm.apps->sel]);
+        for (int i = 0; i < tm.napps && i < tm.apps->n; i++)
+            if (tm.apps->items[i].selected) send_close(tm.appwin[i]);
         break;
     case ID_SWITCHTO:
         if (tm.apps->sel >= 0 && tm.apps->sel < tm.napps)
@@ -944,21 +955,32 @@ static void command(void *user, int id)
                        "results including loss of data and system instability.\n"
                        "\n"
                        "Are you sure you want to terminate the process?",
-                       MB_YESNO | MB_ICONWARNING) == ID_YES)
-            kill(pid, SIGTERM);
+                       MB_YESNO | MB_ICONWARNING) == ID_YES &&
+            kill(pid, SIGTERM) != 0 && errno != ESRCH) {
+            /* Someone else's process -- root's, most often. Nothing
+             * happened and nothing said so; Windows says this. A process
+             * that has already gone (ESRCH) is what was asked for. */
+            char msg[300];
+            snprintf(msg, sizeof msg, "The operation could not be completed.\n\n%s",
+                     errno == EPERM ? "Access is denied." : strerror(errno));
+            w2k_msgbox(tm.win, "Unable to Terminate Process", msg,
+                       MB_OK | MB_ICONERROR);
+        }
         break;
     }
     case ID_TILE_H: case ID_TILE_V: case ID_CASCADE:
         arrange(id);
         break;
     case ID_MINIMIZE:
-        if (tm.apps->sel >= 0 && tm.apps->sel < tm.napps)
-            XIconifyWindow(w2k.dpy, tm.appwin[tm.apps->sel], w2k.screen);
+        for (int i = 0; i < tm.napps && i < tm.apps->n; i++)
+            if (tm.apps->items[i].selected)
+                XIconifyWindow(w2k.dpy, tm.appwin[i], w2k.screen);
         break;
     case ID_MAXIMIZE:
-        if (tm.apps->sel >= 0 && tm.apps->sel < tm.napps)
-            send_state(tm.appwin[tm.apps->sel], 1, w2k.a_net_wm_state_maxv,
-                       w2k.a_net_wm_state_maxh);
+        for (int i = 0; i < tm.napps && i < tm.apps->n; i++)
+            if (tm.apps->items[i].selected)
+                send_state(tm.appwin[i], 1, w2k.a_net_wm_state_maxv,
+                           w2k.a_net_wm_state_maxh);
         break;
     case ID_BRINGFRONT:
         if (tm.apps->sel >= 0 && tm.apps->sel < tm.napps)
@@ -1109,6 +1131,14 @@ static void paint(W2kWin *w, Drawable d)
     w2k_status_draw(d, tm.sb);
 }
 
+/* A double-click on a task, or Enter, switches to it. */
+static void on_app_activate(void *u, int i)
+{
+    (void)u;
+    (void)i;
+    command(NULL, ID_SWITCHTO);
+}
+
 static void on_sort_procs(void *u, int col)
 {
     (void)u;
@@ -1161,6 +1191,9 @@ static int event(W2kWin *w, XEvent *e)
         if (w2k_menubar_press(tm.mb, &e->xbutton)) { w2k_win_dirty(w); return 1; }
         if (w2k_tabs_press(tm.tabs, &e->xbutton)) { w2k_win_dirty(w); return 1; }
         if (lv && w2k_list_press(lv, &e->xbutton)) { w2k_win_dirty(w); return 1; }
+        /* The buttons are pressed with the left button alone: a wheel
+         * notch or a right-click over End Task closed the program. */
+        if (e->xbutton.button != Button1) return 1;
         int x = e->xbutton.x, y = e->xbutton.y;
         if (tm.tabs->sel == 0) {
             if (w2k_rect_hit(&tm.b_end, x, y))         tm.down = 1;
@@ -1177,6 +1210,7 @@ static int event(W2kWin *w, XEvent *e)
         return 0;
     case ButtonRelease: {
         if (lv) w2k_list_release(lv, &e->xbutton);
+        if (e->xbutton.button != Button1) return 1;
         int d = tm.down;
         tm.down = 0;
         int x = e->xbutton.x, y = e->xbutton.y;
@@ -1192,6 +1226,18 @@ static int event(W2kWin *w, XEvent *e)
         if (w2k_tabs_key(tm.tabs, &e->xkey)) { w2k_win_dirty(w); return 1; }
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         if (ks == XK_F5) { command(NULL, ID_REFRESH); return 1; }
+        /* The buttons' underlined letters, and Delete for End Process,
+         * as in Windows; they were drawn but did nothing. */
+        if (e->xkey.state & Mod1Mask) {
+            int id = 0;
+            if (tm.tabs->sel == 0)
+                id = ks == XK_e ? ID_ENDTASK : ks == XK_s ? ID_SWITCHTO
+                   : ks == XK_n ? ID_NEWTASK : 0;
+            else if (tm.tabs->sel == 1 && ks == XK_p)
+                id = ID_ENDPROCESS;
+            if (id) { command(NULL, id); return 1; }
+        }
+        if (tm.tabs->sel == 1 && ks == XK_Delete) { command(NULL, ID_ENDPROCESS); return 1; }
         if (lv && w2k_list_key(lv, &e->xkey)) { w2k_win_dirty(w); return 1; }
         return 1;
     }
@@ -1231,6 +1277,10 @@ int main(void)
 
     tm.apps = w2k_list_new(LV_REPORT);
     tm.apps->focused = 1;
+    /* Several tasks can be selected, for the Windows menu to tile,
+     * cascade, minimize or end together. */
+    tm.apps->multisel = 1;
+    tm.apps->on_activate = on_app_activate;   /* double-click or Enter */
     w2k_scroll_bind(&tm.apps->vsb, tm.win);
     w2k_scroll_bind(&tm.apps->hsb, tm.win);
     w2k_list_add_col(tm.apps, "Task", 330, 0);
