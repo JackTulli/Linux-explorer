@@ -225,6 +225,8 @@ typedef struct {
     short  *px, *py;             /* the free-form path */
     int     npts;
     int     dragging;
+    int    *wins;                /* Window mode: x, y, w, h of each, topmost first */
+    int     nwins;
 } Capture;
 
 /* Where the channels sit in a pixel of this image, and how wide they are. */
@@ -366,33 +368,46 @@ static void ink_border(unsigned char *rgba, int w, int h)
             }
 }
 
-/* The top-level window under a screen point: the child of the root
- * there, which under the shell is a frame -- so the snip takes the
- * window with its title bar, as the real tool does. Override-redirect
- * windows (our own overlay, the taskbar, menus) are looked through. */
-static int window_under(int rx, int ry, int *x, int *y, int *w, int *h)
+/* The top-level windows, topmost first: each child of the root, which
+ * under the shell is a frame -- so the snip takes the window with its
+ * title bar, as the real tool does. Override-redirect windows (our own
+ * overlay, the taskbar, menus) are looked through. Read once as the
+ * overlay goes up, since what is under it is a still picture: asked again
+ * on every move of the pointer, it was a round trip to the server for
+ * each window. */
+static void list_windows(Capture *c)
 {
     Window *kids = NULL, dummy;
     unsigned n = 0;
-    if (!XQueryTree(w2k.dpy, w2k.root, &dummy, &dummy, &kids, &n) || !kids) return 0;
-    int found = 0;
-    for (int i = (int)n - 1; i >= 0 && !found; i--) {
+    if (!XQueryTree(w2k.dpy, w2k.root, &dummy, &dummy, &kids, &n) || !kids) return;
+    c->wins = malloc(sizeof *c->wins * 4 * n);
+    for (int i = (int)n - 1; i >= 0 && c->wins; i--) {
         XWindowAttributes a;
         if (!XGetWindowAttributes(w2k.dpy, kids[i], &a)) continue;
         if (a.map_state != IsViewable || a.override_redirect) continue;
-        if (rx >= a.x && rx < a.x + a.width && ry >= a.y && ry < a.y + a.height) {
-            *x = a.x; *y = a.y; *w = a.width; *h = a.height;
-            found = 1;
-        }
+        int *r = c->wins + 4 * c->nwins++;
+        r[0] = a.x; r[1] = a.y; r[2] = a.width; r[3] = a.height;
     }
     XFree(kids);
-    return found;
+}
+
+/* The top-level window under a screen point. */
+static int window_under(const Capture *c, int rx, int ry, int *x, int *y, int *w, int *h)
+{
+    for (int i = 0; i < c->nwins; i++) {
+        const int *r = c->wins + 4 * i;
+        if (rx >= r[0] && rx < r[0] + r[2] && ry >= r[1] && ry < r[1] + r[3]) {
+            *x = r[0]; *y = r[1]; *w = r[2]; *h = r[3];
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static void pick_window(Capture *c, int rx, int ry)
 {
     int x, y, w, h;
-    if (!window_under(rx, ry, &x, &y, &w, &h)) return;
+    if (!window_under(c, rx, ry, &x, &y, &w, &h)) return;
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
     if (x + w > c->sw) w = c->sw - x;
@@ -498,6 +513,7 @@ static int take_snip(void)
         Window r, ch;
         int rx, ry, wx, wy;
         unsigned m;
+        list_windows(&c);
         if (XQueryPointer(w2k.dpy, w2k.root, &r, &ch, &rx, &ry, &wx, &wy, &m))
             pick_window(&c, rx, ry);
     }
@@ -537,8 +553,14 @@ static int take_snip(void)
             }
             int mx = e.xmotion.x_root, my = e.xmotion.y_root;
             if (st.type == SNIP_WINDOW) {
+                /* Painted again only when the pointer has gone on to
+                 * another window: every repaint copies the whole screen,
+                 * and did so on each move within the same window. */
+                const int was[5] = { c.have_rect, c.x0, c.y0, c.x1, c.y1 };
                 pick_window(&c, mx, my);
-                capture_paint(&c);
+                if (was[0] != c.have_rect || was[1] != c.x0 || was[2] != c.y0 ||
+                    was[3] != c.x1 || was[4] != c.y1)
+                    capture_paint(&c);
             } else if (c.dragging) {
                 if (st.type == SNIP_FREEFORM) {
                     if (c.npts < MAXPTS) { c.px[c.npts] = (short)mx; c.py[c.npts] = (short)my; c.npts++; }
@@ -615,6 +637,7 @@ static int take_snip(void)
     }
     free(c.px);
     free(c.py);
+    free(c.wins);
     XDestroyImage(c.shot);
     return ok;
 }
@@ -762,6 +785,28 @@ static void rebuild_pixmap(void)
 static unsigned char *flattened(void)
 {
     if (!st.rgba) return NULL;
+    /* With no ink on it the picture is the snip itself, as long as the
+     * screen keeps eight bits a channel and so gives back through the
+     * pixmap exactly what went in (a 16-bit screen does not). Copied
+     * here, not built and read back from the server, which for the
+     * clipboard copy of every 4K snip cost 50 ms before the editor
+     * could appear. */
+    const Visual *v = w2k.visual;
+    const unsigned long vm[3] = { v->red_mask, v->green_mask, v->blue_mask };
+    int eight = st.nstrokes == 0 && w2k.depth >= 24;
+    for (int i = 0; i < 3 && eight; i++) {
+        unsigned long m = vm[i];
+        while (m && !(m & 1)) m >>= 1;
+        eight = m == 0xff;
+    }
+    if (eight) {
+        size_t n = (size_t)st.iw * st.ih * 4;
+        unsigned char *out = malloc(n);
+        if (!out) return NULL;
+        memcpy(out, st.rgba, n);
+        for (size_t i = 3; i < n; i += 4) out[i] = 255;   /* as cut_out gives it */
+        return out;
+    }
     if (st.pm_dirty || !st.pm) rebuild_pixmap();
     XImage *im = XGetImage(w2k.dpy, st.pm, 0, 0, (unsigned)st.iw, (unsigned)st.ih, AllPlanes, ZPixmap);
     if (!im) return NULL;
