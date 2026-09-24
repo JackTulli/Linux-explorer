@@ -22,6 +22,7 @@
  * what it installed. What Proton says goes to ~/.w2k/proton.log. */
 #include "w2kui.h"
 #include <X11/keysym.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -443,7 +444,9 @@ static void setup_tick(void *u)
     int st;
     if (waitpid(s->pid, &st, WNOHANG) == s->pid) {
         s->finished = 1;
-        s->rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+        /* Killed (the OOM killer, a crash) is a failure, as without a
+         * display: -1 is Cancel, and nothing was said about it. */
+        s->rc = WIFEXITED(st) ? WEXITSTATUS(st) : 1;
         w2k_win_close(s->w, ID_OK);
         return;
     }
@@ -673,6 +676,21 @@ static int cmd_run(const char *file, char **extra, int nextra)
                 "installed.\n\nRun it with %s instead?", base, c.runner,
                 strcmp(name, "wine") ? name : "Wine") != ID_YES)
             return 1;
+    }
+
+    /* Wine chosen, but not installed -- the default out of the box, where
+     * Proton came from Steam or ProtonUp-Qt: that said neither was there,
+     * and nothing ran. The newest build runs it, as when a default build
+     * has gone; a program set to Wine asks first. */
+    if (!strcmp(name, "wine") && !w2k_wine_available()) {
+        static W2kProton all[64];
+        if (w2k_proton_list(all, 64) > 0) {
+            if (!strcmp(c.runner, "wine") &&
+                say(MB_YESNO | MB_ICONWARNING, "%s is set to run with Wine, which is not "
+                    "installed.\n\nRun it with %s instead?", base, all[0].name) != ID_YES)
+                return 1;
+            snprintf(name, sizeof name, "%s", all[0].name);
+        }
     }
 
     Runner r;
@@ -1243,16 +1261,24 @@ static int options_changed(void)
            a->esync != b->esync || a->fsync != b->fsync || a->nvapi != b->nvapi || a->hud != b->hud;
 }
 
+/* The Versions row programs run with by default. A default that has
+ * gone -- removed by hand, or Wine not installed -- is no default: they
+ * run with the newest build, as l2kproton run picks, and the page said
+ * Wine while they did. */
+static int default_row(void)
+{
+    if (!strcmp(pm.o.def, "wine")) return w2k_wine_available() || !pm.npv ? 0 : 1;
+    for (int i = 0; i < pm.npv; i++)
+        if (!strcmp(pm.pv[i].name, pm.o.def)) return i + 1;
+    return pm.npv ? 1 : 0;
+}
+
 static void fill_default_combo(void)
 {
     w2k_combo_clear(pm.def);
     w2k_combo_add(pm.def, w2k_wine_available() ? "Wine" : "Wine (not installed)");
-    int sel = 0;
-    for (int i = 0; i < pm.npv; i++) {
-        w2k_combo_add(pm.def, pm.pv[i].name);
-        if (!strcmp(pm.pv[i].name, pm.o.def)) sel = i + 1;
-    }
-    pm.def->sel = sel;
+    for (int i = 0; i < pm.npv; i++) w2k_combo_add(pm.def, pm.pv[i].name);
+    pm.def->sel = default_row();
 }
 
 static void fill_versions(void)
@@ -1260,9 +1286,7 @@ static void fill_versions(void)
     char keep[128];
     snprintf(keep, sizeof keep, "%s", pm.vlist->sel >= 0 ? vrow_name(pm.vlist->sel) : pm.o.def);
     pm.npv = w2k_proton_list(pm.pv, (int)(sizeof pm.pv / sizeof *pm.pv));
-    /* A default that has gone -- removed by hand -- is no default. */
-    int found = !strcmp(pm.o.def, "wine");
-    for (int i = 0; i < pm.npv && !found; i++) found = !strcmp(pm.pv[i].name, pm.o.def);
+    int def = default_row();
     w2k_list_clear(pm.vlist);
     int sel = 0;
     for (int i = 0; i <= pm.npv; i++) {
@@ -1271,7 +1295,7 @@ static void fill_versions(void)
         w2k_list_set(pm.vlist, row, 0, i ? name : "Wine");
         w2k_list_set(pm.vlist, row, 1, i ? (pm.pv[i - 1].steam ? "Steam" : "Proton Manager")
                                          : (w2k_wine_available() ? "This computer" : "Not installed"));
-        w2k_list_set(pm.vlist, row, 2, !strcmp(name, pm.o.def) || (!found && !i) ? "Default" : "");
+        w2k_list_set(pm.vlist, row, 2, i == def ? "Default" : "");
         if (!strcmp(name, keep)) sel = row;
     }
     list_select(pm.vlist, sel);
@@ -1285,10 +1309,9 @@ static int installed(const char *tag)
     return 0;
 }
 
-static void fill_releases(void)
+/* The list again, with the version called `keep` still chosen. */
+static void fill_releases_keeping(const char *keep)
 {
-    char keep[64] = "";
-    if (pm.rlist->sel >= 0 && pm.rlist->sel < pm.nrel) snprintf(keep, sizeof keep, "%s", pm.rel[pm.rlist->sel].tag);
     w2k_list_clear(pm.rlist);
     int sel = -1;
     for (int i = 0; i < pm.nrel; i++) {
@@ -1307,6 +1330,13 @@ static void fill_releases(void)
     for (int i = 0; sel < 0 && i < pm.nrel; i++)
         if (!installed(pm.rel[i].tag)) sel = i;
     list_select(pm.rlist, sel >= 0 ? sel : (pm.nrel ? 0 : -1));
+}
+
+static void fill_releases(void)
+{
+    char keep[64] = "";
+    if (pm.rlist->sel >= 0 && pm.rlist->sel < pm.nrel) snprintf(keep, sizeof keep, "%s", pm.rel[pm.rlist->sel].tag);
+    fill_releases_keeping(keep);
 }
 
 static const char *winver_label(const char *id)
@@ -1470,11 +1500,20 @@ static int load_releases(void)
         len += got;
     }
     fclose(f);
-    int n = text ? parse_releases(text, len, pm.rel, MAX_REL) : -1;
+    /* The version chosen is kept by its name, taken before the list is
+     * read again: a new release at the top moved the choice down a row,
+     * onto another version, and Install fetched that one. Read into a
+     * list of its own, so one read no further than halfway leaves the
+     * rows and the versions they name alone. */
+    char keep[64] = "";
+    if (pm.rlist->sel >= 0 && pm.rlist->sel < pm.nrel) snprintf(keep, sizeof keep, "%s", pm.rel[pm.rlist->sel].tag);
+    static Release got[MAX_REL];
+    int n = text ? parse_releases(text, len, got, MAX_REL) : -1;
     free(text);
     if (n < 0) return 0;
+    memcpy(pm.rel, got, (size_t)n * sizeof *got);
     pm.nrel = n;
-    fill_releases();
+    fill_releases_keeping(keep);
     return 1;
 }
 
@@ -1579,6 +1618,9 @@ static void clean_partial(const char *tag, const char *part)
     spawn(argv);
 }
 
+static int umu_installed(void);
+static void get_umu(void);
+
 static void install_done(int rc, const char *tail)
 {
     w2k_del_timer(work_tick, NULL);
@@ -1609,6 +1651,8 @@ static void install_done(int rc, const char *tail)
     }
     pm.stopped = 0;
     fill_releases();
+    /* umu-launcher turned on while this ran waited for it. */
+    if (pm.o.umu && !umu_installed()) get_umu();
 }
 
 static void start_install(void)
@@ -1875,6 +1919,8 @@ static void paint_options(Drawable d, W2kRect c)
     w2k_draw_checkbox(d, g.x + 12, g.y + 20, label[OPT_UMU], val[OPT_UMU], 0, pm.work == WORK_UMU);
     char text[400];
     if (pm.work == WORK_UMU) snprintf(text, sizeof text, "Downloading umu-launcher...");
+    else if (pm.work == WORK_INSTALL && pm.o.umu && !umu_installed())
+        snprintf(text, sizeof text, "umu-launcher is downloaded when the installation of %s is done.", pm.work_tag);
     else if (pm.umu_msg[0]) snprintf(text, sizeof text, "%s", pm.umu_msg);
     else if (umu_installed() && umu_runtime_present())
         snprintf(text, sizeof text, "umu-launcher and the Steam Runtime are installed.");
@@ -2095,11 +2141,15 @@ static void command(int b)
         break;
     case B_FORGET:
         if (ps >= 0 && ps < pm.nprog) {
-            char msg[4200];
+            /* Taken before the question: the list is read again when the
+             * window gets the focus back, and the row could be another
+             * program's by the time Yes was clicked. */
+            char path[4096], msg[4200];
+            snprintf(path, sizeof path, "%s", pm.prog[ps]);
             snprintf(msg, sizeof msg, "Remove the settings of %s? It will run as Windows programs "
-                     "do by default.", strrchr(pm.prog[ps], '/') ? strrchr(pm.prog[ps], '/') + 1 : pm.prog[ps]);
+                     "do by default.", strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
             if (w2k_msgbox(pm.win, "Proton Manager", msg, MB_YESNO | MB_ICONQUESTION) == ID_YES) {
-                w2k_compat_set(pm.prog[ps], NULL);
+                w2k_compat_set(path, NULL);
                 fill_programs();
             }
         }
@@ -2163,6 +2213,8 @@ static void on_activate(void *u, int row)
 
 static void on_default(void *u, int idx)
 {
+    /* Wine not installed is refused, as Set as Default refuses it. */
+    if (idx <= 0 && !w2k_wine_available()) { fill_default_combo(); return; }
     set_default(idx <= 0 ? "wine" : pm.pv[idx - 1].name);
 }
 
@@ -2175,6 +2227,22 @@ static W2kList *page_list(void)
     case PG_PREFIXES: return pm.xlist;
     default:          return NULL;
     }
+}
+
+/* Alt and a button's underlined letter: that button, as in Windows. */
+static int mnemonic(XKeyEvent *k)
+{
+    char ch[4];
+    if (XLookupString(k, ch, sizeof ch, NULL, NULL) != 1) return 0;
+    int c = tolower((unsigned char)ch[0]);
+    for (int i = 1; i < NB; i++) {
+        const char *amp = strchr(btn[i].label, '&');
+        if (amp && tolower((unsigned char)amp[1]) == c && visible(i) && enabled(i)) {
+            command(i);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int event(W2kWin *w, XEvent *e)
@@ -2234,6 +2302,7 @@ static int event(W2kWin *w, XEvent *e)
     case KeyPress: {
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         if (w2k_tabs_key(pm.tabs, &e->xkey)) { w2k_win_dirty(w); return 1; }
+        if ((e->xkey.state & Mod1Mask) && mnemonic(&e->xkey)) { w2k_win_dirty(w); return 1; }
         if (ks == XK_Escape) { command(B_CANCEL); return 1; }
         if (ks == XK_F5 && pm.tabs->sel == PG_DOWNLOAD) { command(B_REFRESH); return 1; }
         if (list && list->focused && list->sel >= 0 && (ks == XK_Return || ks == XK_KP_Enter)) {
@@ -2315,6 +2384,9 @@ static int manager(int page)
     if (page == PG_VERSIONS && pm.npv == 0 && !w2k_wine_available()) page = PG_DOWNLOAD;
     pm.tabs->sel = page;
     on_tab(NULL, page);
+    /* Turned on, but never fetched: the window was closed while an
+     * installation ran, and programs ran without the runtime since. */
+    if (pm.o.umu && !umu_installed()) get_umu();
 
     w2k_win_center(pm.win, NULL);
     w2k_win_show(pm.win);

@@ -582,6 +582,19 @@ static void mon_window(Mon *m)
     XFixesHideCursor(hd, m->win);
 }
 
+/* The scaled picture a monitor keeps, drawn whole the first time. */
+static void mon_fbo(Mon *m)
+{
+    m->fbo_tex = tex2d(m->hw, m->hh, GL_NEAREST);
+    p_glGenFramebuffers(1, &m->fbo);
+    p_glBindFramebuffer(GL_FRAMEBUFFER, m->fbo);
+    p_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m->fbo_tex, 0);
+    if (p_glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        fprintf(stderr, "l2kscaler: framebuffer for %s incomplete\n", m->name);
+    p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    m->fbo_x0 = 0; m->fbo_y0 = 0; m->fbo_x1 = m->hw; m->fbo_y1 = m->hh;
+}
+
 static void gl_after_context(void)
 {
     /* One vertical-blank wait per frame, not one per window: the first
@@ -609,18 +622,8 @@ static void gl_after_context(void)
     cur_tex = tex2d(1, 1, GL_LINEAR);
     prog_ewa = link_program(ewa_src);
     prog_blit = link_program(blit_src);
-    for (int i = 0; i < nmons; i++) {
-        Mon *m = &mons[i];
-        if (fabs(m->scale - 1.0) < 1e-6) continue;
-        m->fbo_tex = tex2d(m->hw, m->hh, GL_NEAREST);
-        p_glGenFramebuffers(1, &m->fbo);
-        p_glBindFramebuffer(GL_FRAMEBUFFER, m->fbo);
-        p_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m->fbo_tex, 0);
-        if (p_glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-            fprintf(stderr, "l2kscaler: framebuffer for %s incomplete\n", m->name);
-        p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        m->fbo_x0 = 0; m->fbo_y0 = 0; m->fbo_x1 = m->hw; m->fbo_y1 = m->hh;
-    }
+    for (int i = 0; i < nmons; i++)
+        if (fabs(mons[i].scale - 1.0) >= 1e-6) mon_fbo(&mons[i]);
 }
 
 /* A quad over the window rectangle (x0,y0)-(x1,y1) in pixels, y down,
@@ -1489,7 +1492,13 @@ static void host_event(XEvent *e)
             /* Trying it in a window: the window's size is the monitor's. */
             m->hw = e->xconfigure.width; m->hh = e->xconfigure.height;
             m->scale = (double)m->hw / m->nw;
-            if (m->fbo) {
+            if (!m->fbo && fabs(m->scale - 1.0) >= 1e-6) {
+                /* Started at 1:1 it had no scaled picture: the pointer
+                 * went by the new scale, the picture stayed 1:1, and
+                 * clicks landed beside what they were on. */
+                glXMakeCurrent(hd, m->win, ctx);
+                mon_fbo(m);
+            } else if (m->fbo) {
                 glXMakeCurrent(hd, m->win, ctx);
                 glBindTexture(GL_TEXTURE_2D, m->fbo_tex);
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m->hw, m->hh, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, NULL);

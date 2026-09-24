@@ -233,6 +233,10 @@ static void read_options(DBusMessageIter *arr, Req *r)
                 else r->refused++;
                 dbus_message_iter_next(&fl);
             }
+            /* More names than there is room for: the rest were dropped,
+             * and the program was told all went well with fewer files
+             * than it asked for. Refused, as a name not plain is. */
+            if (dbus_message_iter_get_arg_type(&fl) == DBUS_TYPE_ARRAY) r->refused++;
         }
         dbus_message_iter_next(&e);
     }
@@ -241,15 +245,20 @@ static void read_options(DBusMessageIter *arr, Req *r)
 /* ------------------------------------------------------------------ *
  * The answer
  * ------------------------------------------------------------------ */
-static void file_uri(const char *path, char *out, int n)
+/* 0 when the uri does not fit: cut short, it named another file -- a
+ * folder up the way, or a name ended early -- and that is where the
+ * program would have saved. */
+static int file_uri(const char *path, char *out, int n)
 {
     static const char hex[] = "0123456789ABCDEF";
     int o = snprintf(out, (size_t)n, "file://");
-    for (const unsigned char *p = (const unsigned char *)path; *p && o < n - 4; p++) {
+    const unsigned char *p = (const unsigned char *)path;
+    for (; *p && o < n - 4; p++) {
         if (isalnum(*p) || strchr("/-._~!$&'()*+,;=:@", *p)) out[o++] = (char)*p;
         else { out[o++] = '%'; out[o++] = hex[*p >> 4]; out[o++] = hex[*p & 15]; }
     }
     out[o] = 0;
+    return !*p;
 }
 
 static void send_reply(DBusConnection *c, DBusMessage *m, unsigned response,
@@ -317,16 +326,20 @@ static int choose(int kind, Req *r, const char *title, unsigned long parent, cha
     /* The scheme may have changed since the last one. */
     w2k_scheme_load(NULL);
     for (;;) {
+        /* Save As over a file that is there has been asked about by the
+         * dialog itself; asking here too put the question twice. */
         if (!w2k_file_dialog_opts(NULL, kind == K_SAVE, out, n, o.folder ? NULL : r->filters, &o))
             return 0;
         struct stat st;
-        if (kind != K_SAVE || stat(out, &st) != 0) return 1;
-        /* Save As over a file that is there: ask, as Windows does. */
+        if (kind != K_OPEN || o.folder || stat(out, &st) == 0) return 1;
+        /* Open of a name that is not there, typed: said, as Windows says
+         * it, and the dialog is back. Sent on, the program got nothing and
+         * no word why. */
         char msg[400];
         const char *base = strrchr(out, '/');
-        snprintf(msg, sizeof msg, "%.300s already exists.\nDo you want to replace it?", base ? base + 1 : out);
-        if (w2k_msgbox(NULL, title && *title ? title : "Save As", msg, MB_YESNO | MB_ICONWARNING) == ID_YES)
-            return 1;
+        snprintf(msg, sizeof msg, "%.300s\nFile not found.\nPlease verify the correct file name was given.",
+                 base ? base + 1 : out);
+        w2k_msgbox(NULL, title && *title ? title : "Open", msg, MB_OK | MB_ICONWARNING);
     }
 }
 
@@ -359,7 +372,7 @@ static DBusHandlerResult handle(DBusConnection *c, DBusMessage *m, void *user)
 
     static char uris[MAXFILES][4200];
     char path[4096];
-    int n = 0;
+    int n = 0, ok = 1;
     /* Names the program sent that were not plain names: nothing is saved
      * for it, and no dialog asks the user to pick a folder for them. */
     if (kind == K_SAVEFILES && (r.refused || !r.nfiles)) {
@@ -371,6 +384,9 @@ static DBusHandlerResult handle(DBusConnection *c, DBusMessage *m, void *user)
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     if (kind == K_SAVEFILES) {
+        /* The caption of the dialog just closed: the program's title, or
+         * the dialog's own. "" was "(Untitled)". */
+        const char *cap = title && *title ? title : "Select Folder";
         /* Asked about before anything is replaced, as Save As asks: the
          * names were the program's, the user never saw them. Something
          * there that is not a plain file is not replaced at all. */
@@ -385,7 +401,7 @@ static DBusHandlerResult handle(DBusConnection *c, DBusMessage *m, void *user)
                 char msg[700];
                 snprintf(msg, sizeof msg, "'%.300s' in that folder is not a file and cannot "
                          "be replaced.", r.files[i]);
-                w2k_msgbox(NULL, title, msg, MB_OK | MB_ICONERROR);
+                w2k_msgbox(NULL, cap, msg, MB_OK | MB_ICONERROR);
                 send_reply(c, m, RESP_CANCEL, NULL, 0, 0);
                 return DBUS_HANDLER_RESULT_HANDLED;
             }
@@ -399,18 +415,18 @@ static DBusHandlerResult handle(DBusConnection *c, DBusMessage *m, void *user)
             snprintf(msg, sizeof msg, "%s already exist%s in %.300s:\n%s%s\n\nDo you want to "
                      "replace %s?", nthere == 1 ? "This file" : "These files", nthere == 1 ? "s" : "",
                      path, there, nthere > 8 ? "\n    ..." : "", nthere == 1 ? "it" : "them");
-            if (w2k_msgbox(NULL, title, msg, MB_YESNO | MB_ICONWARNING) != ID_YES) {
+            if (w2k_msgbox(NULL, cap, msg, MB_YESNO | MB_ICONWARNING) != ID_YES) {
                 send_reply(c, m, RESP_CANCEL, NULL, 0, 0);
                 return DBUS_HANDLER_RESULT_HANDLED;
             }
         }
-        for (int i = 0; i < r.nfiles; i++) {
+        for (int i = 0; i < r.nfiles && ok; i++) {
             char full[4400];
             snprintf(full, sizeof full, "%s%s%s", path, strcmp(path, "/") ? "/" : "", r.files[i]);
-            file_uri(full, uris[n++], sizeof uris[0]);
+            ok = file_uri(full, uris[n++], sizeof uris[0]);
         }
-    } else file_uri(path, uris[n++], sizeof uris[0]);
-    send_reply(c, m, RESP_OK, uris, n, kind == K_OPEN);
+    } else ok = file_uri(path, uris[n++], sizeof uris[0]);
+    send_reply(c, m, ok ? RESP_OK : RESP_ERROR, uris, n, kind == K_OPEN);
     return DBUS_HANDLER_RESULT_HANDLED;
 
 bad:;
@@ -434,7 +450,7 @@ static int test_run(const char *what)
     r.nfilters = 2;
     char path[4096], uri[4200];
     if (!choose(kind, &r, NULL, 0, path, sizeof path)) { puts("cancelled"); return 1; }
-    file_uri(path, uri, sizeof uri);
+    if (!file_uri(path, uri, sizeof uri)) { puts("too long"); return 1; }
     puts(uri);
     return 0;
 }
