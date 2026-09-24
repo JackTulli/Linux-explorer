@@ -672,31 +672,36 @@ static int navigate_path(const char *p, int record)
     return navigate(&nd, record);
 }
 
+/* The shell's places by the names the Folders pane gives them, typed in
+ * the address bar or given on the command line ("l2kexplorer Desktop",
+ * as a folder window's Address list opens them). Returns what navigate
+ * did, or -1 for anything else, which is a path. */
+static int open_place(const char *t)
+{
+    if (!strcasecmp(t, "My Computer") || !strcmp(t, "C:") || !strcmp(t, "C:\\")) {
+        Node nd = { K_MYCOMPUTER, { 0 } };
+        return navigate(&nd, 1);
+    }
+    if (!strcasecmp(t, "Desktop")) {
+        Node nd = { K_DESKTOP, { 0 } };
+        return navigate(&nd, 1);
+    }
+    if (!strcasecmp(t, "My Documents") || !strcmp(t, "~"))
+        return navigate_path(ex.home, 1);
+    if (!strcasecmp(t, "Recycle Bin")) {
+        Node nd = { K_RECYCLE, { 0 } };
+        return navigate(&nd, 1);
+    }
+    return -1;
+}
+
 /* Go to whatever is typed in the address bar (Enter). Virtual names
  * resolve the same way the tree does. */
 static void addr_go(void)
 {
     const char *t = w2k_combo_text(ex.addr);
     if (!t || !t[0]) return;
-    if (!strcasecmp(t, "My Computer") || !strcmp(t, "C:") || !strcmp(t, "C:\\")) {
-        Node nd = { K_MYCOMPUTER, { 0 } };
-        navigate(&nd, 1);
-        return;
-    }
-    if (!strcasecmp(t, "Desktop")) {
-        Node nd = { K_DESKTOP, { 0 } };
-        navigate(&nd, 1);
-        return;
-    }
-    if (!strcasecmp(t, "My Documents") || !strcmp(t, "~")) {
-        navigate_path(ex.home, 1);
-        return;
-    }
-    if (!strcasecmp(t, "Recycle Bin")) {
-        Node nd = { K_RECYCLE, { 0 } };
-        navigate(&nd, 1);
-        return;
-    }
+    if (open_place(t) >= 0) return;
     char path[1024], typed[1024];
     snprintf(typed, sizeof typed, "%s", t);
     /* Expand a leading ~ to $HOME. */
@@ -3704,20 +3709,19 @@ int main(int argc, char **argv)
 
     layout(ex.win);
 
-    if (argc > 1) {
+    /* A place by name ("Recycle Bin", "~") or a path. One that cannot be
+     * read opens My Computer after the error box, not an empty window
+     * with no folder. */
+    int opened = argc > 1 ? open_place(argv[1]) : 0;
+    if (opened < 0) {
         struct stat st;
         char cwd[1024], path[1024];
         if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, "/");
-        if (!strcmp(argv[1], "~")) snprintf(path, sizeof path, "%s", ex.home);
-        else if (!path_tidy(path, sizeof path, cwd, argv[1])) path[0] = 0;
-        /* One that cannot be read opens My Computer after the error box,
-         * not an empty window with no folder. */
-        if (!path[0] || stat(path, &st) != 0 || !S_ISDIR(st.st_mode) ||
-            !navigate_path(path, 1)) {
-            Node nd = { K_MYCOMPUTER, "" };
-            navigate(&nd, 1);
-        }
-    } else {
+        if (!path_tidy(path, sizeof path, cwd, argv[1])) path[0] = 0;
+        opened = path[0] && stat(path, &st) == 0 && S_ISDIR(st.st_mode) &&
+                 navigate_path(path, 1);
+    }
+    if (!opened) {
         Node nd = { K_MYCOMPUTER, { 0 } };
         navigate(&nd, 1);
     }

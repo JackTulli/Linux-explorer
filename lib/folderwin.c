@@ -39,6 +39,22 @@ static const struct { int id, icon; const char *text; int drop, off; } std_butto
     { FW_VIEWS,   ICO_TB_VIEWS,   NULL,      7, 0 },    /* a narrower bay */
 };
 
+/* The shell's places the Address bar's list offers, in the order of
+ * Explorer's Folders pane, and the program that shows each: this window
+ * stays where it is and the place opens beside it, as another program
+ * cannot show it itself. Control Panel and Network and Dial-up
+ * Connections are the folder windows built on this file, so choosing
+ * them from the other one opens that program. */
+static const struct { const char *name, *cmd; } places[] = {
+    { "Desktop",                         "l2kexplorer Desktop" },
+    { "My Documents",                    "l2kexplorer \"My Documents\"" },
+    { "My Computer",                     "l2kexplorer \"My Computer\"" },
+    { "Control Panel",                   "l2kcontrol" },
+    { "Network and Dial-up Connections", "l2knetwork" },
+    { "Recycle Bin",                     "l2kexplorer \"Recycle Bin\"" },
+};
+#define NPLACES ((int)(sizeof places / sizeof *places))
+
 /* Run a program without waiting for it, twice forked so it is never a
  * zombie of ours. */
 static void spawn(const char *cmd)
@@ -135,6 +151,27 @@ static W2kMenu *build_help(void *u)
 }
 
 /* ------------------------------------------------------------------ *
+ * The Address bar
+ * ------------------------------------------------------------------ */
+/* The row of the Address list that is this window's own place. */
+static int addr_own(W2kFolderWin *f)
+{
+    for (int i = 0; i < f->addr->n; i++)
+        if (!strcmp(f->addr->items[i], f->title)) return i;
+    return -1;
+}
+
+/* Another place picked from the list: it opens in its own program and
+ * the box goes back to this window's place. Clicking the arrow used to
+ * show no list at all. */
+static void addr_change(void *u, int i)
+{
+    W2kFolderWin *f = u;
+    if (i < NPLACES && strcmp(places[i].name, f->title)) spawn(places[i].cmd);
+    f->addr->sel = addr_own(f);
+}
+
+/* ------------------------------------------------------------------ *
  * Commands the chrome handles itself
  * ------------------------------------------------------------------ */
 static void command(void *u, int id)
@@ -181,7 +218,14 @@ static void command(void *u, int id)
                    "Linux 2000 is not affiliated with, endorsed by or sponsored by Microsoft.\nWindows is a trademark of Microsoft Corporation.",
                    MB_OK | MB_ICONINFO);
         return;
-    case FW_HISTORY: case FW_GO: case FW_BACK: case FW_FORWARD:
+    case FW_GO:
+        /* The Address box only ever shows this window's own place (another
+         * one opens elsewhere and the box goes back), so Go is Refresh, as
+         * it is in the shell for the folder already shown. It used to
+         * animate and do nothing. */
+        command(f, FW_REFRESH);
+        return;
+    case FW_HISTORY: case FW_BACK: case FW_FORWARD:
         return;
     default:
         if (f->on_command) f->on_command(f->user, id);
@@ -234,10 +278,15 @@ W2kFolderWin *w2k_folderwin_new(const char *title, const char *cls, int icon,
         if (std_buttons[i].off) w2k_toolbar_enable(f->tb, std_buttons[i].id, 0);
     }
 
+    /* The Address list: the shell's places with this window's own
+     * selected. A folder that is not one of them is listed after them. */
     f->addr = w2k_combo_new(0);
     f->addr->icon = icon;
-    w2k_combo_add(f->addr, title);
-    f->addr->sel = 0;
+    f->addr->user = f;
+    f->addr->on_change = addr_change;
+    for (int i = 0; i < NPLACES; i++) w2k_combo_add(f->addr, places[i].name);
+    if (addr_own(f) < 0) w2k_combo_add(f->addr, title);
+    f->addr->sel = addr_own(f);
 
     f->list = w2k_list_new(LV_ICON);
     f->list->focused = 1;
@@ -563,6 +612,14 @@ int w2k_folderwin_event(W2kFolderWin *f, XEvent *e)
         int x = e->xbutton.x, y = e->xbutton.y;
         if (w2k_menubar_press(f->mb, &e->xbutton)) { w2k_win_dirty(w); return 1; }
         if (f->show_toolbar && w2k_toolbar_press(f->tb, &e->xbutton)) {
+            w2k_win_dirty(w);
+            return 1;
+        }
+        if (f->show_address && w2k_combo_press(f->addr, &e->xbutton)) {
+            /* The list is modal and has closed by now. The box is not a
+             * control that keeps the focus here (nothing takes it away
+             * again), so its text is not left highlighted. */
+            f->addr->focused = 0;
             w2k_win_dirty(w);
             return 1;
         }
