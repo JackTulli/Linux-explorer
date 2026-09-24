@@ -84,6 +84,7 @@ typedef struct {
 
     int drawing, x0, y0, x1, y1;
     int panning, pan_mx, pan_my, pan_ox, pan_oy;
+    int button;                             /* the one that started either */
 
     unsigned char *stroke_backup;
     int stroke_w, stroke_h, stroke_layer;   /* what the backup is a copy of */
@@ -643,13 +644,22 @@ static void fill_rect_area(int x0, int y0, int x1, int y1, int r, int g, int b, 
         }
 }
 
-/* Clear selection content (transparent). */
+/* Clear selection content: the background colour on the Background
+ * layer, as the eraser does, and transparent on the layers above it. It
+ * used to make the Background transparent too, which a JPEG or a BMP
+ * then saved as black. */
 static void clear_selection(void)
 {
     if (!pt.has_sel) return;
-    push_undo();
-    fill_rect_area(pt.sel_x0, pt.sel_y0, pt.sel_x1, pt.sel_y1, 0, 0, 0, 0);
-    undo_crop();
+    int pushed = push_undo();
+    if (pt.active == 0)
+        fill_rect_area(pt.sel_x0, pt.sel_y0, pt.sel_x1, pt.sel_y1,
+                       pt.bg[0], pt.bg[1], pt.bg[2], pt.bg[3]);
+    else
+        fill_rect_area(pt.sel_x0, pt.sel_y0, pt.sel_x1, pt.sel_y1, 0, 0, 0, 0);
+    /* No entry taken (out of memory): cropping would cut down the one
+     * below it, an earlier operation's. */
+    if (pushed) undo_crop();
     pt.dirty = 1;
     update_title();
     w2k_win_dirty(pt.win);
@@ -864,21 +874,46 @@ static int confirm_discard(void)
     return -1;
 }
 
+/* The format a name asks for: 0 PNG, 1 JPEG, 2 BMP, and -1 for any other
+ * ending (WebP, or none at all), which Paint cannot write. */
+static int save_kind(const char *path)
+{
+    const char *ext = strrchr(path, '.'), *slash = strrchr(path, '/');
+    if (!ext || (slash && ext < slash)) return -1;
+    if (!strcasecmp(ext, ".png")) return 0;
+    if (!strcasecmp(ext, ".jpg") || !strcasecmp(ext, ".jpeg") ||
+        !strcasecmp(ext, ".jpe") || !strcasecmp(ext, ".jfif")) return 1;
+    if (!strcasecmp(ext, ".bmp") || !strcasecmp(ext, ".dib")) return 2;
+    return -1;
+}
+
+/* JPEG and BMP have no transparency, and their writers drop the alpha:
+ * what is transparent goes out over white, where it used to come out
+ * black while the canvas showed it light. */
+static void flatten_over_white(unsigned char *p, size_t n)
+{
+    for (size_t i = 0; i < n; i++, p += 4) {
+        unsigned a = p[3];
+        for (int k = 0; k < 3; k++)
+            p[k] = (unsigned char)((p[k] * a + 255u * (255u - a) + 127u) / 255u);
+        p[3] = 255;
+    }
+}
+
 static int save_to(const char *path)
 {
     unsigned char *flat = layers_flatten();
     if (!flat) return 0;
-    const char *ext = strrchr(path, '.');
+    int kind = save_kind(path);
     int ok = 0;
-    if (ext && !strcasecmp(ext, ".png"))
-        ok = w2k_png_save(path, flat, pt.w, pt.h);
-    else if (ext && (!strcasecmp(ext, ".jpg") || !strcasecmp(ext, ".jpeg"))) {
+    if (kind == 1 || kind == 2) flatten_over_white(flat, (size_t)pt.w * pt.h);
+    if (kind == 1) {
         char buf[16] = "90";
         if (w2k_prompt(pt.win, "JPEG Options", "Quality (1-100):",
                        "90", buf, sizeof buf, ICO_NONE))
             ok = w2k_jpeg_save_quality(path, flat, pt.w, pt.h, atoi(buf));
         else { free(flat); return 0; }
-    } else if (ext && !strcasecmp(ext, ".bmp"))
+    } else if (kind == 2)
         ok = w2k_bmp_save(path, flat, pt.w, pt.h);
     else
         ok = w2k_png_save(path, flat, pt.w, pt.h);
@@ -888,7 +923,9 @@ static int save_to(const char *path)
                    MB_OK | MB_ICONERROR);
         return 0;
     }
-    snprintf(pt.path, sizeof pt.path, "%s", path);
+    /* A plain Save passes pt.path itself: copying a string onto itself
+     * is undefined, and glibc's snprintf left the name empty. */
+    if (path != pt.path) snprintf(pt.path, sizeof pt.path, "%s", path);
     pt.untitled = 0;
     pt.dirty = 0;
     update_title();
@@ -897,9 +934,20 @@ static int save_to(const char *path)
 
 static int do_save(int saveas)
 {
-    if (!saveas && !pt.untitled && pt.path[0]) return save_to(pt.path);
+    /* A picture opened from a WebP, or a file with no ending, is not
+     * written back as PNG under its old name: Save asks for one, offered
+     * with .png at the end. */
+    if (!saveas && !pt.untitled && pt.path[0] && save_kind(pt.path) >= 0)
+        return save_to(pt.path);
     char path[1024];
     snprintf(path, sizeof path, "%s", pt.untitled ? "Untitled.png" : pt.path);
+    if (!pt.untitled && save_kind(path) < 0) {
+        char *base = strrchr(path, '/'), *dot;
+        base = base ? base + 1 : path;
+        if ((dot = strrchr(base, '.')) && dot > base) *dot = 0;
+        size_t l = strlen(path);
+        if (l + 5 <= sizeof path) memcpy(path + l, ".png", 5);
+    }
     if (!w2k_file_dialog_filter(pt.win, 1, path, sizeof path, IMAGE_FILTERS))
         return 0;
     return save_to(path);
@@ -986,7 +1034,8 @@ static int attr_event(W2kWin *w, XEvent *e)
         if (w2k_edit_press(a->h, &e->xbutton)) {
             a->w->focused = 0; a->h->focused = 1; w2k_win_dirty(w); return 1;
         }
-        a->w->focused = 0; a->h->focused = 0;
+        /* A click on the dialog's face leaves the field its focus, as in
+         * Windows: typing and Tab used to go nowhere after one. */
         if (w2k_rect_hit(&a->ok, e->xbutton.x, e->xbutton.y)) a->down = 1;
         else if (w2k_rect_hit(&a->cancel, e->xbutton.x, e->xbutton.y)) a->down = 2;
         w2k_win_dirty(w); return 1;
@@ -1090,7 +1139,8 @@ static int scale_event(W2kWin *w, XEvent *e)
         if (w2k_edit_press(a->h, &e->xbutton)) {
             a->w->focused = 0; a->h->focused = 1; w2k_win_dirty(w); return 1;
         }
-        a->w->focused = 0; a->h->focused = 0;
+        /* A click on the dialog's face leaves the field its focus, as in
+         * Windows: typing and Tab used to go nowhere after one. */
         if (w2k_rect_hit(&a->ok, e->xbutton.x, e->xbutton.y)) a->down = 1;
         else if (w2k_rect_hit(&a->cancel, e->xbutton.x, e->xbutton.y)) a->down = 2;
         w2k_win_dirty(w); return 1;
@@ -1233,7 +1283,7 @@ static int text_dlg_event(W2kWin *w, XEvent *e)
             a->text->focused = a->size->focused = 0; a->name->focused = 1;
             w2k_win_dirty(w); return 1;
         }
-        a->text->focused = a->size->focused = a->name->focused = 0;
+        /* A click on the dialog's face leaves the field its focus. */
         if (w2k_rect_hit(&a->ok, e->xbutton.x, e->xbutton.y)) a->down = 1;
         else if (w2k_rect_hit(&a->cancel, e->xbutton.x, e->xbutton.y)) a->down = 2;
         w2k_win_dirty(w); return 1;
@@ -1304,9 +1354,9 @@ static void do_text_at(int dx, int dy)
         pt.font_size = fs;
         snprintf(pt.font_name, sizeof pt.font_name, "%s", w2k_edit_text(a.name));
         if (txt && txt[0]) {
-            push_undo();
+            int pushed = push_undo();
             draw_text_string(dx, dy, txt, pt.fg[0], pt.fg[1], pt.fg[2]);
-            undo_crop();
+            if (pushed) undo_crop();
             pt.dirty = 1;
             update_title();
             w2k_win_dirty(pt.win);
@@ -1592,6 +1642,19 @@ static void paint_layers(Drawable d)
     w2k_draw_pushbutton(d, &(W2kRect){ r.x + 34, by + 22, 28, 20 }, "↓", 0);
 }
 
+/* One edge of the marquee, cut to the canvas: a selection reaching out
+ * of the view was drawn over the toolbar and the toolbox, and at a high
+ * zoom past what X's 16-bit coordinates hold, landing as stray lines. */
+static void marquee_edge(Drawable d, long x, long y, long w, long h)
+{
+    W2kRect c = pt.canvas_r;
+    long x0 = x > c.x ? x : c.x, y0 = y > c.y ? y : c.y;
+    long x1 = x + w < c.x + c.w ? x + w : c.x + c.w;
+    long y1 = y + h < c.y + c.h ? y + h : c.y + c.h;
+    if (x1 <= x0 || y1 <= y0) return;
+    w2k_dither(d, (int)x0, (int)y0, (int)(x1 - x0), (int)(y1 - y0), C_WINDOW, C_TEXT);
+}
+
 static void on_paint(W2kWin *w, Drawable d)
 {
     w2k_fill(d, 0, 0, w->w, w->h, C_FACE);
@@ -1620,15 +1683,14 @@ static void on_paint(W2kWin *w, Drawable d)
         } else {
             x0 = pt.sel_x0; y0 = pt.sel_y0; x1 = pt.sel_x1; y1 = pt.sel_y1;
         }
-        int sx = pt.canvas_r.x + (x0 - pt.pan_x) * pt.zoom;
-        int sy = pt.canvas_r.y + (y0 - pt.pan_y) * pt.zoom;
-        int sw = (x1 - x0 + 1) * pt.zoom;
-        int sh = (y1 - y0 + 1) * pt.zoom;
-        w2k_frame(d, sx, sy, sw, sh, C_TEXT);
-        w2k_dither(d, sx, sy, sw, 1, C_WINDOW, C_TEXT);
-        w2k_dither(d, sx, sy + sh - 1, sw, 1, C_WINDOW, C_TEXT);
-        w2k_dither(d, sx, sy, 1, sh, C_WINDOW, C_TEXT);
-        w2k_dither(d, sx + sw - 1, sy, 1, sh, C_WINDOW, C_TEXT);
+        long sx = pt.canvas_r.x + (long)(x0 - pt.pan_x) * pt.zoom;
+        long sy = pt.canvas_r.y + (long)(y0 - pt.pan_y) * pt.zoom;
+        long sw = (long)(x1 - x0 + 1) * pt.zoom;
+        long sh = (long)(y1 - y0 + 1) * pt.zoom;
+        marquee_edge(d, sx, sy, sw, 1);
+        marquee_edge(d, sx, sy + sh - 1, sw, 1);
+        marquee_edge(d, sx, sy, 1, sh);
+        marquee_edge(d, sx + sw - 1, sy, 1, sh);
     }
     paint_layers(d);
     paint_palette(d);
@@ -1709,7 +1771,9 @@ static void apply_tool_drag(int finalize)
 {
     int rad = pt.brush;
     int erase = (pt.tool == T_ERASER);
-    int *c = pt.fg;
+    /* The right button draws in the background colour, as it does with
+     * the pencil and the brush; the shapes always took the foreground. */
+    int *c = pt.button == Button3 ? pt.bg : pt.fg;
     if (pt.tool == T_LINE || pt.tool == T_RECT || pt.tool == T_ELLIPSE) {
         stroke_restore();
         if (pt.tool == T_LINE)
@@ -1976,6 +2040,7 @@ static int on_event(W2kWin *w, XEvent *e)
         /* MMB = pan */
         if (e->xbutton.button == Button2 && w2k_rect_hit(&pt.canvas_r, x, y)) {
             pt.panning = 1;
+            pt.button = Button2;
             pt.pan_mx = x; pt.pan_my = y;
             pt.pan_ox = pt.pan_x; pt.pan_oy = pt.pan_y;
             return 1;
@@ -2063,7 +2128,9 @@ static int on_event(W2kWin *w, XEvent *e)
         screen_to_doc(x, y, &dx, &dy);
 
         if (pt.tool == T_PICK) {
-            pick_px(dx, dy, &pt.fg[0], &pt.fg[1], &pt.fg[2], &pt.fg[3]);
+            /* A right click picks the background colour, as in Paint. */
+            int *c = (e->xbutton.button == Button3) ? pt.bg : pt.fg;
+            pick_px(dx, dy, &c[0], &c[1], &c[2], &c[3]);
             w2k_win_dirty(w);
             return 1;
         }
@@ -2087,6 +2154,7 @@ static int on_event(W2kWin *w, XEvent *e)
         }
         if (pt.tool == T_SELECT) {
             pt.drawing = 1;
+            pt.button = (int)e->xbutton.button;
             pt.x0 = pt.x1 = dx;
             pt.y0 = pt.y1 = dy;
             pt.has_sel = 0;
@@ -2096,6 +2164,7 @@ static int on_event(W2kWin *w, XEvent *e)
 
         pt.stroke_undo = push_undo();
         pt.drawing = 1;
+        pt.button = (int)e->xbutton.button;
         pt.x0 = pt.x1 = dx;
         pt.y0 = pt.y1 = dy;
         if (pt.tool == T_LINE || pt.tool == T_RECT || pt.tool == T_ELLIPSE || pt.tool == T_GRADIENT) {
@@ -2126,7 +2195,9 @@ static int on_event(W2kWin *w, XEvent *e)
             if (pt.tool == T_PENCIL || pt.tool == T_BRUSH || pt.tool == T_ERASER) {
                 int erase = (pt.tool == T_ERASER);
                 int rad = (pt.tool == T_PENCIL) ? 0 : pt.brush;
-                int *c = (e->xmotion.state & Button3Mask) ? pt.bg : pt.fg;
+                /* The colour of the button the stroke began with: pressing
+                 * the other one mid-stroke used to switch colours. */
+                int *c = pt.button == Button3 ? pt.bg : pt.fg;
                 draw_line(pt.x1, pt.y1, dx, dy, rad,
                           c[0], c[1], c[2], c[3], erase);
                 pt.x1 = dx; pt.y1 = dy;
@@ -2140,6 +2211,11 @@ static int on_event(W2kWin *w, XEvent *e)
         if (w2k_toolbar_motion(pt.tb, &e->xmotion)) { w2k_win_dirty(w); return 1; }
         return 0;
     case ButtonRelease:
+        /* Only the button that began the drag ends it. Letting go of
+         * another -- or a notch of the wheel, a press and a release --
+         * ended the stroke or the pan with the first still held down. */
+        if ((pt.drawing || pt.panning) && e->xbutton.button != (unsigned)pt.button)
+            return 1;
         if (pt.panning) { pt.panning = 0; return 1; }
         w2k_toolbar_release(pt.tb);
         if (pt.drawing) {
@@ -2283,6 +2359,7 @@ int main(int argc, char **argv)
     pt.untitled = 1;
     if (!layers_init(640, 480)) return 1;
 
+    const char *not_opened = NULL;       /* told once the window is up */
     if (argc > 1) {
         int w = 0, h = 0;
         unsigned char *rgba = w2k_image_load(argv[1], &w, &h);
@@ -2290,17 +2367,32 @@ int main(int argc, char **argv)
             snprintf(pt.path, sizeof pt.path, "%s", argv[1]);
             pt.untitled = 0;
         } else {
+            not_opened = rgba && w > 0 && h > 0
+                ? "The picture is too large to edit. Paint opens pictures "
+                  "of up to 8192 by 8192 pixels."
+                : "The picture could not be opened.";
             free(rgba);
         }
     }
 
-    pt.win = w2k_win_new("Paint", "l2kpaint", 900, 600, 0);
+    /* Resizable: it was made fixed at 900 x 600, with no Maximize, and
+     * taller than the screen on a scaled desktop. */
+    pt.win = w2k_win_new("Paint", "l2kpaint", 900, 600, 1);
     pt.win->paint = on_paint;
     pt.win->event = on_event;
     pt.win->resized = layout;
     pt.win->closing = on_closing;
     pt.win->min_w = 480;
     pt.win->min_h = 360;
+    {
+        /* The window manager goes by the hints, sent when the window was
+         * made with the toolkit's minimum: Paint's own, in screen pixels. */
+        XSizeHints sh = { 0 };
+        sh.flags = PMinSize;
+        sh.min_width = w2k_px(pt.win->min_w);
+        sh.min_height = w2k_px(pt.win->min_h);
+        XSetWMNormalHints(w2k.dpy, pt.win->win, &sh);
+    }
 
     pt.mb = w2k_menubar_new(NULL, command);
     pt.mb->win_ref = pt.win->win;
@@ -2340,6 +2432,9 @@ int main(int argc, char **argv)
     update_title();
     update_status();
     w2k_win_show(pt.win);
+    /* A picture given on the command line (an Open With) that could not
+     * be opened used to leave a blank Untitled with no word why. */
+    if (not_opened) w2k_msgbox(pt.win, "Paint", not_opened, MB_OK | MB_ICONERROR);
     w2k_run();
 
     layers_clear();
