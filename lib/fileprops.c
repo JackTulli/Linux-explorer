@@ -19,6 +19,7 @@
 #include "w2kui.h"
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +53,10 @@ typedef struct {
     W2kRect  chicon;                /* its Change Icon... button */
     long long size, ondisk;
     int      nfiles, nfolders, truncated;
+    DIR     *walk[33];              /* a folder's walk, one open folder a level */
+    int      nwalk;
+    long     budget;
+    long     shown;                 /* when the counts were last painted */
     struct stat st;
 
     /* The Compatibility tab, for a Windows program. */
@@ -93,30 +98,73 @@ static void size_line(long long b, char *out, int n)
 }
 
 /* Walk a folder. Bounded: a scan of / should not hang the dialog, so it
- * gives up after a while and says so with a "+" on the count. */
-static void scan_dir(Props *p, const char *path, int depth, long *budget)
+ * gives up after a while and says so with a "+" on the count.
+ *
+ * It is walked a slice at a time, on a timer while the sheet is up, the
+ * counts growing as Windows' do: the sheet used to appear only once the
+ * whole tree had been walked, and Properties on a big folder -- a home,
+ * /usr, a source tree -- froze Explorer or the desktop for half a second
+ * warm and several seconds on a cold disk. Each level's folder stays
+ * open, so an entry is looked at by its name in it, not by a whole path
+ * the kernel has to walk again. */
+static void walk_into(Props *p, int at, const char *name)
 {
-    if (depth > 32 || *budget <= 0) { p->truncated = 1; return; }
-    DIR *dp = opendir(path);
-    if (!dp) return;
-    struct dirent *de;
-    while ((de = readdir(dp))) {
-        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
-        if (--*budget <= 0) { p->truncated = 1; break; }
-        char full[2048];
-        snprintf(full, sizeof full, "%s/%s", path, de->d_name);
-        struct stat st;
-        if (lstat(full, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) {
-            p->nfolders++;
-            scan_dir(p, full, depth + 1, budget);
-        } else {
-            p->nfiles++;
-            p->size += (long long)st.st_size;
-            p->ondisk += (long long)st.st_blocks * 512;
-        }
+    if (p->nwalk > 32 || p->budget <= 0) { p->truncated = 1; return; }
+    int fd = openat(at, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    DIR *dp = fd >= 0 ? fdopendir(fd) : NULL;
+    if (!dp) { if (fd >= 0) close(fd); return; }
+    p->walk[p->nwalk++] = dp;
+}
+
+static void walk_stop(Props *p)
+{
+    while (p->nwalk) closedir(p->walk[--p->nwalk]);
+}
+
+static void walk_step(Props *p)
+{
+    DIR *dp = p->walk[p->nwalk - 1];
+    struct dirent *de = readdir(dp);
+    if (!de) { closedir(dp); p->nwalk--; return; }
+    if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) return;
+    if (--p->budget <= 0) { p->truncated = 1; walk_stop(p); return; }
+    struct stat st;
+    if (fstatat(dirfd(dp), de->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) return;
+    if (S_ISDIR(st.st_mode)) {
+        p->nfolders++;
+        walk_into(p, dirfd(dp), de->d_name);
+    } else {
+        p->nfiles++;
+        p->size += (long long)st.st_size;
+        p->ondisk += (long long)st.st_blocks * 512;
     }
-    closedir(dp);
+}
+
+/* About `ms` of the walk; less when the user is doing something, so that
+ * typing and clicks are not held up behind it. Slices on the timer are
+ * short enough for the caret to keep blinking. */
+static void walk_some(Props *p, long ms)
+{
+    long until = w2k_now_ms() + ms;
+    for (int k = 1; p->nwalk; k++) {
+        walk_step(p);
+        if (!(k & 63) && (w2k_now_ms() >= until || (p->w && XPending(w2k.dpy)))) break;
+    }
+}
+
+static void walk_tick(void *u)
+{
+    Props *p = u;
+    if (!p->nwalk) return;
+    walk_some(p, 50);
+    /* The counts are painted a few times a second, not after every slice. */
+    long now = w2k_now_ms();
+    if (!p->nwalk || now - p->shown >= 100) { p->shown = now; w2k_win_dirty(p->w); }
+    /* Done: put off rather than deleted from inside itself. The timer
+     * loop moves the last timer into a deleted one's slot, behind where it
+     * is looking, and one overdue there left the loop asleep until the next
+     * event -- a caret stopped blinking. The sheet deletes it as it closes. */
+    if (!p->nwalk) w2k_add_timer(3600 * 1000, walk_tick, p);
 }
 
 static void measure(Props *p)
@@ -151,8 +199,8 @@ static void measure(Props *p)
     }
 
     if (p->isdir) {
-        long budget = 200000;
-        scan_dir(p, full, 0, &budget);
+        p->budget = 200000;
+        walk_into(p, AT_FDCWD, full);
     } else {
         p->size = (long long)p->st.st_size;
         p->ondisk = (long long)p->st.st_blocks * 512;
@@ -854,6 +902,11 @@ int w2k_file_properties_page(W2kWin *over, const char *path, int page)
     else                         { snprintf(p.file, sizeof p.file, "%s", path); snprintf(p.dir, sizeof p.dir, "."); }
     if (!p.file[0]) return 0;
     measure(&p);
+    /* A folder that is walked in a moment appears whole, as it always
+     * did; a bigger one appears now and its counts go on growing. The
+     * render harness captures the sheet as it is shown: whole. */
+    walk_some(&p, 100);
+    if (getenv("W2K_RENDER")) while (p.nwalk) walk_step(&p);
 
     int W = 400, H = p.isdir ? 440 : 500;
     char title[300];
@@ -921,9 +974,12 @@ int w2k_file_properties_page(W2kWin *over, const char *path, int page)
     if (over) XSetTransientForHint(w2k.dpy, w->win, over->win);
     w2k_add_timer(w2k_caret_blink, blink_cb, p.name);
     w2k_add_timer(w2k_caret_blink, blink_cb, p.mode_edit);
+    if (p.nwalk) w2k_add_timer(0, walk_tick, &p);
     int r = w2k_win_modal(w);
     w2k_del_timer(blink_cb, p.name);
     w2k_del_timer(blink_cb, p.mode_edit);
+    w2k_del_timer(walk_tick, &p);
+    walk_stop(&p);
     w2k_edit_free(p.name);
     w2k_edit_free(p.mode_edit);
     if (p.runner) w2k_combo_free(p.runner);

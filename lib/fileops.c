@@ -62,10 +62,30 @@ static int copy_one(const char *from, const char *to)
     if (fd < 0) { fclose(a); return 0; }
     FILE *b = fdopen(fd, "wb");
     if (!b) { close(fd); unlink(tmp); fclose(a); return 0; }
+    int ok = 1, done = 0;
+#ifdef SYS_copy_file_range
+    /* The kernel copies it without the data coming through here: a
+     * reflink on btrfs and XFS, a copy on the server over NFS and SMB, and
+     * no trip through this buffer on ext4. Where it will not (another file
+     * system, an old kernel, a seccomp filter, /proc whose files say they
+     * are empty), the loop below goes on from wherever it stopped: nothing
+     * has been read through `a`, so the two offsets are where it left
+     * them. The errors let through are the ones GNU cp falls back on. */
+    for (int first = 1;; first = 0) {
+        ssize_t c = syscall(SYS_copy_file_range, fileno(a), NULL, fd, NULL,
+                            (size_t)1 << 30, 0);
+        if (c > 0) continue;
+        if (c == 0 && !first) done = 1;              /* the end of the file */
+        else if (c < 0 && errno != ENOSYS && errno != EXDEV && errno != EINVAL &&
+                 errno != EOPNOTSUPP && errno != EPERM && errno != EBADF &&
+                 errno != ETXTBSY && errno != EINTR && !(first && errno == ENOENT))
+            { ok = 0; done = 1; }                    /* a full disk, a bad sector */
+        break;
+    }
+#endif
     char buf[65536];
     size_t n;
-    int ok = 1;
-    while ((n = fread(buf, 1, sizeof buf, a)) > 0)
+    while (!done && (n = fread(buf, 1, sizeof buf, a)) > 0)
         if (fwrite(buf, 1, n, b) != n) { ok = 0; break; }
     if (ferror(a)) ok = 0;
     fclose(a);
@@ -541,7 +561,11 @@ int w2k_tabcomp(const char *text, const char *cwd, char *out, int n, int flags)
         if (de->d_name[0] == '.' && (!prefix[0] || prefix[0] != '.'))
             continue;
         if (plen && strncasecmp(de->d_name, prefix, plen) != 0) continue;
-        if (flags & W2K_TABCOMP_DIRS) {
+        /* readdir says what most entries are: only a link, or a file
+         * system that does not say, needs the stat. A Tab after "/" in a
+         * folder of 10,000 files stat'ed every one of them. */
+        if ((flags & W2K_TABCOMP_DIRS) && de->d_type != DT_DIR) {
+            if (de->d_type != DT_UNKNOWN && de->d_type != DT_LNK) continue;
             char full[1200];
             snprintf(full, sizeof full, "%s/%s",
                      strcmp(dir, "/") ? dir : "", de->d_name);
