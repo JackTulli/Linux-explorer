@@ -302,7 +302,8 @@ static void perf_on_check(void *u, int idx)
     pd->fx[fx] = (unsigned char)pd->list->items[idx].checked;
     pd->preset = PRESET_CUSTOM;        /* as the original does */
     pd->dirty = 1;
-    w2k_win_dirty(cp.win);
+    /* The dialog is repainted by perf_event, which called us; the folder
+     * behind it shows nothing of this until Apply. */
 }
 
 static void perf_apply_preset(PerfDlg *pd, int preset)

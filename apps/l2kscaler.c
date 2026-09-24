@@ -427,6 +427,21 @@ static int dmg_x0 = 0, dmg_y0 = 0, dmg_x1 = 0, dmg_y1 = 0, dmg_any = 1;
 static int cur_w, cur_h, cur_xhot, cur_yhot, cur_valid;
 static int ptr_x = -1, ptr_y = -1;
 
+/* Where the nested pointer is, is asked of the nested server. Its raw
+ * events say when a device moved it, so the question is asked then; a
+ * program that warps it says nothing, so it is asked on a clock as well:
+ * every 16 ms for a while after anything happened -- a warp follows a
+ * click, a key or a new dialog -- and then every PTR_IDLE_MS, rather than 60
+ * times a second for as long as the desktop runs. Without XInput 2 on the
+ * nested server, or with a touch screen, whose pointer moves without a
+ * raw motion, it is asked every 16 ms as before. */
+#define PTR_BUSY_MS 500       /* asked often this long after input or damage */
+#define PTR_IDLE_MS 100       /* and this often after that */
+static int nxi_opcode = -1;         /* the nested server's XInput, if 2.2 */
+static int ptr_touch;               /* it has a touch screen */
+static int ptr_moved;               /* a raw motion since the last question */
+static long ptr_busy_until, ptr_asked;
+
 static void on_signal(int s) { (void)s; quit = 1; }
 
 static long now_ms(void)
@@ -1417,6 +1432,49 @@ static void draw_mon(Mon *m)
 }
 
 /* ------------------------------------------------------------------ *
+ * The nested pointer: told by raw events, asked on a clock for warps
+ * ------------------------------------------------------------------ */
+static int nested_has_touch(void)
+{
+    int n = 0, touch = 0;
+    XIDeviceInfo *di = XIQueryDevice(nd, XIAllDevices, &n);
+    for (int i = 0; i < n && !touch; i++)
+        for (int k = 0; k < di[i].num_classes; k++)
+            if (di[i].classes[k]->type == XITouchClass &&
+                ((XITouchClassInfo *)di[i].classes[k])->mode == XIDirectTouch) { touch = 1; break; }
+    if (di) XIFreeDeviceInfo(di);
+    return touch;
+}
+
+static void ptr_watch_init(void)
+{
+    int ev, err, maj = 2, min = 2;
+    if (!XQueryExtension(nd, "XInputExtension", &nxi_opcode, &ev, &err) ||
+        XIQueryVersion(nd, &maj, &min) != Success || maj < 2 || (maj == 2 && min < 2)) {
+        nxi_opcode = -1;
+        return;
+    }
+    unsigned char dev[XIMaskLen(XI_LASTEVENT)] = { 0 }, mst[XIMaskLen(XI_LASTEVENT)] = { 0 };
+    XISetMask(dev, XI_HierarchyChanged);
+    XISetMask(mst, XI_RawMotion);
+    XISetMask(mst, XI_RawButtonPress);
+    XISetMask(mst, XI_RawKeyPress);
+    XIEventMask em[2] = { { XIAllDevices, sizeof dev, dev }, { XIAllMasterDevices, sizeof mst, mst } };
+    XISelectEvents(nd, nroot, em, 2);
+    ptr_touch = nested_has_touch();
+}
+
+/* A raw event of the nested server's; 0 when it is not one. */
+static int ptr_watch_event(XEvent *e)
+{
+    if (nxi_opcode < 0 || e->type != GenericEvent || e->xcookie.extension != nxi_opcode) return 0;
+    if (e->xcookie.evtype == XI_RawMotion) ptr_moved = 1;
+    else if (e->xcookie.evtype == XI_HierarchyChanged) ptr_touch = nested_has_touch();
+    ptr_busy_until = now_ms() + PTR_BUSY_MS;
+    return 1;
+}
+
+/* ------------------------------------------------------------------ *
  * Input: host events become XTest events in the nested server
  * ------------------------------------------------------------------ */
 static void pointer_to(Mon *m, int x, int y)
@@ -1512,6 +1570,7 @@ static void host_event(XEvent *e)
 
 static void nested_event(XEvent *e)
 {
+    if (ptr_watch_event(e)) return;
     if (e->type == PropertyNotify && e->xproperty.atom == a_scaler) {
         settings_from_property();
         return;
@@ -1661,6 +1720,7 @@ int main(int argc, char **argv)
     settings_from_property();
     dmg_x0 = 0; dmg_y0 = 0; dmg_x1 = NW; dmg_y1 = NH; dmg_any = 1;
     fetch_cursor();
+    ptr_watch_init();
 
     int hfd = ConnectionNumber(hd), nfd = ConnectionNumber(nd);
     long last_frame = 0;
@@ -1700,24 +1760,38 @@ int main(int argc, char **argv)
                 ptr_x = rx; ptr_y = ry;
                 for (int i = 0; i < nmons; i++) mons[i].dirty = 1;
             }
+            ptr_asked = t;
+            ptr_moved = 0;
             for (int i = 0; i < nmons; i++)
                 if (mons[i].dirty) draw_mon(&mons[i]);
             continue;
+        }
+        long wait_us = 4000;
+        if (!any_dirty) {
+            /* Idle: follow a pointer moved by a device (at most every 8 ms
+             * however fast the mouse reports), or warped by a program. */
+            int busy = nxi_opcode < 0 || ptr_touch || t < ptr_busy_until ||
+                       t - last_damage < PTR_BUSY_MS;
+            int every = ptr_moved ? 8 : busy ? 16 : PTR_IDLE_MS;
+            long since = t - ptr_asked;
+            if (since >= every || since < 0) {
+                Window rr, cw; int rx, ry, wx, wy; unsigned mask;
+                if (XQueryPointer(nd, nroot, &rr, &cw, &rx, &ry, &wx, &wy, &mask) && (rx != ptr_x || ry != ptr_y)) {
+                    ptr_x = rx; ptr_y = ry;
+                    for (int i = 0; i < nmons; i++) mons[i].dirty = 1;
+                }
+                ptr_asked = t;
+                ptr_moved = 0;
+                continue;
+            }
+            wait_us = (every - since) * 1000L;
         }
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(hfd, &fds);
         FD_SET(nfd, &fds);
-        struct timeval tv = { 0, any_dirty ? 4000 : 16000 };
+        struct timeval tv = { 0, wait_us };
         select((hfd > nfd ? hfd : nfd) + 1, &fds, NULL, NULL, &tv);
-        if (!any_dirty) {
-            /* Idle: still follow a pointer warped by a program, at 60 Hz. */
-            Window rr, cw; int rx, ry, wx, wy; unsigned mask;
-            if (XQueryPointer(nd, nroot, &rr, &cw, &rx, &ry, &wx, &wy, &mask) && (rx != ptr_x || ry != ptr_y)) {
-                ptr_x = rx; ptr_y = ry;
-                for (int i = 0; i < nmons; i++) mons[i].dirty = 1;
-            }
-        }
     }
     if (composite) {
         /* Give the screen back: pointers as they were, no fences, the

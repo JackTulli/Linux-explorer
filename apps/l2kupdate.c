@@ -216,8 +216,11 @@ static void check_system(void)
         up.n_pkg = count_cmd("xbps-install -un 2>/dev/null | wc -l");
     else if (m[0])
         up.pkg_uncounted = 1;           /* emerge: no count without a sync */
+    /* One column only: the default ones (name, version) make flatpak parse
+     * the remote's whole appstream catalogue, a second of frozen window
+     * for a count of lines that is the same either way. */
     if (up.have_flatpak)
-        up.n_flatpak = count_cmd("flatpak remote-ls --updates 2>/dev/null | wc -l");
+        up.n_flatpak = count_cmd("flatpak remote-ls --updates --columns=application 2>/dev/null | wc -l");
     if (up.have_snap)
         up.n_snap = count_cmd("snap refresh --list 2>/dev/null | tail -n +2 | wc -l");
     up.counts_known = 1;

@@ -527,7 +527,8 @@ static void goto_dialog(void)
         return;
     }
     pad.ed->caret = pad.ed->sel = off;
-    w2k_edit_layout(pad.ed);
+    /* Only the caret moved: the lines are laid out already, and this
+     * lays them out again only if the size or font changed meanwhile. */
     w2k_edit_scroll_to_caret(pad.ed);   /* the line gone to is shown */
     w2k_win_dirty(pad.win);
 }

@@ -1097,7 +1097,9 @@ static int job_start(int slot, char *const argv[], void (*line)(const char *),
 }
 
 /* Download, check, unpack and set up a build. Everything it is given
- * is an argument, never part of the script. */
+ * is an argument, never part of the script. A whole download kept from
+ * an earlier try is checked once, not twice: the second reading of half
+ * a gigabyte only held "Checking the download" up. */
 static const char install_sh[] =
     "set -u\n"
     "tag=$1 url=$2 sum=$3 data=$4 self=$5\n"
@@ -1107,14 +1109,17 @@ static const char install_sh[] =
     "echo @stage download\n"
     "curl -fsSL --retry 3 --connect-timeout 30 -o \"$sumfile\" \"$sum\" ||"
     " { echo \"@error Could not download $sumfile. Check your Internet connection, and then try again.\"; exit 1; }\n"
-    "if ! sha512sum -c \"$sumfile\" >/dev/null 2>&1; then\n"
+    "if sha512sum -c \"$sumfile\" >/dev/null 2>&1; then\n"
+    "  ok=1\n"
+    "else\n"
+    "  ok=\n"
     "  rm -f \"$file\"\n"
     "  curl -fsSL --retry 3 --connect-timeout 30 -o \"$file.part\" \"$url\" ||"
     " { rm -f \"$file.part\"; echo \"@error The download of $file failed. Check your Internet connection, and then try again.\"; exit 1; }\n"
     "  mv -f \"$file.part\" \"$file\"\n"
     "fi\n"
     "echo @stage verify\n"
-    "sha512sum -c \"$sumfile\" >/dev/null 2>&1 ||"
+    "[ -n \"$ok\" ] || sha512sum -c \"$sumfile\" >/dev/null 2>&1 ||"
     " { rm -f \"$file\"; echo \"@error $file was damaged on the way: its checksum is wrong. Try again.\"; exit 1; }\n"
     "echo @stage unpack\n"
     "tmp=$data/proton/.unpack-$tag old=$data/proton/.old-$tag\n"
