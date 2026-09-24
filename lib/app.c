@@ -729,6 +729,10 @@ static void scheme_base_take(void)
     scheme_base = scheme_text();
 }
 
+/* Set once a scheme load has read the artwork, so that w2k_init does not
+ * read all of it a second time. */
+static int artwork_read;
+
 int w2k_scheme_load(const char *path)
 {
     char def[1024];
@@ -1036,6 +1040,7 @@ int w2k_scheme_load(const char *path)
     w2k_skin_cache_flush();
     w2k_icon_load_default();
     w2k_start_icon_apply();          /* over whatever the set brought */
+    artwork_read = 1;
     /* The graphics processor: into this process's environment, for
      * everything it starts from now on. */
     w2k_gpu_env_apply();
@@ -1570,8 +1575,14 @@ int w2k_init(const char *appname)
     /* Hear about scheme changes made by Display Properties. The window
      * manager adds its own masks to the root later; this one is harmless. */
     XSelectInput(d, w2k.root, PropertyChangeMask);
-    w2k_icon_load_default();
-    w2k_start_icon_apply();
+    /* The scheme above has read the icon set and the Start icon when there
+     * is a scheme file; reading them again cost every program's start up
+     * to a few hundred file opens for the same result. Without one, they
+     * are read here, as they always were. */
+    if (!artwork_read) {
+        w2k_icon_load_default();
+        w2k_start_icon_apply();
+    }
     return 0;
 }
 
