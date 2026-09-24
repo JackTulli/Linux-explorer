@@ -68,26 +68,46 @@ static void blur(unsigned char *p, int w, int h, int rad)
 /* What lies under the root rectangle, below w2k_glass_above (the window
  * being painted), blurred: RGB, malloc'd; NULL to fall back on the
  * wallpaper. */
-/* The stacking order below w2k_glass_above, held for the length of one
- * batch: a frame asks for four pieces and each used to re-walk the tree
- * and re-ask for every window's geometry. */
+/* The stacking order, held for the length of one batch: a frame asks for
+ * four pieces and each used to re-walk the tree and re-ask for every
+ * window's geometry. Batches nest, and one can paint several windows
+ * (every frame and then the bar, after a raise): the root's children are
+ * listed once and each is asked for its geometry once, the first time a
+ * paint looks that far up the stack. */
 #define STACK_MAX 256
-static struct { Window w; int x, y, cw, ch; } stack_snap[STACK_MAX];
+static struct { Window w; int x, y, cw, ch; unsigned k; } stack_snap[STACK_MAX];
 static int stack_n = -1, batching;
+static Window *stack_kids;              /* the root's children, bottom up */
+static unsigned stack_nk, stack_seen;   /* how many, how many looked at */
 
-static void stack_gather(void)
+static void stack_forget(void)
 {
-    stack_n = 0;
-    Window root, parent, *kids = NULL;
-    unsigned nk = 0;
-    if (!XQueryTree(w2k.dpy, w2k.root, &root, &parent, &kids, &nk)) return;
-    for (unsigned i = 0; i < nk && stack_n < STACK_MAX; i++) {
-        Window k = kids[i];
-        if (k == w2k_glass_above) break;
+    if (stack_kids) XFree(stack_kids);
+    stack_kids = NULL;
+    stack_nk = stack_seen = 0;
+    stack_n = -1;
+}
+
+/* How many of stack_snap lie below w2k_glass_above. */
+static int stack_gather(void)
+{
+    if (stack_n < 0) {
+        stack_n = 0;
+        Window root, parent;
+        if (!XQueryTree(w2k.dpy, w2k.root, &root, &parent, &stack_kids, &stack_nk)) {
+            stack_kids = NULL;
+            stack_nk = 0;
+        }
+    }
+    unsigned cut = 0;
+    while (cut < stack_nk && stack_kids[cut] != w2k_glass_above) cut++;
+    for (; stack_seen < cut && stack_n < STACK_MAX; stack_seen++) {
+        Window k = stack_kids[stack_seen];
         XWindowAttributes wa;
         if (!XGetWindowAttributes(w2k.dpy, k, &wa)) continue;
         if (wa.map_state != IsViewable || wa.class == InputOnly) continue;
         stack_snap[stack_n].w = k;
+        stack_snap[stack_n].k = stack_seen;
         /* wa.x/y name the inside of the border; the window covers from
          * bw before it. */
         stack_snap[stack_n].x = wa.x - wa.border_width;
@@ -96,13 +116,19 @@ static void stack_gather(void)
         stack_snap[stack_n].ch = wa.height + 2 * wa.border_width;
         stack_n++;
     }
-    if (kids) XFree(kids);
+    int n = 0;
+    while (n < stack_n && stack_snap[n].k < cut) n++;
+    return n;
 }
 
+/* Only the outermost batch starts and ends the snapshot: the WM makes no
+ * change to the stack inside one. */
 static void glass_batch(int begin)
 {
-    batching = begin;
-    stack_n = -1;                        /* re-gathered on the next ask */
+    if (begin) batching++;
+    else if (batching > 0) batching--;
+    if (batching == (begin ? 1 : 0))
+        stack_forget();                  /* re-gathered on the next ask */
 }
 
 static unsigned char *live_bg(int rx, int ry, int w, int h)
@@ -122,9 +148,9 @@ static unsigned char *live_bg(int rx, int ry, int w, int h)
     for (size_t i = 0; i < (size_t)ew * eh; i++) memcpy(buf + i * 3, dc, 3);
 
     int (*old)(Display *, XErrorEvent *) = XSetErrorHandler(quiet);
-    if (stack_n < 0 || !batching) stack_gather();
+    int below = stack_gather();
     {
-        for (int i = 0; i < stack_n; i++) {        /* bottom to top */
+        for (int i = 0; i < below; i++) {          /* bottom to top */
             Window k = stack_snap[i].w;
             int wx = stack_snap[i].x, wy = stack_snap[i].y;
             int ww = stack_snap[i].cw, wh = stack_snap[i].ch;
@@ -154,6 +180,7 @@ static unsigned char *live_bg(int rx, int ry, int w, int h)
             XDestroyImage(im);
         }
     }
+    if (!batching) stack_forget();          /* walked afresh next time */
     XSync(w2k.dpy, False);
     XSetErrorHandler(old);
 
@@ -177,13 +204,17 @@ static unsigned char *live_bg(int rx, int ry, int w, int h)
 
 /* The glass shows what was under it when it was painted: after a window
  * moves or the stack changes, every Aero frame and the bar are painted
- * again so they show what is under them now. */
+ * again so they show what is under them now. In one batch: nothing is
+ * restacked while they paint, so one walk of the stack serves them all,
+ * where each frame used to walk it twice and the bar once a button. */
 void glass_live_refresh(void)
 {
     if (!enabled) return;
+    glass_batch(1);
     for (Client *c = clients; c; c = c->next)
         if (!c->minimized && c->decorate) frame_paint(c);
     taskbar_paint();
+    glass_batch(0);
 }
 
 /* Called at start and whenever the scheme changes: the effect and the
@@ -206,5 +237,6 @@ void glass_live_apply(void)
     enabled = want;
     w2k_glass_live = want ? live_bg : NULL;
     w2k_glass_batch = want ? glass_batch : NULL;
-    stack_n = -1;
+    batching = 0;
+    stack_forget();
 }

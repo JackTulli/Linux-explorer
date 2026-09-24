@@ -585,7 +585,16 @@ void wm_handle_event(XEvent *e)
     case Expose:
         if (e->xexpose.count) break;
         c = client_find_frame(e->xexpose.window);
-        if (c) frame_paint(c);
+        /* Damage from before client_move_resize's paint started is
+         * already painted over (the server runs requests in order). Only
+         * a paint a little way back counts, so a serial that has wrapped
+         * round on a long session cannot pass for an old one. */
+        if (c && !(c->paint_serial &&
+                   c->paint_serial - e->xexpose.serial - 1 < 1UL << 24)) {
+            if (w2k_glass_batch) w2k_glass_batch(1);   /* one walk of the stack */
+            frame_paint(c);
+            if (w2k_glass_batch) w2k_glass_batch(0);
+        }
         break;
 
     case ButtonPress:

@@ -693,11 +693,13 @@ void wm_show_desktop(void)
     w2k_sound_play(any ? SND_MINIMIZE : SND_RESTOREUP);
     if (any) {
         desk_nhid = 0;
+        client_focus_hold(1);            /* one change of focus, at the end */
         for (Client *c = clients; c; c = c->next) {
             if (c->skip_taskbar || c->minimized) continue;
             client_minimize_quiet(c);
             if (c->minimized && desk_nhid < 256) desk_hid[desk_nhid++] = c->win;
         }
+        client_focus_hold(0);
     } else {
         Client *order[256];
         int n = 0;

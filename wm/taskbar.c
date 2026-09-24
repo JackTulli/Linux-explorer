@@ -864,7 +864,11 @@ void taskbar_paint(void)
         tb_pm_w = tb_w;
         tb_pm_h = h;
     }
+    /* One walk of the window stack for the whole bar under live glass:
+     * the bar and each task button used to walk it again. */
+    if (w2k_glass_batch) w2k_glass_batch(1);
     taskbar_draw(tb_pm, h);
+    if (w2k_glass_batch) w2k_glass_batch(0);
     XCopyArea(w2k.dpy, tb_pm, tb, w2k.gc, 0, 0, (unsigned)tb_pw, (unsigned)tb_ph, 0, 0);
     orb_paint();
 }
@@ -1388,7 +1392,9 @@ static void arrange_on(int how, const W2kMonitor *mon)
         /* Quietly, and settled once: each window used to fly down with
          * its own sound and a repaint of the bar. */
         w2k_sound_play(SND_MINIMIZE);
+        client_focus_hold(1);          /* one change of focus, at the end */
         for (int i = 0; i < n; i++) client_minimize_quiet(list[i]);
+        client_focus_hold(0);
         clients_restack();
         taskbar_paint();
     }

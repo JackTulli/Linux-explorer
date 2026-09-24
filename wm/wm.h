@@ -84,6 +84,7 @@ struct Client {
     int      ignore_unmap;         /* UnmapNotifys we caused ourselves */
     Pixmap   capbuf;               /* caption back buffer, kept between paints */
     int      capbuf_w, capbuf_h;
+    unsigned long paint_serial;    /* first request of the last whole paint after a move */
 
     long     tb_order;             /* taskbar position, draggable     */
     Client  *next;                 /* creation order (taskbar order)  */
@@ -117,6 +118,7 @@ void    client_raise(Client *c);
 void    client_close(Client *c);
 void    client_minimize(Client *c);
 void    client_minimize_quiet(Client *c);   /* no animation, no restack */
+void    client_focus_hold(int hold);        /* 1: minimising hands the focus on once, at 0 */
 void    client_restore(Client *c);
 void    client_restore_quiet(Client *c);    /* no animation, no restack, no focus */
 void    client_maximize(Client *c, int on);

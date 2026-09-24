@@ -443,7 +443,15 @@ void client_move_resize(Client *c, int x, int y, int w, int h)
     };
     XSendEvent(w2k.dpy, c->win, False, StructureNotifyMask, (XEvent *)&ce);
     frame_shape(c);            /* the corners follow the new size */
+    /* The paint covers the whole frame, so an Expose the resize above
+     * caused is already answered: the Expose case skips any older than
+     * this. A resize drag used to paint every step twice. */
+    if (c->decorate && c->mapped) c->paint_serial = NextRequest(w2k.dpy);
+    /* Under live glass the frame's two glass passes share one walk of
+     * the window stack: every step of a drag walked it twice. */
+    if (w2k_glass_batch) w2k_glass_batch(1);
     frame_paint(c);
+    if (w2k_glass_batch) w2k_glass_batch(0);
 }
 
 /* ------------------------------------------------------------------ *
@@ -637,6 +645,26 @@ static void transients_hide(Client *owner, int hide, int depth)
     }
 }
 
+/* Show Desktop and a group's Minimize All take a row of windows down at
+ * once. Each window used to hand the focus to the next one down --
+ * painted active, told to take the focus, the bar repainted -- just
+ * before that one went too. Held, the focus goes on once, when the last
+ * is down, to the same window it would have ended on. */
+static int focus_held, focus_owed;
+
+static void focus_next(void)
+{
+    for (Client *n = stack; n; n = n->snext)
+        if (!n->minimized && n->mapped) { client_focus(n); break; }
+    if (!focused) client_focus(NULL);
+}
+
+void client_focus_hold(int hold)
+{
+    focus_held = hold;
+    if (!hold && focus_owed) { focus_owed = 0; focus_next(); }
+}
+
 void client_minimize_quiet(Client *c)
 {
     if (!c || c->minimized || c->skip_taskbar) return;
@@ -648,9 +676,8 @@ void client_minimize_quiet(Client *c)
     /* Its dialog may have had the focus: that went with it too. */
     if (focused == c || !focused) {
         focused = NULL;
-        for (Client *n = stack; n; n = n->snext)
-            if (!n->minimized && n->mapped) { client_focus(n); break; }
-        if (!focused) client_focus(NULL);
+        if (focus_held) focus_owed = 1;
+        else focus_next();
     }
 }
 
