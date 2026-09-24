@@ -10,7 +10,7 @@
 #include "w2kui.h"
 
 #define IMAGE_FILTERS \
-    "All Picture Files|*.bmp;*.png;*.jpg;*.jpeg;*.webp;*.gif;*.ico;*.xpm|" \
+    "All Picture Files|*.bmp;*.dib;*.png;*.jpg;*.jpeg;*.jpe;*.webp|" \
     "Bitmap Image (*.bmp)|*.bmp|PNG Image (*.png)|*.png|WebP Image (*.webp)|*.webp|" \
     "JPEG Image (*.jpg)|*.jpg;*.jpeg|All Files (*.*)|*"
 #include <dirent.h>
@@ -69,8 +69,10 @@ static void target_size(int *tw, int *th)
     if (!im.iw || !im.ih) { *tw = *th = 0; return; }
     if (!im.fit) {
         /* The X protocol stops at 32767 a side, and a 16x photo would
-         * want gigabytes: the zoom is what the picture can take. */
-        double z = im.zoom, lim = 8192.0;
+         * want gigabytes: the zoom is what the picture can take. The
+         * limit is on what is built, in screen pixels: rescale() scales
+         * this up, and a 200% desktop built 16384 a side, 1 GB. */
+        double z = im.zoom, lim = 8192.0 * 100 / w2k_ui_scale;
         if (im.iw * z > lim) z = lim / im.iw;
         if (im.ih * z > lim) z = lim / im.ih;
         *tw = (int)(im.iw * z);
@@ -178,9 +180,15 @@ static void scan_siblings(void)
     im.siblings = NULL;
     im.nsib = im.sib_at = 0;
 
+    /* Each entry is the folder part of the path exactly as given, then
+     * the name, so the open picture is found among them: "pic.png" was
+     * looked for among "./a.png", "./pic.png"..., never matched, and the
+     * arrows started from the first picture whichever was open. */
     snprintf(im.dir, sizeof im.dir, "%s", im.path);
     char *slash = strrchr(im.dir, '/');
+    int plen = slash ? (int)(slash - im.dir) + 1 : 0;
     if (!slash) { snprintf(im.dir, sizeof im.dir, "."); }
+    else if (slash == im.dir) slash[1] = 0;     /* a picture in / */
     else *slash = 0;
 
     DIR *dp = opendir(im.dir);
@@ -191,7 +199,7 @@ static void scan_siblings(void)
     struct dirent *de;
     while ((de = readdir(dp))) {
         char full[2048];
-        if (snprintf(full, sizeof full, "%s/%s", im.dir, de->d_name) >=
+        if (snprintf(full, sizeof full, "%.*s%s", plen, im.path, de->d_name) >=
             (int)sizeof full) continue;
         if (!w2k_image_is_image(full)) continue;
         if (im.nsib == cap) {
@@ -435,6 +443,11 @@ static int event(W2kWin *w, XEvent *e)
         KeySym ks = XLookupKeysym(&e->xkey, 0);
         int ctrl = (e->xkey.state & ControlMask) != 0;
         if (ctrl && (ks == XK_o || ks == XK_O)) { command(NULL, ID_OPEN); return 1; }
+        /* Alt+letter is the menu bar's: Alt+F toggled Fit to Window and
+         * the File menu never opened from the keyboard. */
+        if ((e->xkey.state & Mod1Mask) && w2k_menubar_key(im.mb, &e->xkey)) {
+            w2k_win_dirty(w); return 1;
+        }
         switch (ks) {
         case XK_Escape:    w2k_win_close(w, 0); return 1;
         case XK_Left:  case XK_Prior: case XK_BackSpace: command(NULL, ID_PREV); return 1;
@@ -477,6 +490,7 @@ int main(int argc, char **argv)
     im.win->resized = resized;
 
     im.mb = w2k_menubar_new(NULL, command);
+    im.mb->win_ref = im.win->win;        /* menus open under their titles */
     w2k_menubar_add(im.mb, "&File", build_file);
     w2k_menubar_add(im.mb, "&View", build_view);
     w2k_menubar_add(im.mb, "&Help", build_help);

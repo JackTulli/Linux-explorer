@@ -102,9 +102,11 @@ static void pick_screen(Picker *p)
         XFreeCursor(w2k.dpy, cross);
         return;
     }
+    /* This loop runs instead of the toolkit's, which is where windows
+     * are repainted: the window is painted here, or the swatch, the
+     * fields and "Click on screen..." stayed frozen for the whole pick. */
     p->picking = 1;
-    w2k_win_dirty(p->win);
-    XFlush(w2k.dpy);
+    w2k_win_repaint_now(p->win);
 
     /* Discard the release of the button that started the pick, then wait
      * for a full press+release on the screen. */
@@ -127,8 +129,12 @@ static void pick_screen(Picker *p)
         if (e.type == MotionNotify) {
             sample_root(p, e.xmotion.x_root, e.xmotion.y_root);
             sync_edits(p);
-            w2k_win_dirty(p->win);
-            XFlush(w2k.dpy);
+            w2k_win_repaint_now(p->win);
+        } else if (e.type == SelectionRequest || e.type == SelectionClear) {
+            w2k_clipboard_event(&e);            /* a paste of the copied HEX */
+        } else if (e.type != KeyPress && e.type != KeyRelease &&
+                   e.type != ButtonPress && e.type != ButtonRelease) {
+            w2k_win_handle_event(&e);           /* exposes, the window's own */
         }
     }
     XUngrabPointer(w2k.dpy, CurrentTime);
