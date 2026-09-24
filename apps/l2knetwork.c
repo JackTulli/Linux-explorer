@@ -517,7 +517,8 @@ static StatusDlg *sd_active;
  * ------------------------------------------------------------------ */
 typedef struct {
     StatusDlg *sd;                /* NULL once the dialog has closed */
-    Conn *c;                      /* the adapter it works on */
+    char  ifname[32];             /* the adapter it works on: by name, as */
+    char  label[64];              /* a refresh rewrites and re-sorts nw.conn */
     pid_t pid;
     int   fd, len;
     char  out[4096];
@@ -529,6 +530,19 @@ static Job job = { .pid = -1, .fd = -1 };
 /* A job whose dialog has closed still holds the buttons of the next one:
  * they used to look ready and do nothing, as only one runs at a time. */
 static int job_busy(const StatusDlg *sd) { return job.pid > 0 && (job.sd == sd || !job.sd); }
+
+/* The job is another adapter's: what the dialog says names it. */
+static int job_foreign(const StatusDlg *sd)
+{
+    return job.pid > 0 && job.sd != sd && strcmp(job.ifname, sd->c->ifname);
+}
+
+static Conn *conn_by_ifname(const char *ifname)
+{
+    for (int i = 0; i < nw.nconn; i++)
+        if (!strcmp(nw.conn[i].ifname, ifname)) return &nw.conn[i];
+    return NULL;
+}
 
 static void job_orphaned(const Job *j, int rc);
 static void report(W2kWin *over, const char *title, const char *out);
@@ -601,7 +615,8 @@ static int job_start(StatusDlg *sd, char *const argv[], const char *input, const
     }
     memset(&job, 0, sizeof job);
     job.sd = sd;
-    job.c = sd->c;
+    snprintf(job.ifname, sizeof job.ifname, "%s", sd->c->ifname);
+    snprintf(job.label, sizeof job.label, "%s", sd->c->label);
     job.pid = p;
     job.fd = out[0];
     job.done = done;
@@ -765,7 +780,15 @@ static void status_paint(W2kWin *w, Drawable d)
                             sd->down == 1 ? BS_PRESSED : 0);
         w2k_draw_pushbutton(d, &sd->disable, c->up ? "&Disable" : "&Enable",
                             (job_busy(sd) ? BS_DISABLED : 0) | (sd->down == 2 ? BS_PRESSED : 0));
-        if (job_busy(sd))
+        if (job_busy(sd) && job_foreign(sd)) {
+            /* Another adapter's job: whose, over what it is doing. */
+            int tx = sd->disable.x + sd->disable.w + 10;
+            char who[80], lab[72];
+            snprintf(lab, sizeof lab, "%s:", job.label);
+            w2k_ellipsis(F_UI, lab, g.x + g.w - tx, who, sizeof who);
+            w2k_text(d, F_UI, tx, sd->disable.y - 1, who, C_TEXT);
+            w2k_text(d, F_UI, tx, sd->disable.y - 1 + fh, job.what, C_TEXT);
+        } else if (job_busy(sd))
             w2k_text(d, F_UI, sd->disable.x + sd->disable.w + 10, sd->disable.y + 5, job.what, C_TEXT);
     } else {
         w2k_text(d, F_UI, cl.x + 9, cl.y + 10, "Available networks:", C_TEXT);
@@ -774,7 +797,11 @@ static void status_paint(W2kWin *w, Drawable d)
             w2k_text(d, F_UI, cl.x + 9, sd->nets->r.y + sd->nets->r.h + 6,
                      "Scanning needs NetworkManager (nmcli).", C_TEXT);
         } else if (job_busy(sd)) {
-            w2k_text(d, F_UI, cl.x + 9, sd->nets->r.y + sd->nets->r.h + 6, job.what, C_TEXT);
+            char line[300], fit[300];
+            if (job_foreign(sd)) snprintf(line, sizeof line, "%s: %s", job.label, job.what);
+            else snprintf(line, sizeof line, "%s", job.what);
+            w2k_ellipsis(F_UI, line, sd->nets->r.w, fit, sizeof fit);
+            w2k_text(d, F_UI, cl.x + 9, sd->nets->r.y + sd->nets->r.h + 6, fit, C_TEXT);
         } else {
             w2k_text(d, F_UI, cl.x + 9, sd->nets->r.y + sd->nets->r.h + 6,
                      "To connect to a network, select it and click Connect.",
@@ -826,12 +853,14 @@ static void conn_done(StatusDlg *sd, int rc, const char *out)
 static void job_orphaned(const Job *j, int rc)
 {
     if (sd_active) w2k_win_dirty(sd_active->win);       /* its buttons are free again */
-    if (!j->c || j->done != conn_done) return;          /* a scan: nobody is waiting for it */
-    if (rc != 0) report(sd_active ? sd_active->win : nw.win, j->c->label, j->out);
-    j->c->nm = nm_state(j->c);
-    refresh_stats(j->c);
-    if (j->c->wireless) wireless_state(j->c);
-    j->c->since = connected_since(j->c);
+    if (j->done != conn_done) return;                   /* a scan: nobody is waiting for it */
+    Conn *c = conn_by_ifname(j->ifname);
+    if (rc != 0) report(sd_active ? sd_active->win : nw.win, c ? c->label : j->label, j->out);
+    if (!c) return;                                     /* the adapter has gone */
+    c->nm = nm_state(c);
+    refresh_stats(c);
+    if (c->wireless) wireless_state(c);
+    c->since = connected_since(c);
     pane_fill(nw.fw->list->sel);
     w2k_win_dirty(nw.win);
 }
@@ -975,8 +1004,10 @@ static int status_event(W2kWin *w, XEvent *e)
             return 1;
         }
         /* The underlined letters: the buttons could only be clicked. With
-         * the network list to type in, the Alt key is wanted on its page;
-         * of two buttons sharing a letter, the first that can be used. */
+         * the network list to type in, the Alt key is wanted on its page,
+         * where Connect and Close share C: that letter presses neither, as
+         * on the Bluetooth sheet (Esc closes). It used to join the selected
+         * network when Close was meant. */
         if (e->xkey.state & ControlMask) return 1;
         if (sd->tabs->sel == 1 && !(e->xkey.state & Mod1Mask)) return 1;
         int busy = job_busy(sd);
@@ -986,9 +1017,7 @@ static int status_event(W2kWin *w, XEvent *e)
             else if (ks == XK_c) w2k_win_close(w, ID_OK);
         } else {
             if (ks == XK_r) { if (!busy) nets_scan(sd, 1); }
-            else if (ks == XK_c && !busy && sd->nets->sel >= 0) do_connect(sd);
             else if (ks == XK_i) { if (!busy && sd->c->ssid[0]) do_disconnect(sd); }
-            else if (ks == XK_c) w2k_win_close(w, ID_OK);
         }
         w2k_win_dirty(w);
         return 1;
@@ -1051,7 +1080,7 @@ static void open_status(Conn *c)
     w2k_add_timer(1000, status_tick, &sd);
     /* Reopened while its last job still runs: this dialog shows it, and
      * gets what it comes to. */
-    if (job.pid > 0 && !job.sd && job.c == c) job.sd = &sd;
+    if (job.pid > 0 && !job.sd && !strcmp(job.ifname, c->ifname)) job.sd = &sd;
     sd_active = &sd;
     w2k_win_modal(w);
     sd_active = NULL;

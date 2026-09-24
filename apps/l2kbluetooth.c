@@ -137,6 +137,7 @@ typedef struct {
     char path[64];
     char address[18], name[128], alias[128], power_state[24];
     int  powered, discoverable, pairable, connectable, discovering;
+    int  has_connectable;           /* BlueZ has it: older ones (5.64) do not */
     int  manufacturer, version;
 } Adapter;
 
@@ -539,7 +540,7 @@ static void apply_props(const char *path, const char *iface, DBusMessageIter *ar
             else if (!strcmp(k, "Powered"))         a->powered = it_bool(&v);
             else if (!strcmp(k, "Discoverable"))    a->discoverable = it_bool(&v);
             else if (!strcmp(k, "Pairable"))        a->pairable = it_bool(&v);
-            else if (!strcmp(k, "Connectable"))     a->connectable = it_bool(&v);
+            else if (!strcmp(k, "Connectable"))     a->connectable = it_bool(&v), a->has_connectable = 1;
             else if (!strcmp(k, "Discovering"))     a->discovering = it_bool(&v);
             else if (!strcmp(k, "Manufacturer"))    a->manufacturer = (int)it_num(&v);
             else if (!strcmp(k, "Version"))         a->version = (int)it_num(&v);
@@ -1119,7 +1120,8 @@ static int bt_connect(void)
 static void enforce_connectable(void)
 {
     Adapter *a = adapter();
-    if (!a || demo || !a->powered) return;
+    /* A BlueZ without the property (5.64, say) refuses it: nothing to do. */
+    if (!a || demo || !a->powered || !a->has_connectable) return;
     if (!a->connectable != !opt.allow) set_bool(a->path, IF_ADAPTER, "Connectable", opt.allow, done_quiet, NULL);
 }
 
@@ -2260,8 +2262,11 @@ static void options_apply(void)
         /* A radio still coming on would refuse: wait for it. */
         if (on && !a->powered && sh.ov[OC_DISC]) pending_disc = 1;
         else if (on && sh.otouched[OC_DISC] && sh.ov[OC_DISC] != a->discoverable) set_discovery(a, sh.ov[OC_DISC]);
-        /* (A radio that is off gets it when it comes on: see refresh.) */
-        if (on && a->powered && !sh.ov[OC_ALLOW] != !a->connectable)
+        /* (A radio that is off gets it when it comes on: see refresh.) A
+         * BlueZ that has no Connectable is asked only when the box itself
+         * changed, and says no: any other Apply used to bring that up. */
+        if (on && a->powered && (a->has_connectable ? !sh.ov[OC_ALLOW] != !a->connectable
+                                                    : sh.otouched[OC_ALLOW] && !sh.ov[OC_ALLOW] != !opt.allow))
             set_bool(a->path, IF_ADAPTER, "Connectable", sh.ov[OC_ALLOW], done_report,
                      sh.ov[OC_ALLOW] ? "let devices connect" : "stop devices connecting");
     }
@@ -3801,7 +3806,7 @@ static void demo_fill(void)
     snprintf(a->name, sizeof a->name, "linux2000");
     snprintf(a->alias, sizeof a->alias, "linux2000");
     snprintf(a->power_state, sizeof a->power_state, "on");
-    a->powered = a->connectable = 1;
+    a->powered = a->connectable = a->has_connectable = 1;
     a->manufacturer = 2;
     a->version = 8;
     bluez_up = 1;
