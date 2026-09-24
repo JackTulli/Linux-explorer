@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <X11/Xlocale.h>
+#include <fontconfig/fontconfig.h>
 
 /* ------------------------------------------------------------------ *
  * UTF-8
@@ -285,12 +286,21 @@ static void rebuild_lines(W2kEdit *e)
             i = (eol < e->len) ? eol + 1 : e->len + 1;
             continue;
         }
-        int seg = eol - i;
-        if (measure(e, i, seg) <= wrapw) {
-            i = (eol < e->len) ? eol + 1 : e->len + 1;
-            continue;
+        /* Measured from the row's start in growing prefixes, until one no
+         * longer fits: measuring the whole rest of the paragraph for every
+         * row made a long paragraph cost the square of its length, and past
+         * 32,767 pixels Xft's width wraps round, so it was taken to fit and
+         * never wrapped at all. */
+        int seg = eol - i, n = 64;
+        while (n < seg && measure(e, i, n) <= wrapw) n *= 2;
+        if (n >= seg) {
+            n = seg;
+            if (measure(e, i, seg) <= wrapw) {
+                i = (eol < e->len) ? eol + 1 : e->len + 1;
+                continue;
+            }
         }
-        int fit = chars_for_width(e, i, seg, wrapw);
+        int fit = chars_for_width(e, i, n, wrapw);
         if (fit < 1) fit = 1;
         /* Break at the last space that still fits, as Notepad does. */
         int brk = fit;
@@ -540,6 +550,48 @@ void w2k_edit_paste(W2kEdit *e)
 /* ------------------------------------------------------------------ *
  * Drawing
  * ------------------------------------------------------------------ */
+#define RUN_SLICE 256    /* bytes measured at a time: far under Xft's 32,767 px */
+#define RUN_MAX 16384    /* bytes drawn in one call: well inside X's request limit */
+
+/* Draw a run of text that starts at logical x px, but only the part that
+ * falls between view_l and view_r (physical pixels). A minified file is
+ * one line of hundreds of kilobytes: sent whole, every caret blink made
+ * the server lay out every glyph of it, and past about 256 KB the request
+ * was too long for X and Notepad died at its first paint. The run is
+ * walked in slices that end on a character, and the slices that reach the
+ * view are drawn in one call, at the physical x Xft would have given them
+ * -- so every glyph lands on the same pixels as when the run went whole.
+ * 1 when the run reached view_r: nothing after it on the row can show. */
+static int draw_run(Drawable d, W2kEdit *e, int px, int y, const char *s, int n,
+                    int color, int view_l, int view_r)
+{
+    int x = w2k_cx(px), base = w2k_cx(y) + w2k_font_px_ascent(e->font);
+    /* Xft draws up to the first byte that is not UTF-8 and stops there. */
+    int end = n;
+    if (w2k_font_using_xft()) {
+        FcChar32 c;
+        int k;
+        for (end = 0; end < n; end += k)
+            if ((k = FcUtf8ToUcs4((const FcChar8 *)s + end, &c, n - end)) <= 0) break;
+    }
+    int from = -1, fx = 0, at = 0;
+    while (at < end && x < view_r) {
+        int len = min_i(RUN_SLICE, end - at);
+        while (len > 0 && at + len < end && is_cont((unsigned char)s[at + len])) len--;
+        if (len == 0) len = min_i(RUN_SLICE, end - at);   /* not text; any cut will do */
+        int w = w2k_font_px_width(e->font, s + at, len);
+        if (from < 0 && x + w > view_l) { from = at; fx = x; }
+        at += len;
+        x += w;
+        if (from >= 0 && at - from >= RUN_MAX) {
+            w2k_font_draw(d, e->font, fx, base, s + from, at - from, color);
+            from = -1;
+        }
+    }
+    if (from >= 0) w2k_font_draw(d, e->font, fx, base, s + from, at - from, color);
+    return x >= view_r;
+}
+
 void w2k_edit_draw(Drawable d, W2kEdit *e)
 {
     if (e->layout_w != e->r.w) w2k_edit_layout(e);
@@ -563,6 +615,10 @@ void w2k_edit_draw(Drawable d, W2kEdit *e)
     int first = e->multiline ? e->vsb.pos : 0;
     int nvis = e->multiline ? e->vsb.page + 1 : 1;
     int xoff = e->multiline ? (e->wrap ? 0 : e->hsb.pos) : e->scroll_x;
+    /* The field's physical edges, widened for glyphs whose ink overhangs
+     * their advance: draw_run leaves out what lies beyond them. */
+    int margin = 2 * w2k_font_px_height(e->font);
+    int view_l = w2k_cx(tx0) - margin, view_r = w2k_cx(tx0) + w2k_cw(tx0, tw) + margin;
 
     for (int i = first; i < e->nvl && i < first + nvis; i++) {
         int ls = e->vls[i], le = vl_end(e, i);
@@ -602,8 +658,10 @@ void w2k_edit_draw(Drawable d, W2kEdit *e)
                             if (s2 != sel_here) break;
                             n++;
                         }
-                        w2k_textn(d, e->font, px, y, t + rs, n,
-                                  sel_here ? C_HIGHLIGHTTEXT : C_WINDOWTEXT);
+                        if (draw_run(d, e, px, y, t + rs, n,
+                                     sel_here ? C_HIGHLIGHTTEXT : C_WINDOWTEXT,
+                                     view_l, view_r))
+                            goto row_done;         /* the rest is past the right edge */
                         px += w2k_text_width(e->font, t + rs, n);
                         rs += n;
                         run -= n;
@@ -612,6 +670,7 @@ void w2k_edit_draw(Drawable d, W2kEdit *e)
                 if (is_tab) px = x + ((px - x) / tabw + 1) * tabw;
             } else run++;
         }
+    row_done:
 
         /* Caret */
         /* Where a line wraps, the end of one row is the start of the next:
@@ -668,14 +727,38 @@ static int offset_at(W2kEdit *e, int px, int py)
     int rel = px - (e->r.x + 2 + PAD_X) + xoff;
     int ls = e->vls[row], le = vl_end(e, row);
 
-    int best = ls, bestd = 1 << 30;
-    for (int k = 0; k <= le - ls; k++) {
-        int w = measure(e, ls, k);
-        int dd = w - rel;
-        if (dd < 0) dd = -dd;
-        if (dd < bestd) { bestd = dd; best = ls + k; }
+    /* The nearest character edge, the earlier one on a tie. A prefix is
+     * never narrower than a shorter one, so this is two binary searches:
+     * measuring every prefix in turn made a click on a 5,000-character
+     * line take a tenth of a second, and a drag paid it on every motion.
+     * Only a one-line box handed a newline by w2k_edit_set breaks the rule
+     * (measure() stops at the newline); that rare line is still searched
+     * one prefix at a time, as it always was. */
+    if (memchr(shown(e) + ls, '\n', (size_t)(le - ls))) {
+        int best = ls, bestd = 1 << 30;
+        for (int k = 0; k <= le - ls; k++) {
+            int dd = measure(e, ls, k) - rel;
+            if (dd < 0) dd = -dd;
+            if (dd < bestd) { bestd = dd; best = ls + k; }
+        }
+        return best;
     }
-    return best;
+    int lo = 0, hi = le - ls + 1;          /* the first prefix reaching rel */
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (measure(e, ls, mid) >= rel) hi = mid; else lo = mid + 1;
+    }
+    if (lo == 0) return ls;
+    int before = measure(e, ls, lo - 1);
+    if (lo <= le - ls && measure(e, ls, lo) - rel < rel - before) return ls + lo;
+    /* The edge before it: the first prefix that wide (the bytes inside a
+     * character, say, measure the same as its start). */
+    hi = lo - 1; lo = 0;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (measure(e, ls, mid) >= before) hi = mid; else lo = mid + 1;
+    }
+    return ls + lo;
 }
 
 static int is_word(int c) { return isalnum((unsigned char)c) || c == '_'; }
