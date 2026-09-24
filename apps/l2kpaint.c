@@ -114,6 +114,7 @@ static Paint pt;
 static void update_title(void);
 static void update_status(void);
 static int on_closing(W2kWin *w);
+static void apply_tool_drag(int finalize);
 
 static void box_clear(Box *b) { b->x0 = b->y0 = 1; b->x1 = b->y1 = 0; }
 static inline void box_add(Box *b, int x, int y)
@@ -666,8 +667,9 @@ static void clear_selection(void)
 }
 
 /* Linear gradient from FG to BG along the drag line, over the whole doc
- * or the current selection if one exists. */
-static void draw_gradient(int x0, int y0, int x1, int y1)
+ * or the current selection if one exists -- or only the part of that
+ * inside `clip`, when there is one. */
+static void draw_gradient(int x0, int y0, int x1, int y1, const Box *clip)
 {
     int dx = x1 - x0, dy = y1 - y0;
     float len2 = (float)(dx * dx + dy * dy);
@@ -681,6 +683,12 @@ static void draw_gradient(int x0, int y0, int x1, int y1)
     if (ry0 < 0) ry0 = 0;
     if (rx1 > pt.w - 1) rx1 = pt.w - 1;
     if (ry1 > pt.h - 1) ry1 = pt.h - 1;
+    if (clip) {
+        if (rx0 < clip->x0) rx0 = clip->x0;
+        if (ry0 < clip->y0) ry0 = clip->y0;
+        if (rx1 > clip->x1) rx1 = clip->x1;
+        if (ry1 > clip->y1) ry1 = clip->y1;
+    }
     Layer *L = &pt.layer[pt.active];
     if (!L->rgba || rx1 < rx0 || ry1 < ry0) return;
     touch_rect(rx0, ry0, rx1, ry1);
@@ -790,8 +798,12 @@ static void stroke_free(void)
 }
 
 /* Line, rectangle, ellipse and gradient are drawn afresh at every motion
- * of the drag over a copy of the layer taken when it began; only what the
- * last frame drew (`shape`) needs putting back. */
+ * of the drag over the layer as it was when the drag began; only what the
+ * last frame drew (`shape`) needs putting back. That layer is the undo
+ * entry the press took, whole until the button comes up; a copy of its own
+ * (this) is taken only when there is no entry, and used to be taken every
+ * time -- a second copy of the layer at each press, 48 MB on a 12
+ * megapixel picture. */
 static void stroke_save_full(void)
 {
     stroke_free();
@@ -807,10 +819,22 @@ static void stroke_save_full(void)
     box_clear(&pt.shape);
 }
 
+/* The layer as it was when the drag began, or NULL. */
+static const unsigned char *stroke_source(void)
+{
+    if (pt.stroke_backup)
+        return pt.stroke_w == pt.w && pt.stroke_h == pt.h ? pt.stroke_backup : NULL;
+    if (!pt.drawing || !pt.stroke_undo || pt.nundo <= 0) return NULL;
+    const Snap *s = &pt.undo[pt.nundo - 1];
+    if (!s->rgba || s->x || s->y || s->w != pt.w || s->h != pt.h ||
+        s->doc_w != pt.w || s->doc_h != pt.h || s->layer != pt.stroke_layer) return NULL;
+    return s->rgba;
+}
+
 static void stroke_restore(void)
 {
-    if (!pt.stroke_backup || pt.stroke_w != pt.w || pt.stroke_h != pt.h ||
-        pt.stroke_layer < 0 || pt.stroke_layer >= pt.nlayers) return;
+    const unsigned char *src = stroke_source();
+    if (!src || pt.stroke_layer < 0 || pt.stroke_layer >= pt.nlayers) return;
     Layer *L = &pt.layer[pt.stroke_layer];
     if (!L->rgba) return;
     Box b = pt.shape;
@@ -821,7 +845,7 @@ static void stroke_restore(void)
     if (b.x1 >= b.x0 && b.y1 >= b.y0) {
         for (int y = b.y0; y <= b.y1; y++) {
             size_t o = ((size_t)y * pt.w + b.x0) * 4;
-            memcpy(L->rgba + o, pt.stroke_backup + o, (size_t)(b.x1 - b.x0 + 1) * 4);
+            memcpy(L->rgba + o, src + o, (size_t)(b.x1 - b.x0 + 1) * 4);
         }
         box_add(&pt.shown, b.x0, b.y0);
         box_add(&pt.shown, b.x1, b.y1);
@@ -1388,22 +1412,29 @@ static void layout(W2kWin *w)
     };
     if (pt.sb)
         pt.sb->r = (W2kRect){ 0, w->h - STATUS_H, w->w, STATUS_H };
+    /* A gradient being dragged is only worked out where it can be seen:
+     * a bigger window sees more of it. */
+    if (pt.drawing && pt.tool == T_GRADIENT) apply_tool_drag(0);
 }
 
 static void composite_px(int dx, int dy, int *r, int *g, int *b)
 {
     /* Composite against a light checkerboard so transparent layers remain visible. */
     int base = (((dx >> 3) ^ (dy >> 3)) & 1) ? 224 : 248;
-    unsigned ar = 255, rr = base, gg = base, bb = base;
+    unsigned rr = base, gg = base, bb = base;
+    /* The checkerboard is opaque, so what lies under each layer stays
+     * opaque: "over" with the lower alpha at 255 is exactly this, which
+     * took six divisions a layer when it carried that alpha along. An
+     * opaque pixel -- all of the usual Background -- is simply itself. */
     for (int li = 0; li < pt.nlayers; li++) {
         if (!pt.layer[li].visible || !pt.layer[li].rgba) continue;
         const unsigned char *p = pt.layer[li].rgba + ((size_t)dy * pt.w + dx) * 4;
         unsigned sa = p[3];
         if (!sa) continue;
-        rr = (p[0]*sa + rr*ar*(255u-sa)/255u + 127u) / (sa + ar*(255u-sa)/255u);
-        gg = (p[1]*sa + gg*ar*(255u-sa)/255u + 127u) / (sa + ar*(255u-sa)/255u);
-        bb = (p[2]*sa + bb*ar*(255u-sa)/255u + 127u) / (sa + ar*(255u-sa)/255u);
-        ar = sa + (ar*(255u-sa)+127u)/255u;
+        if (sa == 255) { rr = p[0]; gg = p[1]; bb = p[2]; continue; }
+        rr = (p[0] * sa + rr * (255u - sa) + 127u) / 255u;
+        gg = (p[1] * sa + gg * (255u - sa) + 127u) / 255u;
+        bb = (p[2] * sa + bb * (255u - sa) + 127u) / 255u;
     }
     *r=rr; *g=gg; *b=bb;
 }
@@ -1419,6 +1450,7 @@ static struct {
     int px0, py0, doc_x0, doc_y0, zoom, sc, dw, dh;   /* the view it shows */
     unsigned long *row;                  /* one row of composited pixels */
     int rowcap;
+    int *col;                            /* per screen column: its place in `row` */
 } cv;
 
 static void canvas_forget(void)
@@ -1426,14 +1458,16 @@ static void canvas_forget(void)
     if (cv.pm) w2k_free_pixmap(cv.pm);
     if (cv.im) XDestroyImage(cv.im);            /* frees its pixels too */
     free(cv.row);
+    free(cv.col);
     memset(&cv, 0, sizeof cv);
 }
 
 static int canvas_alloc(int pw, int ph)
 {
     canvas_forget();
+    cv.col = malloc((size_t)pw * sizeof *cv.col);
     char *pixels = malloc((size_t)pw * ph * 4);
-    if (!pixels) return 0;
+    if (!pixels || !cv.col) { free(pixels); return 0; }
     cv.im = XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap, 0, pixels,
                          (unsigned)pw, (unsigned)ph, 32, 0);
     if (!cv.im) { free(pixels); return 0; }
@@ -1462,6 +1496,20 @@ static void canvas_compose(int doc_x0, int doc_y0, int x0, int y0, int x1, int y
     static const union { unsigned short s; unsigned char b[2]; } order = { 1 };
     int direct = cv.im->bits_per_pixel == 32 &&
                  cv.im->byte_order == (order.b[0] ? LSBFirst : MSBFirst);
+    /* The usual 8-8-8 visual takes the pixel packed here, where calling
+     * w2k_rgb for each one cost a third of the time; any other still goes
+     * through it. */
+    Visual *v = w2k.visual;
+    int pack = direct && (v->class == TrueColor || v->class == DirectColor) &&
+               v->red_mask == 0xff0000 && v->green_mask == 0xff00 && v->blue_mask == 0xff;
+    /* Which document column each screen column shows: worked out once a
+     * column, not with two divisions for every pixel of every row. */
+    for (int x = x0; x <= x1; x++) {
+        int dx = doc_x0 + (int)((long)x * 100 / sc) / pt.zoom;
+        if (dx > dxb) dx = dxb;
+        if (dx < dxa) dx = dxa;
+        cv.col[x] = dx - dxa;
+    }
     int prev_dy = -1, prev_y = -1;
     for (int y = y0; y <= y1; y++) {
         int dy = doc_y0 + (int)((long)y * 100 / sc) / pt.zoom;
@@ -1475,18 +1523,30 @@ static void canvas_compose(int doc_x0, int doc_y0, int x0, int y0, int x1, int y
         for (int dx = dxa; dx <= dxb; dx++) {
             int cr, cg, cb;
             composite_px(dx, dy, &cr, &cg, &cb);
-            cv.row[dx - dxa] = w2k_rgb(cr, cg, cb);
+            cv.row[dx - dxa] = pack ? (unsigned long)cr << 16 | (unsigned long)cg << 8 | (unsigned long)cb
+                                    : w2k_rgb(cr, cg, cb);
         }
         for (int x = x0; x <= x1; x++) {
-            int dx = doc_x0 + (int)((long)x * 100 / sc) / pt.zoom;
-            if (dx > dxb) dx = dxb;
-            if (dx < dxa) dx = dxa;
-            if (direct) ((unsigned int *)line)[x] = (unsigned int)cv.row[dx - dxa];
-            else XPutPixel(cv.im, x, y, cv.row[dx - dxa]);
+            if (direct) ((unsigned int *)line)[x] = (unsigned int)cv.row[cv.col[x]];
+            else XPutPixel(cv.im, x, y, cv.row[cv.col[x]]);
         }
         prev_dy = dy;
         prev_y = y;
     }
+}
+
+/* Compose the screen rectangle x0..x1, y0..y1 of the view (cut to it)
+ * and send it to the pixmap. */
+static void canvas_put(int doc_x0, int doc_y0, int x0, int y0, int x1, int y1)
+{
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > cv.pw - 1) x1 = cv.pw - 1;
+    if (y1 > cv.ph - 1) y1 = cv.ph - 1;
+    if (x1 < x0 || y1 < y0) return;
+    canvas_compose(doc_x0, doc_y0, x0, y0, x1, y1);
+    XPutImage(w2k.dpy, cv.pm, w2k.gc, cv.im, x0, y0, x0, y0,
+              (unsigned)(x1 - x0 + 1), (unsigned)(y1 - y0 + 1));
 }
 
 static void blit_visible(Drawable d)
@@ -1519,32 +1579,46 @@ static void blit_visible(Drawable d)
     if (pw <= 0 || ph <= 0) return;
 
     int sc = w2k_ui_scale;
-    int full = pt.view_all || !cv.pm || cv.pw != pw || cv.ph != ph || cv.doc_x0 != doc_x0 ||
-               cv.doc_y0 != doc_y0 || cv.zoom != pt.zoom || cv.sc != sc ||
-               cv.dw != pt.w || cv.dh != pt.h;
+    int same = !pt.view_all && cv.pm && cv.pw == pw && cv.ph == ph && cv.zoom == pt.zoom &&
+               cv.sc == sc && cv.dw == pt.w && cv.dh == pt.h;
+    int full = !same || cv.doc_x0 != doc_x0 || cv.doc_y0 != doc_y0;
     if ((!cv.pm || cv.pw != pw || cv.ph != ph) && !canvas_alloc(pw, ph)) return;
-    int x0 = 0, y0 = 0, x1 = pw - 1, y1 = ph - 1;
-    if (!full) {
-        /* Only what changed since the last time, in screen pixels -- a
-         * pixel or so wide of it, which composing again costs nothing. */
-        Box b = pt.shown;
-        if (b.x1 < b.x0) x1 = -1;
-        else {
-            long zs = (long)pt.zoom * sc;
-            x0 = (int)((b.x0 - doc_x0) * zs / 100) - 1;
-            x1 = (int)((b.x1 + 1 - doc_x0) * zs / 100) + 1;
-            y0 = (int)((b.y0 - doc_y0) * zs / 100) - 1;
-            y1 = (int)((b.y1 + 1 - doc_y0) * zs / 100) + 1;
-            if (x0 < 0) x0 = 0;
-            if (y0 < 0) y0 = 0;
-            if (x1 > pw - 1) x1 = pw - 1;
-            if (y1 > ph - 1) y1 = ph - 1;
+    /* Panned: what stays in view is in the pixmap already, a whole number
+     * of screen pixels away (always at 100%, and at other scales when the
+     * step comes out even). The server slides it over and only the strips
+     * coming into view are composed -- every step of a drag used to
+     * compose and send the whole view again, a tenth of a second on a
+     * maximised 4K window. */
+    int sx = 0, sy = 0;
+    if (same && full) {
+        long ex = (long)(doc_x0 - cv.doc_x0) * pt.zoom * sc;
+        long ey = (long)(doc_y0 - cv.doc_y0) * pt.zoom * sc;
+        if (ex % 100 == 0 && ey % 100 == 0 && labs(ex / 100) < pw && labs(ey / 100) < ph) {
+            sx = (int)(ex / 100);
+            sy = (int)(ey / 100);
+            XCopyArea(w2k.dpy, cv.pm, cv.pm, w2k.gc, sx > 0 ? sx : 0, sy > 0 ? sy : 0,
+                      (unsigned)(pw - abs(sx)), (unsigned)(ph - abs(sy)),
+                      sx < 0 ? -sx : 0, sy < 0 ? -sy : 0);
+            full = 0;
         }
     }
-    if (x1 >= x0 && y1 >= y0) {
-        canvas_compose(doc_x0, doc_y0, x0, y0, x1, y1);
-        XPutImage(w2k.dpy, cv.pm, w2k.gc, cv.im, x0, y0, x0, y0,
-                  (unsigned)(x1 - x0 + 1), (unsigned)(y1 - y0 + 1));
+    if (full)
+        canvas_put(doc_x0, doc_y0, 0, 0, pw - 1, ph - 1);
+    else {
+        if (sx > 0) canvas_put(doc_x0, doc_y0, pw - sx, 0, pw - 1, ph - 1);
+        if (sx < 0) canvas_put(doc_x0, doc_y0, 0, 0, -sx - 1, ph - 1);
+        if (sy > 0) canvas_put(doc_x0, doc_y0, 0, ph - sy, pw - 1, ph - 1);
+        if (sy < 0) canvas_put(doc_x0, doc_y0, 0, 0, pw - 1, -sy - 1);
+        /* And what changed since the last time, in screen pixels -- a
+         * pixel or so wide of it, which composing again costs nothing. */
+        Box b = pt.shown;
+        if (b.x1 >= b.x0) {
+            long zs = (long)pt.zoom * sc;
+            canvas_put(doc_x0, doc_y0,
+                       (int)((b.x0 - doc_x0) * zs / 100) - 1, (int)((b.y0 - doc_y0) * zs / 100) - 1,
+                       (int)((b.x1 + 1 - doc_x0) * zs / 100) + 1,
+                       (int)((b.y1 + 1 - doc_y0) * zs / 100) + 1);
+        }
     }
     cv.px0 = px0; cv.py0 = py0; cv.doc_x0 = doc_x0; cv.doc_y0 = doc_y0;
     cv.zoom = pt.zoom; cv.sc = sc; cv.dw = pt.w; cv.dh = pt.h;
@@ -1784,8 +1858,15 @@ static void apply_tool_drag(int finalize)
             draw_ellipse(pt.x0, pt.y0, pt.x1, pt.y1, rad, c[0], c[1], c[2], c[3], erase);
         if (finalize) stroke_free();
     } else if (pt.tool == T_GRADIENT) {
-        stroke_restore();
-        draw_gradient(pt.x0, pt.y0, pt.x1, pt.y1);
+        /* Each frame writes every pixel of its rectangle, so nothing needs
+         * putting back first; and until the button comes up only the part
+         * in view is worked out. Both were done for the whole picture at
+         * every motion: 60 ms and more a frame on a 12 megapixel one. The
+         * view is the canvas plus a pixel for a scaled desktop's rounding. */
+        Box v = { pt.pan_x, pt.pan_y,
+                  pt.pan_x + (pt.canvas_r.w + pt.zoom - 1) / pt.zoom,
+                  pt.pan_y + (pt.canvas_r.h + pt.zoom - 1) / pt.zoom };
+        draw_gradient(pt.x0, pt.y0, pt.x1, pt.y1, finalize ? NULL : &v);
         if (finalize) stroke_free();
     }
 }
@@ -2168,7 +2249,13 @@ static int on_event(W2kWin *w, XEvent *e)
         pt.x0 = pt.x1 = dx;
         pt.y0 = pt.y1 = dy;
         if (pt.tool == T_LINE || pt.tool == T_RECT || pt.tool == T_ELLIPSE || pt.tool == T_GRADIENT) {
-            stroke_save_full();
+            if (pt.stroke_undo) {
+                stroke_free();
+                pt.stroke_layer = pt.active;
+                box_clear(&pt.shape);
+            } else {
+                stroke_save_full();
+            }
         } else {
             int erase = (pt.tool == T_ERASER);
             int *c = (e->xbutton.button == Button3) ? pt.bg : pt.fg;
