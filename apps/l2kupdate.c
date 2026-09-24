@@ -217,6 +217,9 @@ static int check_start(Check *c, const char *cmd, void (*done)(const char *))
     c->out[0] = 0;
     c->done = done;
     fcntl(p[0], F_SETFL, O_NONBLOCK);
+    /* An install terminal started while the check is out must not carry
+     * the pipe with it for its whole life. */
+    fcntl(p[0], F_SETFD, FD_CLOEXEC);
     w2k_add_fd(p[0], check_io, c);
     return 1;
 }

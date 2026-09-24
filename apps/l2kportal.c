@@ -365,6 +365,9 @@ static int choose(int kind, Req *r, const char *title, unsigned long parent, cha
         snprintf(msg, sizeof msg, "%.300s\nFile not found.\nPlease verify the correct file name was given.",
                  base ? base + 1 : out);
         w2k_msgbox(NULL, title && *title ? title : "Open", msg, MB_OK | MB_ICONWARNING);
+        /* A Close that landed on the box: the dialog is not built again
+         * just to be torn down at the loop's next turn. */
+        if (running && running->closed) return 0;
     }
 }
 
