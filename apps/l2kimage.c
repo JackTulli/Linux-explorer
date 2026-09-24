@@ -14,6 +14,7 @@
     "Bitmap Image (*.bmp)|*.bmp|PNG Image (*.png)|*.png|WebP Image (*.webp)|*.webp|" \
     "JPEG Image (*.jpg)|*.jpg;*.jpeg|All Files (*.*)|*"
 #include <dirent.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -102,52 +103,74 @@ static void rescale(void)
     if (im.scaled && tw == im.sw && th == im.sh) return;
     drop_scaled();
 
-    void *pixels = malloc((size_t)tw * th * 4);
-    if (!pixels) return;
-    im.scaled = XCreatePixmap(w2k.dpy, w2k.root, tw, th, w2k.depth);
-    XImage *xi = XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap, 0,
-                              pixels, tw, th, 32, 0);
-    if (!xi) { free(pixels); drop_scaled(); return; }
-
     int shrink = (tw < im.iw || th < im.ih);
     /* Anything but a whole-number enlargement goes through the chosen
      * resampler; a whole one stays blocks, as pixel art should. */
     unsigned char *rs = NULL;
     if (w2k_resample != RS_NEAREST && !(tw >= im.iw && tw % im.iw == 0 && th % im.ih == 0 && th >= im.ih))
         rs = w2k_rgba_resample(im.rgba, im.iw, im.ih, tw, th, w2k_resample);
+    /* The resampled copy is made into the image's pixels where it lies:
+     * no pixel is ever written ahead of the one being read, and a second
+     * buffer the picture's size was 180 MB more at 8192 a side. */
+    void *pixels = rs ? (void *)rs : malloc((size_t)tw * th * 4);
+    if (!pixels) return;
+    im.scaled = XCreatePixmap(w2k.dpy, w2k.root, tw, th, w2k.depth);
+    XImage *xi = XCreateImage(w2k.dpy, w2k.visual, w2k.depth, ZPixmap, 0,
+                              pixels, tw, th, 32, 0);
+    if (!xi) { free(pixels); drop_scaled(); return; }
+
+    /* A 32-bit image in this machine's byte order takes each pixel as one
+     * word, as XPutPixel would store it; calling XPutPixel for all of
+     * them was a third of a zoom's time. */
+    const int one = 1;
+    int direct = xi->bits_per_pixel == 32 &&
+                 xi->byte_order == (*(const char *)&one ? LSBFirst : MSBFirst);
+    /* On a true-colour screen a pixel is its three channels' bits side by
+     * side, so each channel is looked up rather than w2k_rgb called for
+     * every pixel. */
+    unsigned long lut[3][256];
+    int tc = w2k.visual->class == TrueColor || w2k.visual->class == DirectColor;
+    for (int i = 0; tc && i < 256; i++) {
+        lut[0][i] = w2k_rgb(i, 0, 0);
+        lut[1][i] = w2k_rgb(0, i, 0);
+        lut[2][i] = w2k_rgb(0, 0, i);
+    }
     for (int y = 0; y < th; y++) {
+        uint32_t *row = (uint32_t *)(xi->data + (size_t)y * xi->bytes_per_line);
         for (int x = 0; x < tw; x++) {
-            unsigned long px;
+            int r, g, b;
             if (rs) {
                 const unsigned char *p = rs + ((size_t)y * tw + x) * 4;
-                px = w2k_rgb(p[0], p[1], p[2]);
+                r = p[0]; g = p[1]; b = p[2];
             } else if (shrink) {
                 int x0 = x * im.iw / tw, x1 = (x + 1) * im.iw / tw;
                 int y0 = y * im.ih / th, y1 = (y + 1) * im.ih / th;
                 if (x1 <= x0) x1 = x0 + 1;
                 if (y1 <= y0) y1 = y0 + 1;
-                long r = 0, g = 0, b = 0, n = 0;
+                long sr = 0, sg = 0, sb = 0, n = 0;
                 for (int sy = y0; sy < y1 && sy < im.ih; sy++)
                     for (int sx = x0; sx < x1 && sx < im.iw; sx++) {
                         const unsigned char *p =
                             im.rgba + ((size_t)sy * im.iw + sx) * 4;
-                        r += p[0]; g += p[1]; b += p[2];
+                        sr += p[0]; sg += p[1]; sb += p[2];
                         n++;
                     }
                 if (!n) n = 1;
-                px = w2k_rgb((int)(r / n), (int)(g / n), (int)(b / n));
+                r = (int)(sr / n); g = (int)(sg / n); b = (int)(sb / n);
             } else {
                 int sx = x * im.iw / tw, sy = y * im.ih / th;
                 const unsigned char *p =
                     im.rgba + ((size_t)sy * im.iw + sx) * 4;
-                px = w2k_rgb(p[0], p[1], p[2]);
+                r = p[0]; g = p[1]; b = p[2];
             }
-            XPutPixel(xi, x, y, px);
+            unsigned long px = tc ? lut[0][r] | lut[1][g] | lut[2][b]
+                                  : w2k_rgb(r, g, b);
+            if (direct) row[x] = (uint32_t)px;
+            else        XPutPixel(xi, x, y, px);
         }
     }
     XPutImage(w2k.dpy, im.scaled, w2k.gc, xi, 0, 0, 0, 0, tw, th);
-    XDestroyImage(xi);
-    free(rs);
+    XDestroyImage(xi);                   /* and the pixels, rs among them */
     im.sw = tw;
     im.sh = th;
 }
