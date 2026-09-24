@@ -843,9 +843,7 @@ static void prompt_paint(W2kWin *w, Drawable d)
     Prompt *p = w->user;
     int x = 12;
     if (p->icon >= 0) { w2k_bigicon_draw(d, 12, 14, p->icon); x = 12 + 32 + 12; }
-    /* Callers mark the label's access key ("&New name:"), which was drawn
-     * with its ampersand showing. */
-    w2k_text_mnemonic(d, F_UI, x, 16, p->label, C_TEXT, 1);
+    w2k_text(d, F_UI, x, 16, p->label, C_TEXT);
     w2k_edit_draw(d, p->edit);
     w2k_draw_pushbutton(d, &p->ok, "OK",
                         BS_DEFAULT | (p->focus == 1 ? BS_FOCUS : 0) |
@@ -1191,7 +1189,13 @@ static void fd_try_accept(FileDlg *f)
     const char *nm = w2k_edit_text(f->name);
     /* No name, no file: nothing happens, as in Windows. The dialog used
      * to close as if cancelled. */
-    if (!f->folder && (!nm || !*nm)) return;
+    if (!f->folder && (!nm || !*nm)) {
+        /* A folder picked in the list opens, as in Windows. */
+        int i = f->list->sel;
+        if (i >= 0 && i < f->list->n && f->list->items[i].data)
+            fd_chdir(f, f->list->items[i].text[0]);
+        return;
+    }
     if (!f->folder) {
         char full[2048];
         if (nm[0] == '/') snprintf(full, sizeof full, "%s", nm);
@@ -1377,6 +1381,11 @@ static int fd_event(W2kWin *w, XEvent *e)
         }
         if (w2k_list_press(f->list, &e->xbutton)) {
             if (f->look->edit) f->look->edit->focused = 0;
+            /* A click in the list takes the focus from the File name box,
+             * as in Windows. Both kept it, and Home, End or an arrow
+             * pressed to fix a typed name went to the list, which put the
+             * name of the file it moved to over what had been typed. */
+            if (f->list->focused) f->name->focused = 0;
             w2k_win_dirty(w);
             return 1;
         }
@@ -1476,9 +1485,22 @@ static int fd_event(W2kWin *w, XEvent *e)
                 }
                 return 1;
             }
+            /* From the list, Tab goes to the File name box. */
+            f->name->focused = 1;
+            f->name->caret_on = 1;
+            f->list->focused = 0;
+            w2k_win_dirty(w);
+            return 1;
         }
         if (ks == XK_Return || ks == XK_KP_Enter) {
-            fd_try_accept(f);
+            /* In the list, Enter on a folder opens it, whatever the File
+             * name box still holds. */
+            int i = f->list->sel;
+            if (!f->folder && f->list->focused && i >= 0 &&
+                i < f->list->n && f->list->items[i].data)
+                fd_activate(f, i);
+            else
+                fd_try_accept(f);
             w2k_win_dirty(w);
             return 1;
         }
@@ -1486,7 +1508,17 @@ static int fd_event(W2kWin *w, XEvent *e)
             w2k_win_dirty(w);
             return 1;
         }
-        if (w2k_edit_key(f->name, &e->xkey)) { w2k_win_dirty(w); return 1; }
+        if (w2k_edit_key(f->name, &e->xkey)) {
+            /* Typing with the list focused goes on in the File name box,
+             * and the keys after it with it. */
+            if (f->list->focused) {
+                f->list->focused = 0;
+                f->name->focused = 1;
+                f->name->caret_on = 1;
+            }
+            w2k_win_dirty(w);
+            return 1;
+        }
         return 1;
     }
     }
